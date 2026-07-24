@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - agent/issue-6-deterministic-multi-agent-checkpoints
+  pull_request:
+    branches:
+      - feature/migrate-sandcastle-to-docker-sandbox
 
 permissions:
   contents: read
