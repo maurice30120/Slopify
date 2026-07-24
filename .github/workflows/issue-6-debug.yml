@@ -21,20 +21,32 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - name: Capture build diagnostics
+      - name: Capture build and test diagnostics
         shell: bash
         run: |
           set +e
           npm run build > build.log 2>&1
-          echo "$?" > build.exit
+          build_exit="$?"
+          echo "$build_exit" > build.exit
+          if [ "$build_exit" = "0" ]; then
+            npm test > test.log 2>&1
+            echo "$?" > test.exit
+          else
+            echo "Tests skipped because build failed." > test.log
+            echo "1" > test.exit
+          fi
           exit 0
-      - name: Upload build diagnostics
+      - name: Upload diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: issue-6-build-diagnostics
+          name: issue-6-diagnostics
           path: |
             build.log
             build.exit
-      - name: Fail when build failed
-        run: test "$(cat build.exit)" = "0"
+            test.log
+            test.exit
+      - name: Fail when build or tests failed
+        run: |
+          test "$(cat build.exit)" = "0"
+          test "$(cat test.exit)" = "0"
