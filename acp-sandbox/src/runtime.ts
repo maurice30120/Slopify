@@ -326,12 +326,30 @@ export function createNodeSubprocessExecutor(): SubprocessExecutor {
     });
     let stdout = '';
     let stderr = '';
+    let settled = false;
+    const resolveOnce = (result: SubprocessResult): void => {
+      if (settled) return;
+      settled = true;
+      resolve(result);
+    };
     child.stdout.setEncoding('utf8');
     child.stderr.setEncoding('utf8');
     child.stdout.on('data', chunk => { stdout += chunk; if (request.observeOutput) process.stdout.write(chunk); });
     child.stderr.on('data', chunk => { stderr += chunk; if (request.observeOutput) process.stderr.write(chunk); });
-    child.once('error', reject);
-    child.once('close', code => resolve({ exitCode: code ?? 1, stdout, stderr }));
+    child.once('error', error => {
+      if (request.signal?.aborted) {
+        resolveOnce({
+          exitCode: 1,
+          stdout,
+          stderr: stderr || (error instanceof Error ? error.message : String(error)),
+        });
+        return;
+      }
+      if (settled) return;
+      settled = true;
+      reject(error);
+    });
+    child.once('close', code => resolveOnce({ exitCode: code ?? 1, stdout, stderr }));
   });
 }
 
@@ -355,7 +373,6 @@ function createExecutionSignal(parent: AbortSignal | undefined, timeoutMs: numbe
       timeoutTriggered = true;
       controller.abort();
     }, timeoutMs);
-    timer.unref();
   }
 
   return {
