@@ -1,8 +1,11 @@
 import {
+  orderPipelineNodeIdsForIntegration,
   renderAcpPrompt,
   type CompiledPipelineProgram,
   type PipelineAgentRunInput,
   type PipelineAgentRunner,
+  type PipelineChangeSetFinalizationInput,
+  type PipelineChangeSetFinalizationResult,
   type PipelinePromotionStatus,
 } from '@acp-client/pipeline';
 import {
@@ -20,7 +23,15 @@ import {
   type SandcastlePreview,
   type SandcastlePromotion,
 } from '@acp-client/sandcastle';
-import { DockerSandboxRuntime, type SubprocessExecutor } from '@acp-client/sandbox';
+import {
+  DockerSandboxRuntime,
+  GitPromotion,
+  createNodeSubprocessExecutor,
+  type AgentCheckpointResult,
+  type PromotionDecision,
+  type PromotionPolicy,
+  type SubprocessExecutor,
+} from '@acp-client/sandbox';
 
 import { getPipelinePrograms } from '../catalog/pipelineCatalog.js';
 import { loadSkillCatalog, renderSkillsCatalog } from '../catalog/skillCatalog.js';
@@ -58,8 +69,9 @@ export function createWorkspaceRuntime(options: CreateWorkspaceRuntimeOptions): 
   const programs = getPipelinePrograms(options.workspaceCwd, options.host.logger);
   const runner = new AcpRunner();
   const sandboxRuntime = new DockerSandboxRuntime(options.sandboxExecutor);
+  const checkpointsByRunId = new Map<string, Map<string, AgentCheckpointResult>>();
 
-  const runAgent: PipelineAgentRunner = async input => {
+  const runAgent = (async input => {
     const config = resolveAgent(catalog, input.agentName);
     const sandcastle = isSandcastleConfig(config);
     const sandbox = isSandboxConfig(config);
@@ -78,6 +90,17 @@ export function createWorkspaceRuntime(options: CreateWorkspaceRuntimeOptions): 
         signal: input.signal,
         workspaceEffects: input.sideEffects === 'workspace',
       });
+      if (input.sideEffects === 'workspace') {
+        const runId = input.runId ?? 'run';
+        const nodeId = input.nodeId ?? input.agentName;
+        const checkpoints = checkpointsByRunId.get(runId) ?? new Map<string, AgentCheckpointResult>();
+        checkpoints.set(nodeId, {
+          checkpointStatus: result.checkpointStatus,
+          checkpoint: result.checkpoint,
+          preview: result.preview,
+        });
+        checkpointsByRunId.set(runId, checkpoints);
+      }
       return { text: result.stdout, promotion: result.status };
     }
     const processConfig = sandcastle
@@ -104,13 +127,110 @@ export function createWorkspaceRuntime(options: CreateWorkspaceRuntimeOptions): 
     return result.finalization
       ? { text: result.text, promotion: result.finalization }
       : { text: result.text };
-  };
+  }) as PipelineAgentRunner;
+
+  runAgent.finalizePipelineChangeSet = input => finalizePipelineChangeSet({
+    input,
+    checkpointsByRunId,
+    workspaceCwd: options.workspaceCwd,
+    host: options.host,
+    execute: options.sandboxExecutor,
+  });
 
   return {
     programs,
     runAgent,
     clearRunLogs: () => clearSandcastleLogs(options.workspaceCwd),
   };
+}
+
+interface FinalizePipelineChangeSetOptions {
+  input: PipelineChangeSetFinalizationInput;
+  checkpointsByRunId: Map<string, Map<string, AgentCheckpointResult>>;
+  workspaceCwd: string;
+  host: WorkspaceRuntimeHost;
+  execute?: SubprocessExecutor;
+}
+
+async function finalizePipelineChangeSet(
+  options: FinalizePipelineChangeSetOptions,
+): Promise<PipelineChangeSetFinalizationResult> {
+  const { input } = options;
+  const checkpoints = options.checkpointsByRunId.get(input.runId);
+  if (!checkpoints || checkpoints.size === 0) {
+    return {
+      promotion: 'no_changes',
+      preview: {
+        baseCommit: '',
+        changeSetCommit: '',
+        fileCount: 0,
+        files: [],
+        diff: '',
+      },
+      integratedNodeIds: [],
+    };
+  }
+
+  try {
+    const orderedNodeIds = orderPipelineNodeIdsForIntegration(input.program, checkpoints.keys());
+    const orderedCheckpoints = orderedNodeIds.map(nodeId => checkpoints.get(nodeId)!);
+    const policy = resolvePipelinePromotionPolicy(input.program, orderedNodeIds);
+    const gitPromotion = new GitPromotion(options.execute ?? createNodeSubprocessExecutor());
+    const changeSet = await gitPromotion.integrateAgentCheckpoints({
+      workspaceCwd: options.workspaceCwd,
+      runId: input.runId,
+      checkpoints: orderedCheckpoints,
+    });
+    const promoted = await gitPromotion.promotePipelineChangeSet({
+      workspaceCwd: options.workspaceCwd,
+      policy,
+      changeSet: changeSet.changeSet,
+      preview: changeSet.preview,
+      decide: policy === 'ask'
+        ? request => decidePipelinePromotion(options.host, input, request.preview, request.changeSet.integratedNodeIds)
+        : undefined,
+    });
+    return {
+      promotion: promoted.status,
+      preview: promoted.preview,
+      changeSetRef: promoted.changeSet.ref,
+      changeSetCommit: promoted.changeSet.commit,
+      integratedNodeIds: promoted.changeSet.integratedNodeIds,
+    };
+  } finally {
+    options.checkpointsByRunId.delete(input.runId);
+  }
+}
+
+function resolvePipelinePromotionPolicy(
+  program: CompiledPipelineProgram,
+  nodeIds: readonly string[],
+): PromotionPolicy {
+  const policies = new Set(nodeIds.map(nodeId => program.nodesById.get(nodeId)!.policy.promotion));
+  if (policies.size > 1) {
+    throw new Error(`Workspace-writing nodes declare conflicting Promotion policies: ${[...policies].join(', ')}. A multi-agent Pipeline Change Set requires one policy.`);
+  }
+  return [...policies][0] ?? 'discard';
+}
+
+async function decidePipelinePromotion(
+  host: WorkspaceRuntimeHost,
+  input: PipelineChangeSetFinalizationInput,
+  preview: PipelineChangeSetFinalizationResult['preview'],
+  integratedNodeIds: string[],
+): Promise<PromotionDecision> {
+  if (!host.requestPipelinePromotion) {
+    return 'cancel';
+  }
+  const decision = await host.requestPipelinePromotion({
+    runId: input.runId,
+    pipelineId: input.program.id,
+    integratedNodeIds,
+    preview,
+  });
+  if (decision === 'approve') return 'apply';
+  if (decision === 'reject') return 'reject';
+  return 'cancel';
 }
 
 function loadValidCatalog(workspaceCwd: string): AgentCatalog {
