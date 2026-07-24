@@ -46,7 +46,7 @@ test('collects parallel sandbox checkpoints, previews once, and promotes one det
         return result(`checkpoint-${args[1].includes('-a-') ? 'a' : 'b'}\n`);
       }
       if (request.command === 'git' && joined === 'show -s --format=%cI base123') return result('2026-07-24T10:00:00+02:00\n');
-      if (request.command === 'git' && args[0] === 'merge-tree') return result(`tree-${args.at(-1)?.includes('/a-') ? 'a' : 'b'}\n`);
+      if (request.command === 'git' && args[0] === 'merge-tree') return result(`tree-${args.at(-1)?.includes('-a-') ? 'a' : 'b'}\n`);
       if (request.command === 'git' && args[0] === 'commit-tree') return result(`integrated-${++integrationCommit}\n`);
       if (request.command === 'git' && args[0] === 'diff' && args.includes('--name-only')) {
         const range = args.at(-1) ?? '';
@@ -101,7 +101,7 @@ test('collects parallel sandbox checkpoints, previews once, and promotes one det
   assert.deepEqual(finalized.integratedNodeIds, ['a', 'b']);
   assert.equal(promotionPrompts, 1);
   assert.deepEqual(
-    calls.filter(call => call.command === 'git' && call.args[0] === 'merge-tree').map(call => call.args.at(-1)?.includes('/a-') ? 'a' : 'b'),
+    calls.filter(call => call.command === 'git' && call.args[0] === 'merge-tree').map(call => call.args.at(-1)?.includes('-a-') ? 'a' : 'b'),
     ['a', 'b'],
   );
   assert.deepEqual(
