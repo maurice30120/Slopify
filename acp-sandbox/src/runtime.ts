@@ -1,6 +1,8 @@
 import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
 
+import { GitPromotion, type AgentCheckpoint, type AgentCheckpointPreview } from './gitPromotion.js';
+
 export const MINIMUM_SBX_VERSION = '0.35.0';
 
 export interface SubprocessRequest {
@@ -33,10 +35,13 @@ export interface SandboxRunInput {
 }
 
 export interface SandboxRunResult {
-  status: 'no_changes';
+  status?: 'no_changes';
+  checkpointStatus: 'checkpointed' | 'no_changes';
   sandboxName: string;
   stdout: string;
   stderr: string;
+  checkpoint: AgentCheckpoint;
+  preview: AgentCheckpointPreview;
 }
 
 export class DockerSandboxRuntime {
@@ -49,16 +54,33 @@ export class DockerSandboxRuntime {
     try {
       await this.requireSuccess({ command: 'sbx', args: ['create', '--clone', '--name', sandboxName, 'codex', '.'], cwd: input.workspaceCwd, stdin: 'ignore', signal: input.signal }, 'create the Docker Sandbox');
       created = true;
+      const baseCommit = (await this.requireSuccess({ command: 'git', args: ['rev-parse', 'HEAD'], cwd: input.workspaceCwd, stdin: 'ignore', signal: input.signal }, 'read the host base commit')).stdout.trim();
+      if (!baseCommit) {
+        throw new Error('Unable to read the host base commit: git returned an empty commit id.');
+      }
+
       const codexArgs = ['exec', sandboxName, 'codex', 'exec', '--dangerously-bypass-approvals-and-sandbox', '--ephemeral', '--json'];
       if (input.model) codexArgs.push('--model', input.model);
       if (input.effort) codexArgs.push('--config', `model_reasoning_effort=${JSON.stringify(input.effort)}`);
       codexArgs.push(input.prompt);
       const codex = await this.requireSuccess({ command: 'sbx', args: codexArgs, cwd: input.workspaceCwd, stdin: 'ignore', observeOutput: true, signal: input.signal }, 'run Codex non-interactively');
-      const status = await this.requireSuccess({ command: 'sbx', args: ['exec', sandboxName, 'git', 'status', '--porcelain=v1'], cwd: input.workspaceCwd, stdin: 'ignore', signal: input.signal }, 'inspect the sandbox workspace');
-      if (status.stdout.trim()) {
-        throw new Error('The Codex sandbox produced workspace changes, but issue #2 only supports the no_changes tracer path. The host workspace was not modified.');
-      }
-      return { status: 'no_changes', sandboxName, stdout: codex.stdout, stderr: codex.stderr };
+
+      const checkpoint = await new GitPromotion(this.execute).createAgentCheckpoint({
+        workspaceCwd: input.workspaceCwd,
+        sandboxName,
+        baseCommit,
+        runId: input.runId,
+        nodeId: input.nodeId,
+        attempt: input.attempt,
+        signal: input.signal,
+      });
+      return {
+        ...checkpoint,
+        ...(checkpoint.checkpointStatus === 'no_changes' ? { status: 'no_changes' as const } : {}),
+        sandboxName,
+        stdout: codex.stdout,
+        stderr: codex.stderr,
+      };
     } finally {
       if (created) {
         await this.execute({ command: 'sbx', args: ['rm', '--force', sandboxName], cwd: input.workspaceCwd, stdin: 'ignore' });
