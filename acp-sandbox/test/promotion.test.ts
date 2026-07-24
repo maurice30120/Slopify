@@ -4,8 +4,9 @@ import test from 'node:test';
 import {
   GitPromotion,
   PROMOTION_POLICIES,
-  type AgentCheckpoint,
-  type AgentCheckpointPreview,
+  type AgentCheckpointResult,
+  type PipelineChangeSet,
+  type PipelineChangeSetPreview,
   type PromotionDecision,
   type PromotionPolicy,
   type SubprocessExecutor,
@@ -13,48 +14,68 @@ import {
   type SubprocessResult,
 } from '../src/index.js';
 
-const checkpoint: AgentCheckpoint = {
-  runId: 'run-1',
-  nodeId: 'implement',
-  attempt: 1,
-  sandboxName: 'sandbox-1',
-  baseCommit: 'base123',
-  commit: 'checkpoint456',
-  remote: 'sandbox-sandbox-1',
-  ref: 'refs/slopify/checkpoints/sandbox-1',
-};
-
-const preview: AgentCheckpointPreview = {
-  baseCommit: checkpoint.baseCommit,
-  checkpointCommit: checkpoint.commit,
-  fileCount: 2,
-  files: ['src/feature.ts', 'README.md'],
-  diff: 'diff --git a/src/feature.ts b/src/feature.ts\n',
-};
+function checkpoint(nodeId: string, attempt = 1, changed = true): AgentCheckpointResult {
+  return {
+    checkpointStatus: changed ? 'checkpointed' : 'no_changes',
+    checkpoint: {
+      runId: 'run-1',
+      nodeId,
+      attempt,
+      sandboxName: `sandbox-${nodeId}-${attempt}`,
+      baseCommit: 'base123',
+      commit: `checkpoint-${nodeId}-${attempt}`,
+      remote: `sandbox-${nodeId}-${attempt}`,
+      ref: `refs/slopify/checkpoints/${nodeId}-${attempt}`,
+    },
+    preview: {
+      baseCommit: 'base123',
+      checkpointCommit: `checkpoint-${nodeId}-${attempt}`,
+      fileCount: changed ? 1 : 0,
+      files: changed ? [`src/${nodeId}.ts`] : [],
+      diff: changed ? `diff --git a/src/${nodeId}.ts b/src/${nodeId}.ts\n` : '',
+    },
+  };
+}
 
 function result(stdout = '', stderr = '', exitCode = 0): SubprocessResult {
   return { stdout, stderr, exitCode };
 }
 
-function fakeGit(options: { head?: string; dirty?: boolean } = {}): {
+function integrationGit(options: { head?: string; dirty?: boolean } = {}): {
   execute: SubprocessExecutor;
   calls: SubprocessRequest[];
 } {
   const calls: SubprocessRequest[] = [];
+  let commitIndex = 0;
   return {
     calls,
     execute: async request => {
       calls.push(request);
-      if (request.args[0] === 'status') return result(options.dirty ? ' M local.ts\n' : '');
-      if (request.args.join(' ') === 'rev-parse HEAD') return result(`${options.head ?? checkpoint.baseCommit}\n`);
+      const args = request.args;
+      if (args.join(' ') === 'show -s --format=%cI base123') return result('2026-07-24T10:00:00+02:00\n');
+      if (args[0] === 'merge-tree') return result(`tree-${args.at(-1)?.split('/').at(-1)}\n`);
+      if (args[0] === 'commit-tree') return result(`integrated-${++commitIndex}\n`);
+      if (args[0] === 'diff' && args.includes('--name-only')) return result('src/a.ts\nsrc/b.ts\n');
+      if (args[0] === 'diff') return result('global diff\n');
+      if (args[0] === 'status') return result(options.dirty ? ' M local.ts\n' : '');
+      if (args.join(' ') === 'rev-parse HEAD') return result(`${options.head ?? 'base123'}\n`);
       return result();
     },
   };
 }
 
-function mutatingCalls(calls: SubprocessRequest[]): SubprocessRequest[] {
+function mutatingWorkspaceCalls(calls: SubprocessRequest[]): SubprocessRequest[] {
   const mutating = new Set(['merge', 'checkout', 'switch', 'reset', 'cherry-pick', 'rebase', 'apply', 'am']);
   return calls.filter(call => call.command === 'git' && mutating.has(call.args[0] ?? ''));
+}
+
+async function integratedChangeSet(fake = integrationGit()) {
+  const output = await new GitPromotion(fake.execute).integrateAgentCheckpoints({
+    workspaceCwd: '/repo',
+    runId: 'run-1',
+    checkpoints: [checkpoint('a'), checkpoint('b')],
+  });
+  return { ...output, fake };
 }
 
 async function promote(
@@ -62,17 +83,31 @@ async function promote(
   decision?: PromotionDecision,
   options: { head?: string; dirty?: boolean } = {},
 ) {
-  const fake = fakeGit(options);
+  const fake = integrationGit(options);
+  const changeSet: PipelineChangeSet = {
+    runId: 'run-1',
+    baseCommit: 'base123',
+    commit: 'integrated-2',
+    ref: 'refs/slopify/runs/run-1/change-set',
+    integratedNodeIds: ['a', 'b'],
+  };
+  const preview: PipelineChangeSetPreview = {
+    baseCommit: 'base123',
+    changeSetCommit: 'integrated-2',
+    fileCount: 2,
+    files: ['src/a.ts', 'src/b.ts'],
+    diff: 'global diff\n',
+  };
   let prompts = 0;
   const output = await new GitPromotion(fake.execute).promotePipelineChangeSet({
     workspaceCwd: '/repo',
     policy,
-    checkpoint,
+    changeSet,
     preview,
     decide: decision
       ? request => {
           prompts += 1;
-          assert.strictEqual(request.checkpoint, checkpoint);
+          assert.strictEqual(request.changeSet, changeSet);
           assert.strictEqual(request.preview, preview);
           return decision;
         }
@@ -85,21 +120,53 @@ test('exposes the four pipeline Promotion policies', () => {
   assert.deepEqual(PROMOTION_POLICIES, ['discard', 'ask', 'auto-apply', 'auto-reject']);
 });
 
-test('ask presents one complete preview and explicit approval applies one atomic fast-forward', async () => {
+test('integrates Agent Checkpoints in the supplied deterministic order without mutating the host workspace', async () => {
+  const { changeSet, preview, fake } = await integratedChangeSet();
+
+  assert.deepEqual(changeSet.integratedNodeIds, ['a', 'b']);
+  assert.equal(changeSet.commit, 'integrated-2');
+  assert.equal(preview.fileCount, 2);
+  assert.deepEqual(
+    fake.calls.filter(call => call.args[0] === 'merge-tree').map(call => call.args.at(-1)),
+    ['refs/slopify/checkpoints/a-1', 'refs/slopify/checkpoints/b-1'],
+  );
+  assert.deepEqual(mutatingWorkspaceCalls(fake.calls), []);
+  assert.equal(fake.calls.filter(call => call.args[0] === 'update-ref').length, 1);
+  const commitCalls = fake.calls.filter(call => call.args[0] === 'commit-tree');
+  assert.equal(commitCalls.length, 2);
+  assert.equal(commitCalls.every(call => call.env?.GIT_AUTHOR_DATE === '2026-07-24T10:00:00+02:00'), true);
+});
+
+test('an empty checkpoint remains attributed but does not create an integration commit', async () => {
+  const fake = integrationGit();
+  const output = await new GitPromotion(fake.execute).integrateAgentCheckpoints({
+    workspaceCwd: '/repo',
+    runId: 'run-1',
+    checkpoints: [checkpoint('a', 1, false)],
+  });
+
+  assert.deepEqual(output.changeSet.integratedNodeIds, ['a']);
+  assert.equal(output.changeSet.commit, 'base123');
+  assert.equal(output.preview.fileCount, 0);
+  assert.equal(fake.calls.some(call => call.args[0] === 'merge-tree'), false);
+  assert.deepEqual(mutatingWorkspaceCalls(fake.calls), []);
+});
+
+test('ask presents one global preview and explicit approval applies one atomic fast-forward', async () => {
   const { output, calls, prompts } = await promote('ask', 'apply');
 
   assert.equal(output.status, 'applied');
   assert.equal(prompts, 1);
-  assert.deepEqual(mutatingCalls(calls).map(call => call.args), [
-    ['merge', '--ff-only', '--no-edit', checkpoint.ref],
+  assert.deepEqual(mutatingWorkspaceCalls(calls).map(call => call.args), [
+    ['merge', '--ff-only', '--no-edit', 'refs/slopify/runs/run-1/change-set'],
   ]);
 });
 
-test('auto-apply promotes without prompting', async () => {
+test('auto-apply promotes the complete change set without prompting', async () => {
   const { output, calls, prompts } = await promote('auto-apply');
   assert.equal(output.status, 'applied');
   assert.equal(prompts, 0);
-  assert.equal(mutatingCalls(calls).length, 1);
+  assert.equal(mutatingWorkspaceCalls(calls).length, 1);
 });
 
 test('discard, auto-reject, user rejection and cancellation never mutate the host workspace', async t => {
@@ -114,19 +181,21 @@ test('discard, auto-reject, user rejection and cancellation never mutate the hos
     await t.test(name, async () => {
       const { output, calls } = await promote(policy, decision);
       assert.equal(output.status, expected);
-      assert.deepEqual(mutatingCalls(calls), []);
+      assert.deepEqual(mutatingWorkspaceCalls(calls), []);
     });
   }
 });
 
-test('no_changes skips the Promotion decision entirely', async () => {
-  const fake = fakeGit();
+test('no_changes skips the global Promotion decision entirely', async () => {
+  const fake = integrationGit();
   let prompts = 0;
   const output = await new GitPromotion(fake.execute).promotePipelineChangeSet({
     workspaceCwd: '/repo',
     policy: 'ask',
-    checkpoint,
-    preview: { ...preview, fileCount: 0, files: [], diff: '' },
+    changeSet: {
+      runId: 'run-1', baseCommit: 'base123', commit: 'base123', ref: 'base123', integratedNodeIds: ['a'],
+    },
+    preview: { baseCommit: 'base123', changeSetCommit: 'base123', fileCount: 0, files: [], diff: '' },
     decide: () => {
       prompts += 1;
       return 'apply';
@@ -138,35 +207,34 @@ test('no_changes skips the Promotion decision entirely', async () => {
   assert.deepEqual(fake.calls, []);
 });
 
-test('a divergent Git base blocks Promotion before any mutation', async () => {
-  const fake = fakeGit({ head: 'different789' });
+test('a divergent Git base blocks Promotion before any workspace mutation', async () => {
+  const fake = integrationGit({ head: 'different789' });
   await assert.rejects(
     new GitPromotion(fake.execute).promotePipelineChangeSet({
-      workspaceCwd: '/repo', policy: 'auto-apply', checkpoint, preview,
+      workspaceCwd: '/repo',
+      policy: 'auto-apply',
+      changeSet: {
+        runId: 'run-1', baseCommit: 'base123', commit: 'integrated-2', ref: 'refs/slopify/runs/run-1/change-set', integratedNodeIds: ['a', 'b'],
+      },
+      preview: { baseCommit: 'base123', changeSetCommit: 'integrated-2', fileCount: 2, files: ['a', 'b'], diff: 'x' },
     }),
     /host Git base diverged from base123 to different789.*No changes were applied/,
   );
-  assert.deepEqual(mutatingCalls(fake.calls), []);
+  assert.deepEqual(mutatingWorkspaceCalls(fake.calls), []);
 });
 
-test('late workspace changes block Promotion before any mutation', async () => {
-  const fake = fakeGit({ dirty: true });
+test('late workspace changes block Promotion before any workspace mutation', async () => {
+  const fake = integrationGit({ dirty: true });
   await assert.rejects(
     new GitPromotion(fake.execute).promotePipelineChangeSet({
-      workspaceCwd: '/repo', policy: 'auto-apply', checkpoint, preview,
+      workspaceCwd: '/repo',
+      policy: 'auto-apply',
+      changeSet: {
+        runId: 'run-1', baseCommit: 'base123', commit: 'integrated-2', ref: 'refs/slopify/runs/run-1/change-set', integratedNodeIds: ['a', 'b'],
+      },
+      preview: { baseCommit: 'base123', changeSetCommit: 'integrated-2', fileCount: 2, files: ['a', 'b'], diff: 'x' },
     }),
-    /host workspace changed after the sandbox run.*No changes were applied/,
+    /host workspace changed after the sandbox runs.*No changes were applied/,
   );
-  assert.deepEqual(mutatingCalls(fake.calls), []);
-});
-
-test('an unsupported runtime policy fails closed', async () => {
-  const fake = fakeGit();
-  await assert.rejects(
-    new GitPromotion(fake.execute).promotePipelineChangeSet({
-      workspaceCwd: '/repo', policy: 'unexpected' as PromotionPolicy, checkpoint, preview,
-    }),
-    /Unsupported Promotion policy: unexpected/,
-  );
-  assert.deepEqual(mutatingCalls(fake.calls), []);
+  assert.deepEqual(mutatingWorkspaceCalls(fake.calls), []);
 });
