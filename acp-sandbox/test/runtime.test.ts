@@ -330,6 +330,46 @@ test('timeout aborts the active sbx exec process and exports a timed_out diagnos
   }
 });
 
+test('a hung cleanup is aborted on its own deadline and recorded without blocking the run', async () => {
+  const cwd = temporaryDirectory();
+  try {
+    const diagnosticsDirectory = path.join(cwd, '.acp', 'logs', 'sandboxes');
+    let cleanupSignal: AbortSignal | undefined;
+    const scenario = sandboxScenario();
+    const fake = fakeExecutor(request => {
+      if (request.args[0] === 'rm') {
+        cleanupSignal = request.signal;
+        return abortedExecution(request);
+      }
+      return scenario.respond(request);
+    });
+
+    const output = await new DockerSandboxRuntime(fake.execute, 10).runCodex({
+      workspaceCwd: cwd,
+      runId: 'run',
+      nodeId: 'cleanup-timeout',
+      attempt: 1,
+      prompt: 'work',
+      model: 'gpt',
+      diagnosticsDirectory,
+    });
+
+    assert.equal(output.status, 'no_changes');
+    assert.equal(cleanupSignal?.aborted, true);
+    const sandboxName = stableSandboxName('run', 'cleanup-timeout', 1);
+    const diagnostic = JSON.parse(fs.readFileSync(path.join(diagnosticsDirectory, `${sandboxName}.json`), 'utf8')) as {
+      cleanup: { attempted: boolean; timedOut: boolean; error: string };
+    };
+    assert.deepEqual(diagnostic.cleanup, {
+      attempted: true,
+      timedOut: true,
+      error: 'Sandbox cleanup timed out after 10 ms.',
+    });
+  } finally {
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 test('keepSandbox preserves resources and reports copyable commands after success and failure', async t => {
   const cases: Array<{ name: string; fail: boolean }> = [
     { name: 'success', fail: false },

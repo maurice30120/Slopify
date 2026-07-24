@@ -24,6 +24,7 @@ export {
 
 export {
   DockerSandboxRuntime,
+  DEFAULT_SANDBOX_CLEANUP_TIMEOUT_MS,
   MINIMUM_SBX_VERSION,
   SandboxRunCancelledError,
   SandboxRunTimeoutError,

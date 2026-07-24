@@ -10,6 +10,7 @@ import {
 } from './gitPromotion.js';
 
 export const MINIMUM_SBX_VERSION = '0.35.0';
+export const DEFAULT_SANDBOX_CLEANUP_TIMEOUT_MS = 30_000;
 
 export interface SubprocessRequest {
   command: string;
@@ -71,6 +72,7 @@ export type SandboxRunTerminalStatus = 'completed' | 'rejected' | 'cancelled' | 
 
 export interface SandboxCleanupDiagnostic {
   attempted: boolean;
+  timedOut?: boolean;
   exitCode?: number;
   stdout?: string;
   stderr?: string;
@@ -125,7 +127,10 @@ export class SandboxRunTimeoutError extends Error {
  * `docs/adr/0002-promote-one-multi-agent-change-set.md`.
  */
 export class DockerSandboxRuntime {
-  constructor(private readonly execute: SubprocessExecutor = createNodeSubprocessExecutor()) {}
+  constructor(
+    private readonly execute: SubprocessExecutor = createNodeSubprocessExecutor(),
+    private readonly cleanupTimeoutMs = DEFAULT_SANDBOX_CLEANUP_TIMEOUT_MS,
+  ) {}
 
   async runCodex(input: SandboxRunInput): Promise<SandboxRunResult> {
     const sandboxName = stableSandboxName(input.runId, input.nodeId, input.attempt);
@@ -265,8 +270,25 @@ export class DockerSandboxRuntime {
   }
 
   private async cleanupSandbox(cwd: string, sandboxName: string): Promise<SandboxCleanupDiagnostic> {
+    const cleanup = createExecutionSignal(undefined, this.cleanupTimeoutMs);
     try {
-      const result = await this.execute({ command: 'sbx', args: ['rm', '--force', sandboxName], cwd, stdin: 'ignore' });
+      const result = await this.execute({
+        command: 'sbx',
+        args: ['rm', '--force', sandboxName],
+        cwd,
+        stdin: 'ignore',
+        signal: cleanup.signal,
+      });
+      if (cleanup.timedOut()) {
+        return {
+          attempted: true,
+          timedOut: true,
+          exitCode: result.exitCode,
+          stdout: result.stdout,
+          stderr: result.stderr,
+          error: cleanupTimeoutMessage(this.cleanupTimeoutMs),
+        };
+      }
       return {
         attempted: true,
         exitCode: result.exitCode,
@@ -274,7 +296,11 @@ export class DockerSandboxRuntime {
         stderr: result.stderr,
       };
     } catch (error: unknown) {
-      return { attempted: true, error: formatUnknownError(error) };
+      return cleanup.timedOut()
+        ? { attempted: true, timedOut: true, error: cleanupTimeoutMessage(this.cleanupTimeoutMs) }
+        : { attempted: true, error: formatUnknownError(error) };
+    } finally {
+      cleanup.dispose();
     }
   }
 
@@ -420,6 +446,10 @@ async function writeSandboxDiagnostic(
 
 function formatUnknownError(error: unknown): string {
   return error instanceof Error && error.message ? error.message : String(error);
+}
+
+function cleanupTimeoutMessage(timeoutMs: number): string {
+  return `Sandbox cleanup timed out after ${timeoutMs} ms.`;
 }
 
 function extractVersion(output: string): string | undefined {
