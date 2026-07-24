@@ -44,7 +44,7 @@ export interface SandboxRunInput {
 }
 
 export interface SandboxRunResult {
-  status: PromotionStatus;
+  status?: PromotionStatus;
   checkpointStatus: 'checkpointed' | 'no_changes';
   sandboxName: string;
   stdout: string;
@@ -84,17 +84,21 @@ export class DockerSandboxRuntime {
         attempt: input.attempt,
         signal: input.signal,
       });
-      const promotion = await gitPromotion.promotePipelineChangeSet({
-        workspaceCwd: input.workspaceCwd,
-        policy: input.promotionPolicy ?? 'discard',
-        decide: input.decidePromotion,
-        checkpoint: checkpoint.checkpoint,
-        preview: checkpoint.preview,
-        signal: input.signal,
-      });
+      const promotionStatus = checkpoint.checkpointStatus === 'no_changes'
+        ? 'no_changes' as const
+        : input.promotionPolicy
+          ? (await gitPromotion.promotePipelineChangeSet({
+              workspaceCwd: input.workspaceCwd,
+              policy: input.promotionPolicy,
+              decide: input.decidePromotion,
+              checkpoint: checkpoint.checkpoint,
+              preview: checkpoint.preview,
+              signal: input.signal,
+            })).status
+          : undefined;
       return {
         ...checkpoint,
-        status: promotion.status,
+        ...(promotionStatus ? { status: promotionStatus } : {}),
         sandboxName,
         stdout: codex.stdout,
         stderr: codex.stderr,
