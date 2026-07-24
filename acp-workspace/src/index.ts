@@ -60,6 +60,7 @@ export type {
   SandcastlePromotionDecision,
   SandcastlePromotionRequest,
   SandcastlePreview,
+  PipelineChangeSetPromotionRequest,
   SandcastleAgentConfig,
   SandboxAgentConfig,
   WorkspaceRuntimeOptions,
