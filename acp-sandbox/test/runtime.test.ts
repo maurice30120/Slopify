@@ -1,9 +1,16 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import test from 'node:test';
 
 import {
   DockerSandboxRuntime,
+  SandboxRunCancelledError,
+  SandboxRunTimeoutError,
+  retainedSandboxCommands,
   stableSandboxName,
+  type RetainedSandbox,
   type SubprocessExecutor,
   type SubprocessRequest,
   type SubprocessResult,
@@ -13,7 +20,7 @@ function result(stdout = '', stderr = '', exitCode = 0): SubprocessResult {
   return { exitCode, stdout, stderr };
 }
 
-function fakeExecutor(respond: (request: SubprocessRequest) => SubprocessResult): { execute: SubprocessExecutor; calls: SubprocessRequest[] } {
+function fakeExecutor(respond: (request: SubprocessRequest) => SubprocessResult | Promise<SubprocessResult>): { execute: SubprocessExecutor; calls: SubprocessRequest[] } {
   const calls: SubprocessRequest[] = [];
   return {
     calls,
@@ -40,7 +47,7 @@ function sandboxScenario(options: {
         return options.fetchFailure ? result('', options.fetchFailure, 1) : result();
       }
       if (request.command === 'git' && request.args[0] === 'diff' && request.args.includes('--name-only')) {
-        return result((options.changedFiles ?? []).map(path => `${path}\n`).join(''));
+        return result((options.changedFiles ?? []).map(filePath => `${filePath}\n`).join(''));
       }
       if (request.command === 'git' && request.args[0] === 'diff') return result(options.diff ?? '');
 
@@ -64,6 +71,21 @@ function sandboxScenario(options: {
 function hostMutatingGitCalls(calls: SubprocessRequest[]): SubprocessRequest[] {
   const mutating = new Set(['checkout', 'switch', 'reset', 'merge', 'cherry-pick', 'rebase', 'apply', 'am']);
   return calls.filter(call => call.command === 'git' && mutating.has(call.args[0] ?? ''));
+}
+
+function temporaryDirectory(): string {
+  return fs.mkdtempSync(path.join(os.tmpdir(), 'slopify-sandbox-lifecycle-'));
+}
+
+function abortedExecution(request: SubprocessRequest): Promise<SubprocessResult> {
+  return new Promise((_resolve, reject) => {
+    const rejectAbort = (): void => reject(Object.assign(new Error('subprocess aborted'), { name: 'AbortError' }));
+    if (request.signal?.aborted) {
+      rejectAbort();
+      return;
+    }
+    request.signal?.addEventListener('abort', rejectAbort, { once: true });
+  });
 }
 
 test('creates and previews an attributed Agent Checkpoint without mutating the host workspace', async () => {
@@ -218,4 +240,147 @@ test('cleans the sandbox when Codex fails', async () => {
     : scenario.respond(request));
   await assert.rejects(new DockerSandboxRuntime(fake.execute).runCodex({ workspaceCwd: '/repo', runId: 'run', nodeId: 'node', attempt: 1, prompt: 'x', model: 'gpt' }), /codex failed/);
   assert.deepEqual(fake.calls.at(-1)?.args.slice(0, 2), ['rm', '--force']);
+});
+
+test('cleans the sandbox after an explicit Promotion rejection', async () => {
+  const fake = fakeExecutor(sandboxScenario({ changedFiles: ['src/change.ts'], diff: '+change\n' }).respond);
+  const output = await new DockerSandboxRuntime(fake.execute).runCodex({
+    workspaceCwd: '/repo', runId: 'run', nodeId: 'node', attempt: 1,
+    prompt: 'change', model: 'gpt', promotionPolicy: 'auto-reject',
+  });
+
+  assert.equal(output.status, 'rejected');
+  assert.deepEqual(fake.calls.at(-1)?.args.slice(0, 2), ['rm', '--force']);
+});
+
+test('an already absent sandbox does not turn successful cleanup into a pipeline failure', async () => {
+  const cwd = temporaryDirectory();
+  try {
+    const diagnosticsDirectory = path.join(cwd, '.acp', 'logs', 'sandboxes');
+    const sandboxName = stableSandboxName('run', 'node', 1);
+    const diagnosticPath = path.join(diagnosticsDirectory, `${sandboxName}.json`);
+    const scenario = sandboxScenario();
+    const fake = fakeExecutor(request => {
+      if (request.args[0] === 'rm') {
+        assert.equal(fs.existsSync(diagnosticPath), true, 'diagnostics must exist before cleanup');
+        return result('', `sandbox ${sandboxName} not found`, 1);
+      }
+      return scenario.respond(request);
+    });
+
+    const output = await new DockerSandboxRuntime(fake.execute).runCodex({
+      workspaceCwd: cwd, runId: 'run', nodeId: 'node', attempt: 1,
+      prompt: 'inspect', model: 'gpt', diagnosticsDirectory,
+    });
+
+    assert.equal(output.status, 'no_changes');
+    const diagnostic = JSON.parse(fs.readFileSync(diagnosticPath, 'utf8')) as { cleanup: { exitCode: number }; status: string };
+    assert.equal(diagnostic.status, 'completed');
+    assert.equal(diagnostic.cleanup.exitCode, 1);
+  } finally {
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test('external cancellation aborts the active sbx exec process and still cleans the sandbox', async () => {
+  const controller = new AbortController();
+  let started: (() => void) | undefined;
+  const startedPromise = new Promise<void>(resolve => { started = resolve; });
+  let codexSignal: AbortSignal | undefined;
+  const scenario = sandboxScenario();
+  const fake = fakeExecutor(request => {
+    if (request.args[0] === 'exec' && request.args.includes('codex')) {
+      codexSignal = request.signal;
+      started?.();
+      return abortedExecution(request);
+    }
+    return scenario.respond(request);
+  });
+
+  const running = new DockerSandboxRuntime(fake.execute).runCodex({
+    workspaceCwd: '/repo', runId: 'run', nodeId: 'cancelled', attempt: 1,
+    prompt: 'work', model: 'gpt', signal: controller.signal,
+  });
+  await startedPromise;
+  controller.abort();
+
+  await assert.rejects(running, SandboxRunCancelledError);
+  assert.equal(codexSignal?.aborted, true);
+  assert.deepEqual(fake.calls.at(-1)?.args.slice(0, 2), ['rm', '--force']);
+});
+
+test('timeout aborts the active sbx exec process and exports a timed_out diagnostic', async () => {
+  const cwd = temporaryDirectory();
+  try {
+    const diagnosticsDirectory = path.join(cwd, '.acp', 'logs', 'sandboxes');
+    let codexSignal: AbortSignal | undefined;
+    const scenario = sandboxScenario();
+    const fake = fakeExecutor(request => {
+      if (request.args[0] === 'exec' && request.args.includes('codex')) {
+        codexSignal = request.signal;
+        return abortedExecution(request);
+      }
+      return scenario.respond(request);
+    });
+
+    await assert.rejects(
+      new DockerSandboxRuntime(fake.execute).runCodex({
+        workspaceCwd: cwd, runId: 'run', nodeId: 'timeout', attempt: 1,
+        prompt: 'work', model: 'gpt', timeoutMs: 10, diagnosticsDirectory,
+      }),
+      SandboxRunTimeoutError,
+    );
+
+    assert.equal(codexSignal?.aborted, true);
+    assert.deepEqual(fake.calls.at(-1)?.args.slice(0, 2), ['rm', '--force']);
+    const sandboxName = stableSandboxName('run', 'timeout', 1);
+    const diagnostic = JSON.parse(fs.readFileSync(path.join(diagnosticsDirectory, `${sandboxName}.json`), 'utf8')) as { status: string };
+    assert.equal(diagnostic.status, 'timed_out');
+  } finally {
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test('keepSandbox preserves resources and reports copyable commands after success and failure', async t => {
+  const cases: Array<{ name: string; fail: boolean }> = [
+    { name: 'success', fail: false },
+    { name: 'failure', fail: true },
+  ];
+
+  for (const current of cases) {
+    await t.test(current.name, async () => {
+      const cwd = temporaryDirectory();
+      try {
+        const retained: RetainedSandbox[] = [];
+        const scenario = sandboxScenario();
+        const fake = fakeExecutor(request => current.fail && request.args[0] === 'exec' && request.args.includes('codex')
+          ? result('', 'codex failed', 7)
+          : scenario.respond(request));
+        const run = new DockerSandboxRuntime(fake.execute).runCodex({
+          workspaceCwd: cwd,
+          runId: 'run',
+          nodeId: current.name,
+          attempt: 1,
+          prompt: 'work',
+          model: 'gpt',
+          keepSandbox: true,
+          diagnosticsDirectory: path.join(cwd, '.acp', 'logs', 'sandboxes'),
+          onSandboxRetained: sandbox => { retained.push(sandbox); },
+        });
+
+        if (current.fail) await assert.rejects(run, /codex failed/);
+        else await run;
+
+        const sandboxName = stableSandboxName('run', current.name, 1);
+        assert.deepEqual(retained, [{
+          sandboxName,
+          commands: retainedSandboxCommands(sandboxName),
+          diagnosticsPath: path.join(cwd, '.acp', 'logs', 'sandboxes', `${sandboxName}.json`),
+        }]);
+        assert.equal(fake.calls.some(call => call.args[0] === 'rm'), false);
+      } finally {
+        fs.rmSync(cwd, { recursive: true, force: true });
+      }
+    });
+  }
 });
