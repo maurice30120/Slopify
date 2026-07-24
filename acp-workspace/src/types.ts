@@ -4,7 +4,10 @@ import type {
   SandcastlePromotion,
   SandcastleProvider,
 } from '@acp-client/sandcastle';
-import type { SandboxAgentConfig } from '@acp-client/sandbox';
+import type {
+  PipelineChangeSetPreview,
+  SandboxAgentConfig,
+} from '@acp-client/sandbox';
 
 export type {
   SandcastleAgentConfig,
@@ -82,6 +85,9 @@ export interface RuntimePermissionContext {
 export interface WorkspaceRuntimeHost {
   permissionContext(): RuntimePermissionContext | undefined;
   requestPromotion(request: SandcastlePromotionRequest): Promise<SandcastlePromotionDecision>;
+  requestPipelinePromotion?(
+    request: PipelineChangeSetPromotionRequest,
+  ): Promise<SandcastlePromotionDecision>;
   logger: Logger;
 }
 
@@ -99,6 +105,13 @@ export interface SandcastlePreview {
   branch: string;
   baseRef: string;
   worktreePath: string;
+}
+
+export interface PipelineChangeSetPromotionRequest {
+  runId: string;
+  pipelineId: string;
+  integratedNodeIds: string[];
+  preview: PipelineChangeSetPreview;
 }
 
 export interface Logger {
