@@ -1,3 +1,5 @@
+import * as path from 'node:path';
+
 import {
   orderPipelineNodeIdsForIntegration,
   renderAcpPrompt,
@@ -30,6 +32,7 @@ import {
   type AgentCheckpointResult,
   type PromotionDecision,
   type PromotionPolicy,
+  type RetainedSandbox,
   type SubprocessExecutor,
 } from '@acp-client/sandbox';
 
@@ -61,6 +64,10 @@ export interface CreateWorkspaceRuntimeOptions extends WorkspaceRuntimeOptions {
   resolvedCatalog?: AgentCatalog;
   /** Point d'injection interne et de test pour exercer Docker Sandbox sans microVM. */
   sandboxExecutor?: SubprocessExecutor;
+  /** Preserve every Docker Sandbox created by this runtime. */
+  keepSandboxes?: boolean;
+  /** Report a retained sandbox after its diagnostics have been exported. */
+  onSandboxRetained?: (sandbox: RetainedSandbox) => void | Promise<void>;
 }
 
 /**
@@ -97,7 +104,11 @@ export function createWorkspaceRuntime(options: CreateWorkspaceRuntimeOptions): 
         model: config.model,
         effort: config.effort,
         signal: input.signal,
+        timeoutMs: resolveTimeouts(catalog.native.pipeline.timeouts).promptMs,
         workspaceEffects: input.sideEffects === 'workspace',
+        keepSandbox: options.keepSandboxes,
+        diagnosticsDirectory: path.join(input.workspaceCwd, '.acp', 'logs', 'sandboxes'),
+        onSandboxRetained: options.onSandboxRetained,
       });
       if (input.sideEffects === 'workspace') {
         const runId = input.runId ?? 'run';
