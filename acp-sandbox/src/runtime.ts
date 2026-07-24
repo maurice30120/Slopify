@@ -5,9 +5,6 @@ import {
   GitPromotion,
   type AgentCheckpoint,
   type AgentCheckpointPreview,
-  type PromotionDecider,
-  type PromotionPolicy,
-  type PromotionStatus,
 } from './gitPromotion.js';
 
 export const MINIMUM_SBX_VERSION = '0.35.0';
@@ -19,6 +16,7 @@ export interface SubprocessRequest {
   stdin: 'ignore';
   observeOutput?: boolean;
   signal?: AbortSignal;
+  env?: NodeJS.ProcessEnv;
 }
 
 export interface SubprocessResult {
@@ -39,12 +37,10 @@ export interface SandboxRunInput {
   effort?: 'low' | 'medium' | 'high' | 'xhigh';
   signal?: AbortSignal;
   workspaceEffects?: boolean;
-  promotionPolicy?: PromotionPolicy;
-  decidePromotion?: PromotionDecider;
 }
 
 export interface SandboxRunResult {
-  status?: PromotionStatus;
+  status?: 'no_changes';
   checkpointStatus: 'checkpointed' | 'no_changes';
   sandboxName: string;
   stdout: string;
@@ -56,9 +52,9 @@ export interface SandboxRunResult {
 /**
  * Orchestre l'exécution d'un nœud Codex dans un clone Docker Sandbox privé.
  *
- * Le runtime valide les prérequis, crée et nettoie la sandbox, transmet les
- * sorties de Codex, puis délègue à GitPromotion la création du checkpoint et
- * l'éventuelle Promotion atomique vers le workspace hôte.
+ * Le runtime crée un Agent Checkpoint attribuable et le récupère côté hôte,
+ * mais ne le promeut jamais. L'intégration et la Promotion appartiennent au
+ * coordinateur du pipeline une fois le DAG complet.
  */
 export class DockerSandboxRuntime {
   constructor(private readonly execute: SubprocessExecutor = createNodeSubprocessExecutor()) {}
@@ -81,8 +77,7 @@ export class DockerSandboxRuntime {
       codexArgs.push(input.prompt);
       const codex = await this.requireSuccess({ command: 'sbx', args: codexArgs, cwd: input.workspaceCwd, stdin: 'ignore', observeOutput: true, signal: input.signal }, 'run Codex non-interactively');
 
-      const gitPromotion = new GitPromotion(this.execute);
-      const checkpoint = await gitPromotion.createAgentCheckpoint({
+      const checkpoint = await new GitPromotion(this.execute).createAgentCheckpoint({
         workspaceCwd: input.workspaceCwd,
         sandboxName,
         baseCommit,
@@ -91,21 +86,9 @@ export class DockerSandboxRuntime {
         attempt: input.attempt,
         signal: input.signal,
       });
-      const promotionStatus = checkpoint.checkpointStatus === 'no_changes'
-        ? 'no_changes' as const
-        : input.promotionPolicy
-          ? (await gitPromotion.promotePipelineChangeSet({
-              workspaceCwd: input.workspaceCwd,
-              policy: input.promotionPolicy,
-              decide: input.decidePromotion,
-              checkpoint: checkpoint.checkpoint,
-              preview: checkpoint.preview,
-              signal: input.signal,
-            })).status
-          : undefined;
       return {
         ...checkpoint,
-        ...(promotionStatus ? { status: promotionStatus } : {}),
+        ...(checkpoint.checkpointStatus === 'no_changes' ? { status: 'no_changes' as const } : {}),
         sandboxName,
         stdout: codex.stdout,
         stderr: codex.stderr,
@@ -165,6 +148,7 @@ export function createNodeSubprocessExecutor(): SubprocessExecutor {
       cwd: request.cwd,
       stdio: ['ignore', 'pipe', 'pipe'],
       signal: request.signal,
+      env: request.env ? { ...process.env, ...request.env } : process.env,
     });
     let stdout = '';
     let stderr = '';
