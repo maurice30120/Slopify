@@ -4,7 +4,12 @@ import {
   mapPolicyToLegacyPermissions,
   mapPolicyToLegacySideEffects,
 } from "./PipelinePolicy";
-import type { PipelineAgentRunner, PipelineStepStatusUpdate } from "./PipelineAgentRunner";
+import type {
+  PipelineAgentRunner,
+  PipelineChangeSetFinalizationInput,
+  PipelineChangeSetFinalizationResult,
+  PipelineStepStatusUpdate,
+} from "./PipelineAgentRunner";
 import type {
   AgentNodeSession,
   AgentNodeSessionFactory,
@@ -43,8 +48,18 @@ export class PipelineRuntimeAgentAdapter implements PipelineRuntimeAdapter {
     }
   }
 
+  async finalizePipelineChangeSet(
+    input: PipelineChangeSetFinalizationInput,
+  ): Promise<PipelineChangeSetFinalizationResult | undefined> {
+    return this.options.runAgent.finalizePipelineChangeSet?.(input);
+  }
+
   asSessionFactory(): AgentNodeSessionFactory {
-    return input => this.createSession(input);
+    const factory = (input => this.createSession(input)) as AgentNodeSessionFactory & {
+      finalizePipelineChangeSet?: PipelineRuntimeAgentAdapter["finalizePipelineChangeSet"];
+    };
+    factory.finalizePipelineChangeSet = input => this.finalizePipelineChangeSet(input);
+    return factory;
   }
 }
 
