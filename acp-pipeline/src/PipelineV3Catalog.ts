@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 
-import { compilePipelineV3Definition } from "./PipelineV3Compiler";
+import { compilePipelineV3Definition } from "./PipelineV3DefinitionCompiler";
 import type { CompiledPipelineProgram } from "./PipelineV3Types";
 
 export interface PipelineV3CatalogSource {

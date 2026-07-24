@@ -295,23 +295,23 @@ export class DockerSandboxRuntime {
 
   private async ensureGlobalNetworkPolicy(cwd: string, signal?: AbortSignal): Promise<void> {
     if (!this.networkPolicyReady) {
-      this.networkPolicyReady = this.initializeGlobalNetworkPolicy(cwd, signal);
+      const initialization = this.initializeGlobalNetworkPolicy(cwd);
+      this.networkPolicyReady = initialization;
+      void initialization.catch(() => {
+        if (this.networkPolicyReady === initialization) {
+          this.networkPolicyReady = undefined;
+        }
+      });
     }
-    try {
-      await this.networkPolicyReady;
-    } catch (error) {
-      this.networkPolicyReady = undefined;
-      throw error;
-    }
+    await waitForPromise(this.networkPolicyReady, signal);
   }
 
-  private async initializeGlobalNetworkPolicy(cwd: string, signal?: AbortSignal): Promise<void> {
+  private async initializeGlobalNetworkPolicy(cwd: string): Promise<void> {
     const current = await this.execute({
       command: 'sbx',
       args: ['policy', 'ls', '--json'],
       cwd,
       stdin: 'ignore',
-      signal,
     });
     if (current.exitCode === 0) {
       return;
@@ -330,7 +330,6 @@ export class DockerSandboxRuntime {
       args: ['policy', 'init', preset],
       cwd,
       stdin: 'ignore',
-      signal,
     }, `initialize the Docker Sandbox global network policy as ${choice}`);
     this.options.reportNetworkPolicy?.(`Docker Sandbox global network policy initialized as ${choice}. Change it later with \`sbx policy\`.`);
   }
@@ -524,6 +523,39 @@ function networkPolicyPreset(choice: DockerSandboxNetworkPolicyChoice): DockerSa
     case 'Balanced': return 'balanced';
     case 'Locked Down': return 'deny-all';
   }
+}
+
+function waitForPromise<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) {
+    return promise;
+  }
+  if (signal.aborted) {
+    return Promise.reject(abortError(signal));
+  }
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = (): void => {
+      signal.removeEventListener('abort', onAbort);
+      reject(abortError(signal));
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+    void promise.then(
+      value => {
+        signal.removeEventListener('abort', onAbort);
+        resolve(value);
+      },
+      error => {
+        signal.removeEventListener('abort', onAbort);
+        reject(error);
+      },
+    );
+  });
+}
+
+function abortError(signal: AbortSignal): Error {
+  if (signal.reason instanceof Error) {
+    return signal.reason;
+  }
+  return Object.assign(new Error('The operation was aborted.'), { name: 'AbortError' });
 }
 
 function extractVersion(output: string): string | undefined {

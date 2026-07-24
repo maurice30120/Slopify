@@ -293,6 +293,40 @@ test('reuses an initialized global network policy without prompting again', asyn
   assert.equal(fake.calls.some(call => call.args[0] === 'policy' && call.args[1] === 'init' && call.args[2] !== '--help'), false);
 });
 
+test('cancelling one preflight does not abort global policy initialization shared with another run', async () => {
+  const baseline = sandboxScenario();
+  let announceInitializationStarted: (() => void) | undefined;
+  const initializationStarted = new Promise<void>(resolve => { announceInitializationStarted = resolve; });
+  let finishInitialization: ((value: SubprocessResult) => void) | undefined;
+  const initialization = new Promise<SubprocessResult>(resolve => { finishInitialization = resolve; });
+  const fake = fakeExecutor(request => {
+    if (request.args.join(' ') === 'policy ls --json') return result('', 'policy is not initialized', 1);
+    if (request.args.join(' ') === 'policy init balanced') {
+      announceInitializationStarted?.();
+      return initialization;
+    }
+    return baseline.respond(request);
+  });
+  const runtime = new DockerSandboxRuntime(fake.execute, {
+    selectNetworkPolicy: () => 'Balanced',
+  });
+  const cancelled = new AbortController();
+
+  const firstPreflight = runtime.preflightWorkspace('/repo', true, cancelled.signal);
+  await initializationStarted;
+  const secondPreflight = runtime.preflightWorkspace('/repo');
+  cancelled.abort();
+
+  await assert.rejects(firstPreflight, error => error instanceof Error && error.name === 'AbortError');
+  finishInitialization?.(result());
+  await secondPreflight;
+
+  assert.equal(fake.calls.filter(call => call.args.join(' ') === 'policy ls --json').length, 1);
+  const initCalls = fake.calls.filter(call => call.args.join(' ') === 'policy init balanced');
+  assert.equal(initCalls.length, 1);
+  assert.equal(initCalls[0].signal, undefined);
+});
+
 test('fails before sandbox creation when global network policy initialization fails', async () => {
   const baseline = sandboxScenario();
   const fake = fakeExecutor(request => {
