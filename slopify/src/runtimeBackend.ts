@@ -24,6 +24,20 @@ export const createRuntimeCliBackend: CliPipelineBackendFactory = (workspaceCwd,
       if (selected === 'Reject Sandcastle changes') return 'reject';
       return 'cancelled';
     },
+    requestPipelinePromotion: async request => {
+      const selected = await context.terminal.select(
+        [
+          `Pipeline Change Set for ${request.pipelineId}`,
+          `Agent checkpoints: ${request.integratedNodeIds.join(', ') || '(none)'}`,
+          `Files changed: ${request.preview.fileCount}`,
+          `Base: ${request.preview.baseCommit || '(unknown)'}`,
+        ].join('\n'),
+        ['Apply Pipeline Change Set', 'Reject Pipeline Change Set'],
+      );
+      if (selected === 'Apply Pipeline Change Set') return 'approve';
+      if (selected === 'Reject Pipeline Change Set') return 'reject';
+      return 'cancelled';
+    },
     logger: context.logger,
   }});
 

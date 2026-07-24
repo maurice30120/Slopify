@@ -77,6 +77,9 @@ export function validateAdapterSupportsPolicy(
   capabilities: PipelineAdapterPolicyCapabilities,
   policy: NormalizedPipelinePolicy,
 ): PipelinePolicyDenial[] {
+  // Une politique non garantie est refusée avant l'exécution plutôt que dégradée
+  // silencieusement : l'isolation annoncée au pipeline doit rester vraie quel
+  // que soit l'adaptateur choisi.
   const denials: PipelinePolicyDenial[] = [];
   for (const field of ["filesystem", "terminal", "network", "promotion"] as const) {
     if (!capabilities[field].includes(policy[field] as never)) {
@@ -139,5 +142,7 @@ export function mapPolicyToLegacySideEffects(policy: NormalizedPipelinePolicy): 
 }
 
 export function mapPolicyToLegacyPermissions(_policy: NormalizedPipelinePolicy): "ask" | "allowAll" {
+  // Le vocabulaire legacy ne peut pas exprimer les quatre axes de la politique.
+  // Conserver `ask` évite qu'une conversion approximative élargisse les droits.
   return "ask";
 }

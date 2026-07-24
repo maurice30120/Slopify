@@ -6,9 +6,9 @@ import type { PipelineCompileResult } from "./PipelineV3Types";
 export { parseArtifactProducer } from "./PipelineV3Compiler";
 
 /**
- * Public compiler entrypoint. Catalog loading resolves instructionsFile content
- * first; direct callers still get the renamed field normalized into the
- * compiler's compatibility slot.
+ * Point d'entrée public du compilateur. Le catalogue résout d'abord le contenu
+ * de instructionsFile ; les appelants directs bénéficient aussi de la
+ * normalisation du champ renommé dans l'emplacement de compatibilité.
  */
 export function compilePipelineV3Definition(
   value: unknown,

@@ -33,7 +33,8 @@ export function parseCodexJsonStreamErrors(text: string): string | undefined {
         }
       }
     } catch {
-      // Ignore non-JSON lines.
+      // Le flux Codex peut mêler diagnostics texte et événements JSON. Une ligne
+      // non JSON ne doit pas empêcher de récupérer une erreur structurée ultérieure.
     }
   }
   return lastError;
@@ -78,7 +79,8 @@ export function extractCodexRolloutError(content: string): string | undefined {
         }
       }
     } catch {
-      // Ignore malformed rollout lines.
+      // Un rollout partiellement écrit reste exploitable : ignorer uniquement la
+      // ligne invalide permet encore de retrouver un événement d'erreur précédent.
     }
   }
 

@@ -1,4 +1,4 @@
-// Configuration workspace I/O
+// Entrées/sorties de la configuration du workspace
 export {
   loadAcpConfig,
   parseAcpConfig,
@@ -10,7 +10,7 @@ export {
   removeAgentConfig,
 } from './config/config.js';
 
-// Catalogs
+// Catalogues
 export {
   getPipelinePrograms,
   getPipelineProgramForAgent,
@@ -27,7 +27,7 @@ export type { SkillCatalogEntry, SkillCatalogOptions } from './catalog/skillCata
 export { resolveWorkspaceAgent, listWorkspaceAgentNames } from './catalog/virtualAgentCatalog.js';
 export type { AgentResolution } from './catalog/virtualAgentCatalog.js';
 
-// Workspace runtime
+// Runtime du workspace
 export {
   createWorkspaceRuntime,
   type WorkspaceRuntime,
@@ -60,6 +60,7 @@ export type {
   SandcastlePromotionDecision,
   SandcastlePromotionRequest,
   SandcastlePreview,
+  PipelineChangeSetPromotionRequest,
   SandcastleAgentConfig,
   SandboxAgentConfig,
   WorkspaceRuntimeOptions,

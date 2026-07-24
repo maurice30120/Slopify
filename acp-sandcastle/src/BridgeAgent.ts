@@ -56,6 +56,13 @@ export interface SandcastleRuntime {
   createSandboxProvider(config: BridgeConfig, cwd: string, branch?: string): CreateSandboxOptions['sandbox'];
 }
 
+/**
+ * Présente le runtime Sandcastle derrière ACP afin que le pipeline ne dépende ni
+ * de son cycle de vie ni de ses objets concrets. Les opérations d'aperçu,
+ * d'application et de rejet restent des extensions possédées par le bridge.
+ *
+ * Voir `docs/adr/0003-keep-acp-as-the-sandbox-runtime-boundary.md`.
+ */
 export class SandcastleBridgeAgent implements Agent {
   private readonly sessions = new Map<string, BridgeSession>();
   private toolCallSequence = 0;

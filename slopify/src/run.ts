@@ -43,6 +43,9 @@ export async function runPipelineInteractive(
       continue;
     }
 
+    // `--yes` automatise les pauses ordinaires, jamais une Promotion : celle-ci
+    // constitue l'unique mutation atomique du workspace et exige donc toujours
+    // une décision explicite de l'utilisateur.
     const approved = interaction.kind === 'approval' && command.yes
       ? true
       : await terminal.confirm(

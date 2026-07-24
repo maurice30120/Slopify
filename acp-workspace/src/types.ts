@@ -4,7 +4,10 @@ import type {
   SandcastlePromotion,
   SandcastleProvider,
 } from '@acp-client/sandcastle';
-import type { SandboxAgentConfig } from '@acp-client/sandbox';
+import type {
+  PipelineChangeSetPreview,
+  SandboxAgentConfig,
+} from '@acp-client/sandbox';
 
 export type {
   SandcastleAgentConfig,
@@ -76,12 +79,15 @@ export interface RuntimePermissionContext {
 }
 
 /**
- * Host contract for workspace composition.
- * Hosts provide UI decisions, permissions, and logging.
+ * Contrat de l'hôte pour composer le workspace.
+ * L'hôte fournit les décisions d'interface, les permissions et la journalisation.
  */
 export interface WorkspaceRuntimeHost {
   permissionContext(): RuntimePermissionContext | undefined;
   requestPromotion(request: SandcastlePromotionRequest): Promise<SandcastlePromotionDecision>;
+  requestPipelinePromotion?(
+    request: PipelineChangeSetPromotionRequest,
+  ): Promise<SandcastlePromotionDecision>;
   logger: Logger;
 }
 
@@ -101,6 +107,13 @@ export interface SandcastlePreview {
   worktreePath: string;
 }
 
+export interface PipelineChangeSetPromotionRequest {
+  runId: string;
+  pipelineId: string;
+  integratedNodeIds: string[];
+  preview: PipelineChangeSetPreview;
+}
+
 export interface Logger {
   log(message: string): void;
   error(message: string, error?: unknown): void;
@@ -115,7 +128,7 @@ export const consoleLogger: Logger = {
 };
 
 /**
- * Options for creating a WorkspaceRuntime
+ * Options de création d'un WorkspaceRuntime.
  */
 export interface WorkspaceRuntimeOptions {
   workspaceCwd: string;

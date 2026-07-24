@@ -72,6 +72,9 @@ export class FilePipelineRunStore implements PipelineRunStore {
   async save(snapshot: PipelineRuntimeSnapshot): Promise<void> {
     const path = this.snapshotPath(snapshot.runId);
     await mkdir(dirname(path), { recursive: true });
+    // Le renommage remplace atomiquement le snapshot : après une interruption,
+    // une reprise lit soit l'ancienne version complète, soit la nouvelle, jamais
+    // un JSON partiellement écrit.
     const tempPath = `${path}.${process.pid}.${Date.now()}.tmp`;
     await writeFile(tempPath, `${JSON.stringify(snapshot, null, 2)}\n`, "utf8");
     await rename(tempPath, path);

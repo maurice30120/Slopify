@@ -16,11 +16,15 @@ export function validatePath(filePath: string, workspaceRoot: string): string {
   const rootPath = path.resolve(workspaceRoot);
   const resolvedPath = path.resolve(rootPath, filePath);
 
+  // Le contrôle lexical bloque `..` et les chemins absolus avant tout accès au
+  // disque. Il ne suffit toutefois pas contre un lien symbolique déjà présent.
   if (!isWithinRoot(rootPath, resolvedPath)) {
     throw new Error(`Path escapes workspace boundary: ${filePath}`);
   }
 
   const rootRealPath = realpathSync(rootPath);
+  // La cible peut ne pas exister lors d'une écriture. On résout donc son ancêtre
+  // existant le plus proche pour détecter aussi les sorties via lien symbolique.
   const existingPath = findExistingAncestor(resolvedPath);
   const existingRealPath = realpathSync(existingPath);
   if (!isWithinRoot(rootRealPath, existingRealPath)) {
@@ -31,6 +35,9 @@ export function validatePath(filePath: string, workspaceRoot: string): string {
 }
 
 export function filterEnv(agentEnv: Record<string, string>): Record<string, string> {
+  // Ces variables peuvent détourner le chargeur dynamique, Node ou la résolution
+  // des exécutables avant même l'application des permissions ACP. La comparaison
+  // reste insensible à la casse pour conserver le même garde-fou sur Windows.
   return Object.fromEntries(
     Object.entries(agentEnv).filter(([key]) => !ENV_DENYLIST.has(key.toUpperCase())),
   );

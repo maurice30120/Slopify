@@ -38,7 +38,11 @@ export interface AcpRunResult<TFinal = undefined> {
   finalization: TFinal;
 }
 
-/** Executes one already-resolved ACP request without discovering workspace state. */
+/**
+ * Exécute une requête ACP déjà résolue, sans redécouvrir la configuration du
+ * workspace. L'authentification peut recréer une session une seule fois, puis
+ * tous les chemins terminaux convergent vers la même libération de connexion.
+ */
 export class AcpRunner {
   async run<TFinal = undefined>(request: AcpRunRequest<TFinal>): Promise<AcpRunResult<TFinal>> {
     const sessionUpdateHandler = new SessionUpdateHandler();
@@ -46,6 +50,9 @@ export class AcpRunner {
     let sessionId: string | null = null;
     let collectedText = '';
     let disposed = false;
+    // L'annulation asynchrone et le finally peuvent se croiser. Cette garde
+    // garantit que les processus et connexions sous-jacents ne sont libérés
+    // qu'une seule fois.
     const dispose = () => {
       if (disposed) return;
       disposed = true;
@@ -66,6 +73,9 @@ export class AcpRunner {
     request.signal?.addEventListener('abort', onAbort, { once: true });
     const listener = (update: SessionNotification) => {
       if (sessionId && update.sessionId !== sessionId) return;
+      // Seuls les chunks de réponse constituent le résultat textuel. Les pensées
+      // et notifications de diagnostic restent observables via onSessionUpdate,
+      // mais ne doivent pas contaminer la sortie du nœud.
       if (update.update.sessionUpdate === 'agent_message_chunk' && update.update.content.type === 'text') {
         collectedText += update.update.content.text;
       }
@@ -128,6 +138,9 @@ export class AcpRunner {
         { timeouts: request.timeouts, processExit: connected.processExit },
       );
       if (!auth.isAuthRequiredError(error)) throw error;
+      // Une erreur d'authentification autorise exactement un flux interactif et
+      // une nouvelle tentative. Boucler ici masquerait une configuration invalide
+      // et pourrait demander indéfiniment les mêmes credentials.
       await auth.runAuthFlow(request.agentName, connected.agentId, connected.connInfo);
       throwIfAborted();
       return this.newSession(connected, request.sessionCwd, request.timeouts);

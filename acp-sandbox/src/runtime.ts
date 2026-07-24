@@ -5,9 +5,6 @@ import {
   GitPromotion,
   type AgentCheckpoint,
   type AgentCheckpointPreview,
-  type PromotionDecider,
-  type PromotionPolicy,
-  type PromotionStatus,
 } from './gitPromotion.js';
 
 export const MINIMUM_SBX_VERSION = '0.35.0';
@@ -19,6 +16,7 @@ export interface SubprocessRequest {
   stdin: 'ignore';
   observeOutput?: boolean;
   signal?: AbortSignal;
+  env?: NodeJS.ProcessEnv;
 }
 
 export interface SubprocessResult {
@@ -39,12 +37,10 @@ export interface SandboxRunInput {
   effort?: 'low' | 'medium' | 'high' | 'xhigh';
   signal?: AbortSignal;
   workspaceEffects?: boolean;
-  promotionPolicy?: PromotionPolicy;
-  decidePromotion?: PromotionDecider;
 }
 
 export interface SandboxRunResult {
-  status?: PromotionStatus;
+  status?: 'no_changes';
   checkpointStatus: 'checkpointed' | 'no_changes';
   sandboxName: string;
   stdout: string;
@@ -56,9 +52,12 @@ export interface SandboxRunResult {
 /**
  * Orchestre l'exécution d'un nœud Codex dans un clone Docker Sandbox privé.
  *
- * Le runtime valide les prérequis, crée et nettoie la sandbox, transmet les
- * sorties de Codex, puis délègue à GitPromotion la création du checkpoint et
- * l'éventuelle Promotion atomique vers le workspace hôte.
+ * Le runtime crée un Agent Checkpoint attribuable et le récupère côté hôte,
+ * mais ne le promeut jamais. L'intégration et la Promotion appartiennent au
+ * coordinateur du pipeline une fois le DAG complet.
+ *
+ * Voir `docs/adr/0001-replace-sandcastle-with-docker-sandboxes.md` et
+ * `docs/adr/0002-promote-one-multi-agent-change-set.md`.
  */
 export class DockerSandboxRuntime {
   constructor(private readonly execute: SubprocessExecutor = createNodeSubprocessExecutor()) {}
@@ -81,8 +80,7 @@ export class DockerSandboxRuntime {
       codexArgs.push(input.prompt);
       const codex = await this.requireSuccess({ command: 'sbx', args: codexArgs, cwd: input.workspaceCwd, stdin: 'ignore', observeOutput: true, signal: input.signal }, 'run Codex non-interactively');
 
-      const gitPromotion = new GitPromotion(this.execute);
-      const checkpoint = await gitPromotion.createAgentCheckpoint({
+      const checkpoint = await new GitPromotion(this.execute).createAgentCheckpoint({
         workspaceCwd: input.workspaceCwd,
         sandboxName,
         baseCommit,
@@ -91,27 +89,17 @@ export class DockerSandboxRuntime {
         attempt: input.attempt,
         signal: input.signal,
       });
-      const promotionStatus = checkpoint.checkpointStatus === 'no_changes'
-        ? 'no_changes' as const
-        : input.promotionPolicy
-          ? (await gitPromotion.promotePipelineChangeSet({
-              workspaceCwd: input.workspaceCwd,
-              policy: input.promotionPolicy,
-              decide: input.decidePromotion,
-              checkpoint: checkpoint.checkpoint,
-              preview: checkpoint.preview,
-              signal: input.signal,
-            })).status
-          : undefined;
       return {
         ...checkpoint,
-        ...(promotionStatus ? { status: promotionStatus } : {}),
+        ...(checkpoint.checkpointStatus === 'no_changes' ? { status: 'no_changes' as const } : {}),
         sandboxName,
         stdout: codex.stdout,
         stderr: codex.stderr,
       };
     } finally {
       if (created) {
+        // `rm --force` rend le nettoyage répétable après une annulation ou une
+        // erreur ; l'échec de l'étape précédente ne doit pas laisser la microVM.
         await this.execute({ command: 'sbx', args: ['rm', '--force', sandboxName], cwd: input.workspaceCwd, stdin: 'ignore' });
       }
     }
@@ -120,6 +108,9 @@ export class DockerSandboxRuntime {
   async preflightWorkspace(cwd: string, workspaceEffects = true, signal?: AbortSignal): Promise<void> {
     await this.requireSuccess({ command: 'git', args: ['rev-parse', '--is-inside-work-tree'], cwd, stdin: 'ignore', signal }, 'verify that the workspace is a Git repository');
     if (workspaceEffects) {
+      // `sbx --clone` ne voit pas les changements non commités. Autoriser un
+      // workspace sale ferait donc calculer le Pipeline Change Set depuis une
+      // base différente de celle que la Promotion doit avancer atomiquement.
       const status = await this.requireSuccess({ command: 'git', args: ['status', '--porcelain=v1'], cwd, stdin: 'ignore', signal }, 'inspect the Git workspace');
       if (status.stdout.trim()) {
         throw new Error('Docker Sandbox requires a clean Git workspace for workspace-writing pipelines: sbx --clone cannot see uncommitted changes, so safe Promotion is impossible. Commit or remove the local changes and retry.');
@@ -155,6 +146,8 @@ export class DockerSandboxRuntime {
 export function stableSandboxName(runId: string, nodeId: string, attempt: number): string {
   const identity = `${runId}:${nodeId}:${attempt}`;
   const normalized = `slopify-${runId}-${nodeId}-${attempt}`.toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '');
+  // La normalisation peut faire converger deux identités distinctes. Le hash
+  // porte donc sur l'identité originale, pas sur le nom déjà normalisé.
   const hash = createHash('sha256').update(identity).digest('hex').slice(0, 8);
   return `${normalized.slice(0, 50).replace(/-+$/g, '')}-${hash}`;
 }
@@ -165,6 +158,7 @@ export function createNodeSubprocessExecutor(): SubprocessExecutor {
       cwd: request.cwd,
       stdio: ['ignore', 'pipe', 'pipe'],
       signal: request.signal,
+      env: request.env ? { ...process.env, ...request.env } : process.env,
     });
     let stdout = '';
     let stderr = '';

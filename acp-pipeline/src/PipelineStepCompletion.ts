@@ -20,7 +20,8 @@ export class PipelineStepCancelledError extends Error {
 }
 
 /**
- * Converts adapter-specific run output into the PipelineStep interface.
+ * Préserve l'interface PipelineStep historique malgré les résultats structurés
+ * renvoyés par les adaptateurs capables de gérer une Promotion.
  */
 export function resolvePipelineStepText(result: PipelineStepRunResult): string {
   if (typeof result === 'string') {
