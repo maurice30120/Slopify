@@ -23,6 +23,7 @@ export {
 } from './gitPromotion.js';
 
 export {
+  DOCKER_SANDBOX_NETWORK_POLICY_CHOICES,
   DockerSandboxRuntime,
   DEFAULT_SANDBOX_CLEANUP_TIMEOUT_MS,
   MINIMUM_SBX_VERSION,
@@ -31,6 +32,9 @@ export {
   createNodeSubprocessExecutor,
   retainedSandboxCommands,
   stableSandboxName,
+  type DockerSandboxNetworkPolicyChoice,
+  type DockerSandboxNetworkPolicyPreset,
+  type DockerSandboxRuntimeOptions,
   type RetainedSandbox,
   type RetainedSandboxCommands,
   type SandboxCleanupDiagnostic,

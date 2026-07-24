@@ -17,6 +17,9 @@ interface RetainedSandboxOutput {
 
 export const createRuntimeCliBackend: CliPipelineBackendFactory = (workspaceCwd, context) => {
   const runtimeContext = context as RuntimeCliPipelineBackendContext;
+  const terminalWrite = 'write' in context.terminal && typeof context.terminal.write === 'function'
+    ? context.terminal.write.bind(context.terminal)
+    : undefined;
   const runtime = createWorkspaceRuntime({
     workspaceCwd,
     keepSandboxes: runtimeContext.keepSandboxes,
@@ -27,6 +30,7 @@ export const createRuntimeCliBackend: CliPipelineBackendFactory = (workspaceCwd,
         ui: {
           select: (title, options) => context.terminal.select(title, options),
           confirm: (title, message) => context.terminal.confirm(title, message),
+          ...(terminalWrite ? { write: terminalWrite } : {}),
         },
       }),
       requestPromotion: async request => {

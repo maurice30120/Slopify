@@ -71,6 +71,7 @@ export interface AgentCatalog {
 export interface RuntimeUi {
   select(title: string, options: string[]): Promise<string | undefined>;
   confirm(title: string, message?: string): Promise<boolean>;
+  write?(message: string): void;
 }
 
 export interface RuntimePermissionContext {
