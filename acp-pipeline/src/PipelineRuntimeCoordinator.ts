@@ -42,7 +42,7 @@ export type CoordinatedPipelineRuntimeResult = PipelineRuntimeResult & {
  */
 export class PipelineRuntime extends CorePipelineRuntime {
   private readonly programsByRunId = new Map<string, CompiledPipelineProgram>();
-  private readonly programsById = new Map<string, CompiledPipelineProgram>();
+  private readonly coordinatedProgramsById = new Map<string, CompiledPipelineProgram>();
   private readonly finalizedRunIds = new Set<string>();
   private readonly finalizer?: PipelineChangeSetFinalizingAdapter["finalizePipelineChangeSet"];
 
@@ -55,7 +55,7 @@ export class PipelineRuntime extends CorePipelineRuntime {
     const factoryFinalizer = (adapter.createSession as PipelineChangeSetFinalizingSessionFactory).finalizePipelineChangeSet;
     this.finalizer = adapterFinalizer?.bind(adapter) ?? factoryFinalizer?.bind(adapter.createSession);
     for (const program of options.programs ?? []) {
-      this.programsById.set(program.id, program);
+      this.coordinatedProgramsById.set(program.id, program);
     }
   }
 
@@ -63,7 +63,7 @@ export class PipelineRuntime extends CorePipelineRuntime {
     program: CompiledPipelineProgram,
     options: PipelineRuntimeStartOptions = {},
   ): Promise<PipelineRuntimeResult> {
-    this.programsById.set(program.id, program);
+    this.coordinatedProgramsById.set(program.id, program);
     const result = await super.start(program, options);
     this.programsByRunId.set(result.runId, program);
     return this.finalizeCompletedResult(result, program);
@@ -75,7 +75,7 @@ export class PipelineRuntime extends CorePipelineRuntime {
   ): Promise<PipelineRuntimeResult> {
     const result = await super.resume(runId, decision);
     const program = this.programsByRunId.get(runId)
-      ?? this.programsById.get(result.snapshot.pipelineId);
+      ?? this.coordinatedProgramsById.get(result.snapshot.pipelineId);
     if (!program) {
       return result;
     }
