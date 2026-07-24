@@ -15,7 +15,7 @@ export interface CliRunCommand extends CliCommonOptions {
   pipelineName: string;
   prompt: string;
   yes: boolean;
-  keepSandboxes: boolean;
+  keepSandboxes?: boolean;
 }
 
 export interface CliHelpCommand {
