@@ -30,6 +30,7 @@ import {
   GitPromotion,
   createNodeSubprocessExecutor,
   type AgentCheckpointResult,
+  type DockerSandboxNetworkPolicyChoice,
   type PromotionDecision,
   type PromotionPolicy,
   type RetainedSandbox,
@@ -81,7 +82,10 @@ export function createWorkspaceRuntime(options: CreateWorkspaceRuntimeOptions): 
   const catalog = options.resolvedCatalog ?? loadValidCatalog(options.workspaceCwd);
   const programs = getPipelinePrograms(options.workspaceCwd, options.host.logger);
   const runner = new AcpRunner();
-  const sandboxRuntime = new DockerSandboxRuntime(options.sandboxExecutor);
+  const sandboxRuntime = new DockerSandboxRuntime(options.sandboxExecutor, {
+    selectNetworkPolicy: choices => selectSandboxNetworkPolicy(options.host, choices),
+    reportNetworkPolicy: message => options.host.permissionContext()?.ui.write?.(message),
+  });
   // Toutes les tentatives sont conservées jusqu'à la finalisation : un retry
   // remplace uniquement le checkpoint du même nœud, sans toucher aux résultats
   // valides des autres agents.
@@ -289,6 +293,21 @@ function resolveAgent(catalog: AgentCatalog, agentName: string): AgentConfigEntr
     throw new Error(`Agent "${agentName}" is not configured in .acp/acp-agents.json or .acp/.sandcastle/config.json.`);
   }
   return config;
+}
+
+async function selectSandboxNetworkPolicy(
+  host: WorkspaceRuntimeHost,
+  choices: readonly DockerSandboxNetworkPolicyChoice[],
+): Promise<DockerSandboxNetworkPolicyChoice | undefined> {
+  const permissionContext = host.permissionContext();
+  if (!permissionContext?.hasUI) {
+    return undefined;
+  }
+  const selected = await permissionContext.ui.select(
+    'Docker Sandbox global network policy is not initialized. Choose the policy inherited by every Sandbox Run:',
+    [...choices],
+  );
+  return choices.find(choice => choice === selected);
 }
 
 function composePrompt(input: PipelineAgentRunInput, logger: WorkspaceRuntimeHost['logger']) {

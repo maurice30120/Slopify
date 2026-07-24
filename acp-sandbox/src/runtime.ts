@@ -11,6 +11,17 @@ import {
 
 export const MINIMUM_SBX_VERSION = '0.35.0';
 export const DEFAULT_SANDBOX_CLEANUP_TIMEOUT_MS = 30_000;
+export const DOCKER_SANDBOX_NETWORK_POLICY_CHOICES = ['Open', 'Balanced', 'Locked Down'] as const;
+
+export type DockerSandboxNetworkPolicyChoice = typeof DOCKER_SANDBOX_NETWORK_POLICY_CHOICES[number];
+export type DockerSandboxNetworkPolicyPreset = 'allow-all' | 'balanced' | 'deny-all';
+
+export interface DockerSandboxRuntimeOptions {
+  selectNetworkPolicy?: (
+    choices: readonly DockerSandboxNetworkPolicyChoice[],
+  ) => DockerSandboxNetworkPolicyChoice | undefined | Promise<DockerSandboxNetworkPolicyChoice | undefined>;
+  reportNetworkPolicy?: (message: string) => void;
+}
 
 export interface SubprocessRequest {
   command: string;
@@ -127,10 +138,22 @@ export class SandboxRunTimeoutError extends Error {
  * `docs/adr/0002-promote-one-multi-agent-change-set.md`.
  */
 export class DockerSandboxRuntime {
+  private networkPolicyReady?: Promise<void>;
+  private readonly cleanupTimeoutMs: number;
+  private readonly options: DockerSandboxRuntimeOptions;
+
   constructor(
     private readonly execute: SubprocessExecutor = createNodeSubprocessExecutor(),
-    private readonly cleanupTimeoutMs = DEFAULT_SANDBOX_CLEANUP_TIMEOUT_MS,
-  ) {}
+    cleanupTimeoutMsOrOptions: number | DockerSandboxRuntimeOptions = DEFAULT_SANDBOX_CLEANUP_TIMEOUT_MS,
+    options: DockerSandboxRuntimeOptions = {},
+  ) {
+    this.cleanupTimeoutMs = typeof cleanupTimeoutMsOrOptions === 'number'
+      ? cleanupTimeoutMsOrOptions
+      : DEFAULT_SANDBOX_CLEANUP_TIMEOUT_MS;
+    this.options = typeof cleanupTimeoutMsOrOptions === 'number'
+      ? options
+      : cleanupTimeoutMsOrOptions;
+  }
 
   async runCodex(input: SandboxRunInput): Promise<SandboxRunResult> {
     const sandboxName = stableSandboxName(input.runId, input.nodeId, input.attempt);
@@ -267,6 +290,48 @@ export class DockerSandboxRuntime {
     await this.requireCapability(cwd, ['create', '--help'], '--clone', signal);
     await this.requireCapability(cwd, ['ls', '--help'], '--json', signal);
     await this.requireCapability(cwd, ['policy', 'init', '--help'], 'policy init', signal, false);
+    await this.ensureGlobalNetworkPolicy(cwd, signal);
+  }
+
+  private async ensureGlobalNetworkPolicy(cwd: string, signal?: AbortSignal): Promise<void> {
+    if (!this.networkPolicyReady) {
+      const initialization = this.initializeGlobalNetworkPolicy(cwd);
+      this.networkPolicyReady = initialization;
+      void initialization.catch(() => {
+        if (this.networkPolicyReady === initialization) {
+          this.networkPolicyReady = undefined;
+        }
+      });
+    }
+    await waitForPromise(this.networkPolicyReady, signal);
+  }
+
+  private async initializeGlobalNetworkPolicy(cwd: string): Promise<void> {
+    const current = await this.execute({
+      command: 'sbx',
+      args: ['policy', 'ls', '--json'],
+      cwd,
+      stdin: 'ignore',
+    });
+    if (current.exitCode === 0) {
+      return;
+    }
+
+    const choice = await this.options.selectNetworkPolicy?.(DOCKER_SANDBOX_NETWORK_POLICY_CHOICES);
+    if (!choice) {
+      const detail = current.stderr.trim() || current.stdout.trim();
+      const suffix = detail ? ` Docker reported: ${detail}` : '';
+      throw new Error(`Docker Sandbox global network policy is not initialized.${suffix} Choose Open, Balanced or Locked Down in the interactive CLI, or initialize it with \`sbx policy init\`.`);
+    }
+
+    const preset = networkPolicyPreset(choice);
+    await this.requireSuccess({
+      command: 'sbx',
+      args: ['policy', 'init', preset],
+      cwd,
+      stdin: 'ignore',
+    }, `initialize the Docker Sandbox global network policy as ${choice}`);
+    this.options.reportNetworkPolicy?.(`Docker Sandbox global network policy initialized as ${choice}. Change it later with \`sbx policy\`.`);
   }
 
   private async cleanupSandbox(cwd: string, sandboxName: string): Promise<SandboxCleanupDiagnostic> {
@@ -450,6 +515,47 @@ function formatUnknownError(error: unknown): string {
 
 function cleanupTimeoutMessage(timeoutMs: number): string {
   return `Sandbox cleanup timed out after ${timeoutMs} ms.`;
+}
+
+function networkPolicyPreset(choice: DockerSandboxNetworkPolicyChoice): DockerSandboxNetworkPolicyPreset {
+  switch (choice) {
+    case 'Open': return 'allow-all';
+    case 'Balanced': return 'balanced';
+    case 'Locked Down': return 'deny-all';
+  }
+}
+
+function waitForPromise<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) {
+    return promise;
+  }
+  if (signal.aborted) {
+    return Promise.reject(abortError(signal));
+  }
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = (): void => {
+      signal.removeEventListener('abort', onAbort);
+      reject(abortError(signal));
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+    void promise.then(
+      value => {
+        signal.removeEventListener('abort', onAbort);
+        resolve(value);
+      },
+      error => {
+        signal.removeEventListener('abort', onAbort);
+        reject(error);
+      },
+    );
+  });
+}
+
+function abortError(signal: AbortSignal): Error {
+  if (signal.reason instanceof Error) {
+    return signal.reason;
+  }
+  return Object.assign(new Error('The operation was aborted.'), { name: 'AbortError' });
 }
 
 function extractVersion(output: string): string | undefined {

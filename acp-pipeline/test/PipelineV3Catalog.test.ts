@@ -49,6 +49,36 @@ test("compilePipelineV3Catalog returns compiled v3 programs in deterministic fil
   assert.deepEqual(result.programs.map(program => program.id), ["a", "b"]);
 });
 
+test("compilePipelineV3Catalog rejects node network policies for Docker Sandbox agents", () => {
+  const definition = createPipeline("sandbox-network") as {
+    policies?: Record<string, unknown>;
+    nodes: Array<Record<string, unknown>>;
+  };
+  definition.policies = {
+    connected: {
+      filesystem: "read-only",
+      terminal: "none",
+      network: "enabled",
+      promotion: "discard",
+    },
+  };
+  definition.nodes[0].policy = "connected";
+
+  const result = compilePipelineV3Catalog(
+    [{ filePath: "/workspace/.acp/pipelines/sandbox-network.yaml", definition }],
+    {
+      workspaceCwd: "/workspace",
+      maxInstructionsFileBytes: 1024,
+      agentConfigs: {
+        Codex: { transport: "sandbox", agent: "codex", model: "gpt-5.6-codex" },
+      },
+    },
+  );
+
+  assert.deepEqual(result.programs, []);
+  assert.match(result.errors[0]?.errors.join("\n") ?? "", /network policy is not supported.*sbx policy/);
+});
+
 test("resolvePipelineV3InstructionFiles preserves instructions separately from the task prompt", () => {
   const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "pipeline-v3-catalog-"));
   const pipelinePath = path.join(workspace, ".acp", "pipelines", "plan.yaml");

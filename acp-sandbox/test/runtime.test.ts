@@ -5,11 +5,14 @@ import path from 'node:path';
 import test from 'node:test';
 
 import {
+  DOCKER_SANDBOX_NETWORK_POLICY_CHOICES,
   DockerSandboxRuntime,
   SandboxRunCancelledError,
   SandboxRunTimeoutError,
   retainedSandboxCommands,
   stableSandboxName,
+  type DockerSandboxNetworkPolicyChoice,
+  type DockerSandboxNetworkPolicyPreset,
   type RetainedSandbox,
   type SubprocessExecutor,
   type SubprocessRequest,
@@ -55,6 +58,7 @@ function sandboxScenario(options: {
       if (request.args.join(' ') === 'create --help') return result('Usage: sbx create --clone');
       if (request.args.join(' ') === 'ls --help') return result('Usage: sbx ls --json');
       if (request.args.join(' ') === 'policy init --help') return result('Usage: sbx policy init');
+      if (request.args.join(' ') === 'policy ls --json') return result('[{"name":"local-policy"}]\n');
 
       const sandboxGitArgs = request.command === 'sbx' && request.args[0] === 'exec'
         ? request.args.slice(2)
@@ -231,6 +235,126 @@ test('requires sbx 0.35.0 and required clone/list capabilities', async () => {
   const missingBaseline = sandboxScenario();
   const missing = fakeExecutor(request => request.args.join(' ') === 'create --help' ? result('Usage: sbx create') : missingBaseline.respond(request));
   await assert.rejects(new DockerSandboxRuntime(missing.execute).preflightWorkspace('/repo'), /required --clone capability/);
+});
+
+test('initializes each Docker global network preset from the exact CLI choices without per-sandbox rules', async t => {
+  const cases: Array<[DockerSandboxNetworkPolicyChoice, DockerSandboxNetworkPolicyPreset]> = [
+    ['Open', 'allow-all'],
+    ['Balanced', 'balanced'],
+    ['Locked Down', 'deny-all'],
+  ];
+
+  for (const [choice, preset] of cases) {
+    await t.test(choice, async () => {
+      const baseline = sandboxScenario();
+      const fake = fakeExecutor(request => {
+        if (request.args.join(' ') === 'policy ls --json') return result('', 'policy is not initialized', 1);
+        return baseline.respond(request);
+      });
+      let offered: readonly DockerSandboxNetworkPolicyChoice[] = [];
+      const messages: string[] = [];
+      const runtime = new DockerSandboxRuntime(fake.execute, {
+        selectNetworkPolicy: choices => {
+          offered = [...choices];
+          return choice;
+        },
+        reportNetworkPolicy: message => messages.push(message),
+      });
+
+      await runtime.runCodex({
+        workspaceCwd: '/repo', runId: `run-${preset}`, nodeId: 'node', attempt: 1,
+        prompt: 'Inspect.', model: 'gpt', workspaceEffects: false,
+      });
+
+      assert.deepEqual(offered, DOCKER_SANDBOX_NETWORK_POLICY_CHOICES);
+      assert.equal(fake.calls.filter(call => call.args.join(' ') === `policy init ${preset}`).length, 1);
+      assert.match(messages.join('\n'), new RegExp(`${choice}.*sbx policy`));
+      assert.equal(fake.calls.some(call => call.args.includes('--sandbox')), false);
+      assert.equal(fake.calls.some(call => call.args[1] === 'allow' || call.args[1] === 'deny'), false);
+    });
+  }
+});
+
+test('reuses an initialized global network policy without prompting again', async () => {
+  const fake = fakeExecutor(sandboxScenario().respond);
+  let prompts = 0;
+  const runtime = new DockerSandboxRuntime(fake.execute, {
+    selectNetworkPolicy: () => {
+      prompts += 1;
+      return 'Balanced';
+    },
+  });
+
+  await runtime.preflightWorkspace('/repo');
+  await runtime.preflightWorkspace('/repo');
+
+  assert.equal(prompts, 0);
+  assert.equal(fake.calls.filter(call => call.args.join(' ') === 'policy ls --json').length, 1);
+  assert.equal(fake.calls.some(call => call.args[0] === 'policy' && call.args[1] === 'init' && call.args[2] !== '--help'), false);
+});
+
+test('cancelling one preflight does not abort global policy initialization shared with another run', async () => {
+  const baseline = sandboxScenario();
+  let announceInitializationStarted: (() => void) | undefined;
+  const initializationStarted = new Promise<void>(resolve => { announceInitializationStarted = resolve; });
+  let finishInitialization: ((value: SubprocessResult) => void) | undefined;
+  const initialization = new Promise<SubprocessResult>(resolve => { finishInitialization = resolve; });
+  const fake = fakeExecutor(request => {
+    if (request.args.join(' ') === 'policy ls --json') return result('', 'policy is not initialized', 1);
+    if (request.args.join(' ') === 'policy init balanced') {
+      announceInitializationStarted?.();
+      return initialization;
+    }
+    return baseline.respond(request);
+  });
+  const runtime = new DockerSandboxRuntime(fake.execute, {
+    selectNetworkPolicy: () => 'Balanced',
+  });
+  const cancelled = new AbortController();
+
+  const firstPreflight = runtime.preflightWorkspace('/repo', true, cancelled.signal);
+  await initializationStarted;
+  const secondPreflight = runtime.preflightWorkspace('/repo');
+  cancelled.abort();
+
+  await assert.rejects(firstPreflight, error => error instanceof Error && error.name === 'AbortError');
+  finishInitialization?.(result());
+  await secondPreflight;
+
+  assert.equal(fake.calls.filter(call => call.args.join(' ') === 'policy ls --json').length, 1);
+  const initCalls = fake.calls.filter(call => call.args.join(' ') === 'policy init balanced');
+  assert.equal(initCalls.length, 1);
+  assert.equal(initCalls[0].signal, undefined);
+});
+
+test('fails before sandbox creation when global network policy initialization fails', async () => {
+  const baseline = sandboxScenario();
+  const fake = fakeExecutor(request => {
+    if (request.args.join(' ') === 'policy ls --json') return result('', 'policy is not initialized', 1);
+    if (request.args.join(' ') === 'policy init balanced') return result('', 'daemon refused policy', 7);
+    return baseline.respond(request);
+  });
+  const runtime = new DockerSandboxRuntime(fake.execute, {
+    selectNetworkPolicy: () => 'Balanced',
+  });
+
+  await assert.rejects(
+    runtime.runCodex({ workspaceCwd: '/repo', runId: 'run', nodeId: 'node', attempt: 1, prompt: 'x', model: 'gpt' }),
+    /Unable to initialize the Docker Sandbox global network policy as Balanced: daemon refused policy/,
+  );
+  assert.equal(fake.calls.some(call => call.args[0] === 'create' && !call.args.includes('--help')), false);
+});
+
+test('fails with corrective guidance when policy initialization needs a non-interactive choice', async () => {
+  const baseline = sandboxScenario();
+  const fake = fakeExecutor(request => request.args.join(' ') === 'policy ls --json'
+    ? result('', 'policy is not initialized', 1)
+    : baseline.respond(request));
+
+  await assert.rejects(
+    new DockerSandboxRuntime(fake.execute).preflightWorkspace('/repo'),
+    /Choose Open, Balanced or Locked Down.*sbx policy init/,
+  );
 });
 
 test('cleans the sandbox when Codex fails', async () => {

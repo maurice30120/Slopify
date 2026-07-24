@@ -22,6 +22,36 @@ test("compilePipelineV3Definition accepts instructionsFile as the public role-fi
   assert.equal(result.program?.nodes[0].promptFile, "../agents/planner.md");
 });
 
+test("compilePipelineV3Definition rejects node network policy for Docker Sandbox Runs", () => {
+  const definition = {
+    version: 3,
+    id: "sandbox-network",
+    title: "Sandbox Network",
+    policies: {
+      connected: { network: "enabled" },
+    },
+    nodes: [{
+      id: "implement",
+      agent: "Isolated",
+      prompt: "Implement",
+      policy: "connected",
+      output: { name: "result", type: "text", format: "text" },
+    }],
+  };
+
+  const sandbox = compilePipelineV3Definition(definition, {
+    Isolated: { transport: "sandbox", agent: "codex", model: "gpt" },
+  });
+  assert.deepEqual(sandbox.errors, [
+    'node "implement" network policy is not supported for Docker Sandbox Runs; configure the global policy with "sbx policy".',
+  ]);
+
+  const native = compilePipelineV3Definition(definition, {
+    Isolated: { command: "codex", args: ["acp"] },
+  });
+  assert.deepEqual(native.errors, []);
+});
+
 test("compilePipelineV3Definition compiles typed workspace handoff metadata", () => {
   const result = compilePipelineV3Definition({
     version: 3,
