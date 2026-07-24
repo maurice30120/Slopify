@@ -3,6 +3,7 @@ import { test } from "node:test";
 
 import {
   InMemoryPipelineRunStore,
+  PipelineIntegrationConflictError,
   PipelineRuntime,
   compilePipelineV3Definition,
   orderPipelineNodeIdsForIntegration,
@@ -39,6 +40,7 @@ function multiAgentProgram() {
         id: "b",
         agent: "Codex",
         prompt: "B",
+        retry: { maxAttempts: 1 },
         policy: { filesystem: "workspace-write", terminal: "workspace-write", promotion: "ask" },
         output: { name: "out", type: "note", format: "text" },
       },
@@ -169,6 +171,88 @@ test("a finalization failure persists and emits failed without a premature compl
   assert.deepEqual(terminalEvents, ["failed"]);
   assert.equal((await store.load("run-failed-finalization"))?.status, "failed");
   assert.deepEqual((await store.readEvents("run-failed-finalization")).map(event => event.type).filter(type => type === "completed" || type === "failed"), ["failed"]);
+});
+
+test("an Integration Conflict pauses finalization and approval retries only the incoming node", async () => {
+  const program = multiAgentProgram();
+  const store = new InMemoryPipelineRunStore();
+  const attempts: string[] = [];
+  const terminalEvents: string[] = [];
+  let finalization = 0;
+  const adapter: PipelineRuntimeAdapter & {
+    finalizePipelineChangeSet(input: PipelineChangeSetFinalizationInput): Promise<PipelineChangeSetFinalizationResult>;
+  } = {
+    async createSession({ runId, node }) {
+      return {
+        runId,
+        nodeId: node.id,
+        async send(input): Promise<PipelineNodeExecutionResult> {
+          attempts.push(`${node.id}#${input.attempt}`);
+          return {
+            artifact: {
+              name: "out",
+              type: "note",
+              format: "text",
+              value: `${node.id}#${input.attempt}`,
+            },
+          };
+        },
+        async cancel() {},
+        async close() {},
+      };
+    },
+    async finalizePipelineChangeSet(input) {
+      finalization += 1;
+      if (finalization === 1) {
+        throw new PipelineIntegrationConflictError({
+          runId: input.runId,
+          retryNodeId: "b",
+          checkpoints: [
+            { nodeId: "a", attempt: 1, commit: "a-1", ref: "refs/checkpoints/a-1" },
+            { nodeId: "b", attempt: 1, commit: "b-1", ref: "refs/checkpoints/b-1" },
+          ],
+          files: ["src/shared.ts"],
+        });
+      }
+      return noChangesResult(input);
+    },
+  };
+  const runtime = new PipelineRuntime(adapter, {
+    runIdFactory: () => "run-integration-conflict",
+    store,
+    onEvent: event => {
+      if (["paused", "completed", "failed"].includes(event.type)) terminalEvents.push(event.type);
+    },
+  });
+
+  const paused = await runtime.start(program);
+
+  assert.equal(paused.status, "paused");
+  assert.equal(paused.snapshot.pendingPause?.type, "approval");
+  assert.equal(paused.snapshot.pendingPause?.integrationConflict?.retryNodeId, "b");
+  assert.match(paused.snapshot.pendingPause?.content ?? "", /a, tentative 1/);
+  assert.match(paused.snapshot.pendingPause?.content ?? "", /b, tentative 1/);
+  assert.match(paused.snapshot.pendingPause?.content ?? "", /src\/shared\.ts/);
+  assert.match(paused.snapshot.pendingPause?.content ?? "", /Aucun changement n'a été appliqué au workspace hôte/);
+  assert.deepEqual(terminalEvents, ["paused"]);
+  assert.equal((await store.load(paused.runId))?.status, "paused");
+
+  const completed = await runtime.resume(paused.runId, {
+    pauseId: paused.status === "paused" ? paused.pause.id : "unreachable",
+    kind: "approve",
+  });
+
+  assert.equal(completed.status, "completed");
+  assert.deepEqual(attempts.filter(attempt => attempt.startsWith("a#")), ["a#1"]);
+  assert.deepEqual(attempts.filter(attempt => attempt.startsWith("b#")), ["b#1", "b#2"]);
+  assert.deepEqual(attempts.filter(attempt => attempt.startsWith("c#")), ["c#1"]);
+  assert.deepEqual(attempts.filter(attempt => attempt.startsWith("join#")), ["join#1"]);
+  assert.equal(finalization, 2);
+  assert.deepEqual(
+    (completed as typeof completed & { changeSet?: PipelineChangeSetFinalizationResult }).changeSet?.integratedNodeIds,
+    ["a", "b", "c"],
+  );
+  assert.deepEqual(terminalEvents, ["paused", "completed"]);
 });
 
 test("a rejected Promotion cancels the run without emitting completed", async () => {

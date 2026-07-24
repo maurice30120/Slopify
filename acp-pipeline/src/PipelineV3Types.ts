@@ -1,4 +1,5 @@
 import type { NormalizedPipelinePolicy } from "./PipelinePolicy";
+import type { PipelineIntegrationConflict } from "./PipelineAgentRunner";
 
 export type PipelineArtifactFormat = "text" | "markdown" | "json";
 
@@ -172,6 +173,7 @@ export interface PipelinePauseSnapshot {
   format: PipelinePauseFormat;
   handoff?: PipelineWorkspaceHandoffDefinition;
   workspaceGuard?: "documentation-only";
+  integrationConflict?: PipelineIntegrationConflict;
 }
 
 export type PipelineInterviewState = "question";

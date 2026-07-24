@@ -2,6 +2,7 @@ import * as path from 'node:path';
 
 import {
   orderPipelineNodeIdsForIntegration,
+  PipelineIntegrationConflictError,
   renderAcpPrompt,
   type CompiledPipelineProgram,
   type PipelineAgentRunInput,
@@ -28,6 +29,7 @@ import {
 import {
   DockerSandboxRuntime,
   GitPromotion,
+  IntegrationConflictError,
   createNodeSubprocessExecutor,
   type AgentCheckpointResult,
   type DockerSandboxNetworkPolicyChoice,
@@ -199,31 +201,31 @@ async function finalizePipelineChangeSet(
     };
   }
 
-  try {
-    const orderedNodeIds = orderPipelineNodeIdsForIntegration(input.program, checkpoints.keys());
-    const selectedCheckpoints = new Map<string, AgentCheckpointResult>();
-    const supersededCheckpoints: AgentCheckpointResult[] = [];
-    // Seule la tentative la plus récente de chaque nœud contribue au Pipeline
-    // Change Set. Les refs plus anciennes sont supprimées avant l'intégration
-    // pour éviter qu'une reprise ne réutilise un résultat obsolète.
-    for (const nodeId of orderedNodeIds) {
-      const attempts = checkpoints.get(nodeId)!;
-      const attemptNumbers = [...attempts.keys()].sort((left, right) => left - right);
-      const highestAttempt = attemptNumbers.at(-1)!;
-      selectedCheckpoints.set(nodeId, attempts.get(highestAttempt)!);
-      for (const attempt of attemptNumbers.slice(0, -1)) {
-        supersededCheckpoints.push(attempts.get(attempt)!);
-      }
+  const orderedNodeIds = orderPipelineNodeIdsForIntegration(input.program, checkpoints.keys());
+  const selectedCheckpoints = new Map<string, AgentCheckpointResult>();
+  const supersededCheckpoints: AgentCheckpointResult[] = [];
+  // Seule la tentative la plus récente de chaque nœud contribue au Pipeline
+  // Change Set. Les refs plus anciennes ne deviennent obsolètes qu'après une
+  // intégration réussie, afin qu'un conflit reste entièrement retentable.
+  for (const nodeId of orderedNodeIds) {
+    const attempts = checkpoints.get(nodeId)!;
+    const attemptNumbers = [...attempts.keys()].sort((left, right) => left - right);
+    const highestAttempt = attemptNumbers.at(-1)!;
+    selectedCheckpoints.set(nodeId, attempts.get(highestAttempt)!);
+    for (const attempt of attemptNumbers.slice(0, -1)) {
+      supersededCheckpoints.push(attempts.get(attempt)!);
     }
-    const orderedCheckpoints = orderedNodeIds.map(nodeId => selectedCheckpoints.get(nodeId)!);
-    const policy = resolvePipelinePromotionPolicy(input.program, orderedNodeIds);
-    const gitPromotion = new GitPromotion(options.execute ?? createNodeSubprocessExecutor());
-    await gitPromotion.deleteAgentCheckpoints(options.workspaceCwd, supersededCheckpoints);
+  }
+  const orderedCheckpoints = orderedNodeIds.map(nodeId => selectedCheckpoints.get(nodeId)!);
+  const policy = resolvePipelinePromotionPolicy(input.program, orderedNodeIds);
+  const gitPromotion = new GitPromotion(options.execute ?? createNodeSubprocessExecutor());
+  try {
     const changeSet = await gitPromotion.integrateAgentCheckpoints({
       workspaceCwd: options.workspaceCwd,
       runId: input.runId,
       checkpoints: orderedCheckpoints,
     });
+    await gitPromotion.deleteAgentCheckpoints(options.workspaceCwd, supersededCheckpoints);
     const promoted = await gitPromotion.promotePipelineChangeSet({
       workspaceCwd: options.workspaceCwd,
       policy,
@@ -233,15 +235,30 @@ async function finalizePipelineChangeSet(
         ? request => decidePipelinePromotion(options.host, input, request.preview, request.changeSet.integratedNodeIds)
         : undefined,
     });
-    return {
+    const result = {
       promotion: promoted.status,
       preview: promoted.preview,
       changeSetRef: promoted.changeSet.ref,
       changeSetCommit: promoted.changeSet.commit,
       integratedNodeIds: promoted.changeSet.integratedNodeIds,
     };
-  } finally {
     options.checkpointsByRunId.delete(input.runId);
+    return result;
+  } catch (error: unknown) {
+    if (error instanceof IntegrationConflictError) {
+      throw new PipelineIntegrationConflictError({
+        runId: error.conflict.runId,
+        retryNodeId: error.conflict.incomingCheckpoint.nodeId,
+        checkpoints: error.conflict.checkpoints.map(checkpoint => ({
+          nodeId: checkpoint.nodeId,
+          attempt: checkpoint.attempt,
+          commit: checkpoint.commit,
+          ref: checkpoint.ref,
+        })),
+        files: error.conflict.files,
+      });
+    }
+    throw error;
   }
 }
 

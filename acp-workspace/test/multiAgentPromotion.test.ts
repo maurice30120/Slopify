@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-import { compilePipelineV3Definition } from '@acp-client/pipeline';
+import { PipelineIntegrationConflictError, compilePipelineV3Definition } from '@acp-client/pipeline';
 import type { SubprocessRequest, SubprocessResult } from '@acp-client/sandbox';
 import { createWorkspaceRuntime } from '../src/index.js';
 
@@ -183,5 +183,129 @@ test('integrates the highest checkpoint attempt and cleans up superseded attempt
     calls.filter(call => call.command === 'git' && call.args[0] === 'update-ref' && call.args[1] === '-d')
       .map(call => call.args[2]?.match(/-(\d+)-[a-f0-9]+$/)?.[1]),
     ['1'],
+  );
+});
+
+test('preserves valid checkpoints across an Integration Conflict and replaces only the retried node attempt', async () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'acp-workspace-conflict-retry-'));
+  const calls: SubprocessRequest[] = [];
+  let integrationRound = 0;
+  const runtime = createWorkspaceRuntime({
+    workspaceCwd: cwd,
+    resolvedCatalog: {
+      agents: { Isolated: { transport: 'sandbox', agent: 'codex', model: 'gpt-5.6-codex' } },
+      native: {
+        filePath: path.join(cwd, '.acp', 'acp-agents.json'),
+        agents: {},
+        pipeline: { enabled: true, instructionsMaxBytes: 256 * 1024, timeouts: {} },
+        errors: [],
+      },
+      sandcastle: {
+        filePath: path.join(cwd, '.acp', '.sandcastle', 'config.json'),
+        promotion: 'ask',
+        agents: {},
+        errors: [],
+      },
+      errors: [],
+    },
+    host: {
+      permissionContext: () => undefined,
+      requestPromotion: async () => 'cancelled',
+      logger: { log: () => undefined, error: () => undefined },
+    },
+    sandboxExecutor: async request => {
+      calls.push(request);
+      const args = request.args;
+      const joined = args.join(' ');
+      if (request.command === 'git' && joined === 'rev-parse --is-inside-work-tree') return result('true\n');
+      if (request.command === 'git' && joined === 'status --porcelain=v1') return result();
+      if (request.command === 'git' && joined === 'rev-parse HEAD') return result('base123\n');
+      if (request.command === 'git' && args[0] === 'rev-parse' && args[1]?.startsWith('refs/slopify/checkpoints/')) {
+        const ref = args[1];
+        const node = ref.includes('-a-') ? 'a' : 'b';
+        const attempt = ref.match(/-(\d+)-[a-f0-9]+$/)?.[1];
+        return result(`checkpoint-${node}-${attempt}\n`);
+      }
+      if (request.command === 'git' && joined === 'show -s --format=%cI base123') {
+        integrationRound += 1;
+        return result('2026-07-24T10:00:00+02:00\n');
+      }
+      if (request.command === 'git' && args[0] === 'merge-tree') {
+        const ref = args.at(-1) ?? '';
+        if (integrationRound === 1 && ref.includes('-b-1-')) {
+          return result(
+            '100644 abc 1\tsrc/shared.ts\n'
+            + '100644 def 2\tsrc/shared.ts\n'
+            + '100644 ghi 3\tsrc/shared.ts\n'
+            + 'CONFLICT (content): Merge conflict in src/shared.ts\n',
+            '',
+            1,
+          );
+        }
+        return result(`tree-${ref.includes('-a-') ? 'a-1' : 'b-2'}\n`);
+      }
+      if (request.command === 'git' && args[0] === 'commit-tree') return result(`integrated-${integrationRound}-${args[1]}\n`);
+      if (request.command === 'git' && args[0] === 'diff' && args.includes('--name-only')) return result('src/shared.ts\n');
+      if (request.command === 'git' && args[0] === 'diff') return result('diff\n');
+      if (joined === 'version') return result('Docker Sandbox 0.35.0\n');
+      if (joined === 'create --help') return result('Usage: sbx create --clone');
+      if (joined === 'ls --help') return result('Usage: sbx ls --json');
+      if (joined === 'policy init --help') return result('Usage: sbx policy init');
+      return result();
+    },
+  });
+  const program = compilePipelineV3Definition({
+    version: 3,
+    id: 'conflict-retry',
+    title: 'Conflict retry',
+    nodes: [
+      {
+        id: 'a', agent: 'Isolated', prompt: 'A',
+        policy: { filesystem: 'workspace-write', terminal: 'workspace-write', promotion: 'discard' },
+        output: { name: 'out', type: 'note', format: 'text' },
+      },
+      {
+        id: 'b', agent: 'Isolated', prompt: 'B',
+        policy: { filesystem: 'workspace-write', terminal: 'workspace-write', promotion: 'discard' },
+        output: { name: 'out', type: 'note', format: 'text' },
+      },
+    ],
+  }, { Isolated: {} }).program!;
+  const run = (nodeId: string, attempt: number) => runtime.runAgent({
+    workspaceCwd: cwd,
+    agentName: 'Isolated',
+    runId: 'run-conflict-retry',
+    nodeId,
+    attempt,
+    promptText: nodeId.toUpperCase(),
+    sideEffects: 'workspace',
+    promotion: 'discard',
+  });
+
+  await run('a', 1);
+  await run('b', 1);
+  await assert.rejects(
+    runtime.runAgent.finalizePipelineChangeSet!({ runId: 'run-conflict-retry', program }),
+    (error: unknown) => {
+      assert.ok(error instanceof PipelineIntegrationConflictError);
+      assert.equal(error.conflict.retryNodeId, 'b');
+      return true;
+    },
+  );
+  assert.equal(calls.some(call => call.command === 'git' && call.args[0] === 'update-ref' && call.args[1] === '-d'), false);
+
+  await run('b', 2);
+  await runtime.runAgent.finalizePipelineChangeSet!({ runId: 'run-conflict-retry', program });
+
+  const integratedRefs = calls
+    .filter(call => call.command === 'git' && call.args[0] === 'merge-tree')
+    .slice(-2)
+    .map(call => call.args.at(-1));
+  assert.match(integratedRefs[0] ?? '', /-a-1-[a-f0-9]+$/);
+  assert.match(integratedRefs[1] ?? '', /-b-2-[a-f0-9]+$/);
+  assert.deepEqual(
+    calls.filter(call => call.command === 'git' && call.args[0] === 'update-ref' && call.args[1] === '-d')
+      .map(call => call.args[2]),
+    [calls.find(call => call.command === 'git' && call.args[0] === 'merge-tree' && call.args.at(-1)?.includes('-b-1-'))?.args.at(-1)],
   );
 });

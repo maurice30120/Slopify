@@ -72,6 +72,7 @@ interface ActiveRun {
   activityUnsubscribers: Map<AgentNodeSession, () => void>;
   closedSessions: WeakSet<AgentNodeSession>;
   nodeTasks: Map<string, Promise<NodeTaskResult>>;
+  explicitRetryNodes: Set<string>;
 }
 
 type NodeTaskResult =
@@ -139,6 +140,7 @@ export class PipelineRuntime {
       activityUnsubscribers: new Map(),
       closedSessions: new WeakSet(),
       nodeTasks: new Map(),
+      explicitRetryNodes: new Set(),
     };
     this.runs.set(runId, active);
     await this.store?.create(cloneSnapshot(snapshot));
@@ -217,6 +219,60 @@ export class PipelineRuntime {
     active.snapshot.updatedAt = this.isoNow();
     await this.persist(active.snapshot);
     await this.emitRuntimeEvent({ runId, type: "resumed", nodeId: pause.nodeId, at: active.snapshot.updatedAt });
+    return this.advance(active);
+  }
+
+  async retryNode(
+    runId: string,
+    nodeId: string,
+    pauseId: string,
+  ): Promise<PipelineRuntimeResult> {
+    const active = await this.requireActiveRun(runId);
+    const pause = active.snapshot.pendingPause;
+    if (!pause || pause.id !== pauseId || pause.nodeId !== nodeId) {
+      const diagnostic = {
+        code: "invalid_resume",
+        message: `Pause "${pauseId}" is not current for run "${runId}".`,
+      };
+      return { status: "failed", runId, error: diagnostic, snapshot: cloneSnapshot(active.snapshot) };
+    }
+    const node = active.program.nodesById.get(nodeId);
+    if (!node || node.kind !== "agent") {
+      const diagnostic = {
+        nodeId,
+        code: "invalid_retry_node",
+        message: `Node "${nodeId}" is not an agent node in run "${runId}".`,
+      };
+      return { status: "failed", runId, error: diagnostic, snapshot: cloneSnapshot(active.snapshot) };
+    }
+    const state = active.snapshot.nodeStates[nodeId];
+    if (!state || state.status !== "completed") {
+      const diagnostic = {
+        nodeId,
+        code: "invalid_retry_node",
+        message: `Node "${nodeId}" is not completed in run "${runId}".`,
+      };
+      return { status: "failed", runId, error: diagnostic, snapshot: cloneSnapshot(active.snapshot) };
+    }
+
+    for (const [key, artifact] of Object.entries(active.snapshot.artifacts)) {
+      if (artifact.producerNodeId === nodeId) {
+        delete active.snapshot.artifacts[key];
+      }
+    }
+    if (active.snapshot.finalArtifact?.producerNodeId === nodeId) {
+      active.snapshot.finalArtifact = undefined;
+    }
+    active.snapshot.nodeStates[nodeId] = {
+      status: "pending",
+      attempts: state.attempts,
+    };
+    active.snapshot.pendingPause = undefined;
+    active.snapshot.status = "running";
+    active.snapshot.updatedAt = this.isoNow();
+    active.explicitRetryNodes.add(nodeId);
+    await this.persist(active.snapshot);
+    await this.emitRuntimeEvent({ runId, type: "resumed", nodeId, at: active.snapshot.updatedAt });
     return this.advance(active);
   }
 
@@ -366,10 +422,12 @@ export class PipelineRuntime {
         message: unsupportedPolicy.message,
       };
     }
+    const explicitRetry = active.explicitRetryNodes.delete(node.id);
+    const maximumAttempt = explicitRetry ? state.attempts + 1 : node.retry.maxAttempts;
     if (node.interaction) {
-      return this.executeInterviewNode(active, node, prompt, inputs);
+      return this.executeInterviewNode(active, node, prompt, inputs, undefined, maximumAttempt);
     }
-    for (let attempt = state.attempts + 1; attempt <= node.retry.maxAttempts; attempt++) {
+    for (let attempt = state.attempts + 1; attempt <= maximumAttempt; attempt++) {
       active.snapshot.nodeStates[node.id] = { ...state, status: "running", attempts: attempt, startedAt: state.startedAt ?? this.isoNow() };
       active.snapshot.updatedAt = this.isoNow();
       await this.persist(active.snapshot);
@@ -408,7 +466,7 @@ export class PipelineRuntime {
         }
 
         active.snapshot.diagnostics.push({ nodeId: node.id, attempt, code: result.code, message: result.message });
-        if (!result.retryable || attempt >= node.retry.maxAttempts) {
+        if (!result.retryable || attempt >= maximumAttempt) {
           active.snapshot.nodeStates[node.id] = {
             ...active.snapshot.nodeStates[node.id],
             status: "failed",
@@ -448,6 +506,7 @@ export class PipelineRuntime {
     originalPrompt: string,
     inputs: Record<string, PipelineArtifact>,
     fixedAttempt?: number,
+    maximumAttempt = node.retry.maxAttempts,
   ): Promise<PipelineRuntimeDiagnostic | { ok: true } | { paused: PipelineRuntimeResult }> {
     const protocol = node.interaction ? getPipelineInterviewProtocol(node.interaction.protocol) : undefined;
     if (!protocol || !node.output || !node.interaction) {
@@ -480,7 +539,7 @@ export class PipelineRuntime {
     const firstAttempt = fixedAttempt ?? active.snapshot.nodeStates[node.id].attempts + 1;
     let replayNextAttempt = Boolean(existing) && !active.sessions.has(node.id);
 
-    for (let attempt = firstAttempt; attempt <= node.retry.maxAttempts; attempt++) {
+    for (let attempt = firstAttempt; attempt <= maximumAttempt; attempt++) {
       active.snapshot.nodeStates[node.id] = {
         ...active.snapshot.nodeStates[node.id],
         status: "running",
@@ -514,7 +573,7 @@ export class PipelineRuntime {
         });
         if (!("artifact" in result)) {
           active.snapshot.diagnostics.push({ nodeId: node.id, attempt, code: result.code, message: result.message });
-          if (!result.retryable || attempt >= node.retry.maxAttempts) {
+          if (!result.retryable || attempt >= maximumAttempt) {
             active.snapshot.nodeStates[node.id] = {
               ...active.snapshot.nodeStates[node.id],
               status: "failed",
@@ -733,6 +792,7 @@ export class PipelineRuntime {
         activityUnsubscribers: new Map<AgentNodeSession, () => void>(),
         closedSessions: new WeakSet<AgentNodeSession>(),
         nodeTasks: new Map<string, Promise<NodeTaskResult>>(),
+        explicitRetryNodes: new Set<string>(),
       };
       this.runs.set(runId, restored);
       return restored;
