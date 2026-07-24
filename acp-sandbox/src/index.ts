@@ -1,3 +1,5 @@
+import type { PromotionPolicy } from './gitPromotion.js';
+
 export {
   GitPromotion,
   PROMOTION_POLICIES,
@@ -38,5 +40,5 @@ export interface SandboxAgentConfig {
 }
 
 export interface SandboxPipelineConfig {
-  promotion: import('./gitPromotion.js').PromotionPolicy;
+  promotion: PromotionPolicy;
 }
