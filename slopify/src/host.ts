@@ -235,44 +235,49 @@ export class CliPipelineHost {
   }
 
   private createDefaultSessionFactory(runner: PipelineAgentRunner): AgentNodeSessionFactory {
+    const loggedRunner = (async input => {
+      const runLog = this.findRunLog(input);
+      const activeNode = this.activeAgentNodes.get(input.agentName);
+      const skills = this.options.verbose
+        ? ` (skills=${input.skills?.join(',') || 'none'})`
+        : '';
+      this.options.terminal.writeError(`[slopify] Starting node agent "${input.agentName}"${skills}`);
+      runLog?.appendForNode(activeNode, 'agent_started', {
+        agentName: input.agentName,
+        workspaceCwd: input.workspaceCwd,
+        sideEffects: input.sideEffects,
+        permissions: input.permissions,
+        promotion: input.promotion,
+        skills: input.skills ?? [],
+        promptBytes: Buffer.byteLength(input.promptText, 'utf8'),
+      });
+      try {
+        const result = await runner(input);
+        runLog?.appendForNode(activeNode, 'agent_completed', {
+          agentName: input.agentName,
+          textBytes: Buffer.byteLength(resolvePipelineStepText(result), 'utf8'),
+          promotion: typeof result === 'object' ? result.promotion : undefined,
+        });
+        if (this.options.verbose) {
+          this.options.terminal.writeError(`[slopify] Agent "${input.agentName}" completed.`);
+        }
+        return result;
+      } catch (error: unknown) {
+        runLog?.appendForNode(activeNode, 'agent_failed', {
+          agentName: input.agentName,
+          error: serializeError(error),
+        });
+        this.logger.error(`Agent "${input.agentName}" failed`, error);
+        throw error;
+      }
+    }) as PipelineAgentRunner;
+    loggedRunner.finalizePipelineChangeSet = runner.finalizePipelineChangeSet
+      ? input => runner.finalizePipelineChangeSet!(input)
+      : undefined;
+
     return new PipelineRuntimeAgentAdapter({
       workspaceCwd: () => this.workspaceCwd,
-      runAgent: async input => {
-        const runLog = this.findRunLog(input);
-        const activeNode = this.activeAgentNodes.get(input.agentName);
-        const skills = this.options.verbose
-          ? ` (skills=${input.skills?.join(',') || 'none'})`
-          : '';
-        this.options.terminal.writeError(`[slopify] Starting node agent "${input.agentName}"${skills}`);
-        runLog?.appendForNode(activeNode, 'agent_started', {
-          agentName: input.agentName,
-          workspaceCwd: input.workspaceCwd,
-          sideEffects: input.sideEffects,
-          permissions: input.permissions,
-          promotion: input.promotion,
-          skills: input.skills ?? [],
-          promptBytes: Buffer.byteLength(input.promptText, 'utf8'),
-        });
-        try {
-          const result = await runner(input);
-          runLog?.appendForNode(activeNode, 'agent_completed', {
-            agentName: input.agentName,
-            textBytes: Buffer.byteLength(resolvePipelineStepText(result), 'utf8'),
-            promotion: typeof result === 'object' ? result.promotion : undefined,
-          });
-          if (this.options.verbose) {
-            this.options.terminal.writeError(`[slopify] Agent "${input.agentName}" completed.`);
-          }
-          return result;
-        } catch (error: unknown) {
-          runLog?.appendForNode(activeNode, 'agent_failed', {
-            agentName: input.agentName,
-            error: serializeError(error),
-          });
-          this.logger.error(`Agent "${input.agentName}" failed`, error);
-          throw error;
-        }
-      },
+      runAgent: loggedRunner,
       onSessionUpdate: (activeRunId, node, update) => {
         this.runLogs.get(activeRunId)?.appendNode(node, 'session_update', sanitizeSessionNotification(update));
         this.reportSessionUpdate(activeRunId, node, update);

@@ -233,7 +233,7 @@ test("an Integration Conflict pauses finalization and approval retries only the 
   assert.match(paused.snapshot.pendingPause?.content ?? "", /a, tentative 1/);
   assert.match(paused.snapshot.pendingPause?.content ?? "", /b, tentative 1/);
   assert.match(paused.snapshot.pendingPause?.content ?? "", /src\/shared\.ts/);
-  assert.match(paused.snapshot.pendingPause?.content ?? "", /Aucun changement n'a été appliqué au workspace hôte/);
+  assert.match(paused.snapshot.pendingPause?.content ?? "", /Aucun changement n'a été transféré vers le workspace hôte/);
   assert.deepEqual(terminalEvents, ["paused"]);
   assert.equal((await store.load(paused.runId))?.status, "paused");
 
@@ -253,6 +253,40 @@ test("an Integration Conflict pauses finalization and approval retries only the 
     ["a", "b", "c"],
   );
   assert.deepEqual(terminalEvents, ["paused", "completed"]);
+});
+
+test("an Integration Conflict remains retryable without a persistent run store", async () => {
+  const program = multiAgentProgram();
+  let finalization = 0;
+  const adapter = successfulAdapter(async input => {
+    finalization += 1;
+    if (finalization === 1) {
+      throw new PipelineIntegrationConflictError({
+        runId: input.runId,
+        retryNodeId: "b",
+        checkpoints: [
+          { nodeId: "a", attempt: 1, commit: "a-1", ref: "refs/checkpoints/a-1" },
+          { nodeId: "b", attempt: 1, commit: "b-1", ref: "refs/checkpoints/b-1" },
+        ],
+        files: ["src/shared.ts"],
+      });
+    }
+    return noChangesResult(input);
+  });
+  const runtime = new PipelineRuntime(adapter, {
+    runIdFactory: () => "run-in-memory-integration-conflict",
+  });
+
+  const paused = await runtime.start(program);
+  assert.equal(paused.status, "paused");
+
+  const completed = await runtime.resume(paused.runId, {
+    pauseId: paused.status === "paused" ? paused.pause.id : "unreachable",
+    kind: "approve",
+  });
+
+  assert.equal(completed.status, "completed");
+  assert.equal(finalization, 2);
 });
 
 test("a rejected Promotion cancels the run without emitting completed", async () => {

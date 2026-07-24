@@ -5,6 +5,7 @@ import * as path from 'node:path';
 import test from 'node:test';
 
 import {
+  PipelineIntegrationConflictError,
   compilePipelineV3Definition,
   type CompiledPipelineProgram,
   type PipelineAgentRunInput,
@@ -88,6 +89,62 @@ test('runs an injected backend and forwards agent metadata', async () => {
   });
   assert.equal(completed.status, 'completed');
   assert.equal(completed.status === 'completed' ? completed.artifact?.value : '', 'Use PipelineRuntime');
+});
+
+test('surfaces an Integration Conflict and retries its node through the CLI host', async () => {
+  const attempts: number[] = [];
+  let finalizations = 0;
+  const runner: PipelineAgentRunner = async input => {
+    attempts.push(input.attempt ?? 0);
+    return { text: 'Which API?' };
+  };
+  runner.finalizePipelineChangeSet = async input => {
+    finalizations += 1;
+    if (finalizations === 1) {
+      throw new PipelineIntegrationConflictError({
+        runId: input.runId,
+        retryNodeId: 'plan',
+        checkpoints: [
+          { nodeId: 'plan', attempt: 1, commit: 'plan-1', ref: 'refs/checkpoints/plan-1' },
+        ],
+        files: ['src/shared.ts'],
+      });
+    }
+    return {
+      promotion: 'no_changes',
+      preview: {
+        baseCommit: 'base',
+        changeSetCommit: 'base',
+        fileCount: 0,
+        files: [],
+        diff: '',
+      },
+      integratedNodeIds: ['plan'],
+    };
+  };
+  const host = new CliPipelineHost(workspace(), {
+    terminal: new FakeTerminal(),
+    backendFactory: backend(runner),
+    runIdFactory: () => 'run-cli-integration-conflict',
+  });
+
+  const question = await host.start('question-flow', 'add a CLI');
+  assert.equal(question.status, 'paused');
+  const conflict = await host.resume(question.runId, {
+    pauseId: question.status === 'paused' ? question.pause.id : 'unreachable',
+    kind: 'answer',
+    value: 'Use PipelineRuntime',
+  });
+  assert.equal(conflict.status, 'paused');
+  assert.equal(conflict.snapshot.pendingPause?.integrationConflict?.retryNodeId, 'plan');
+
+  const completed = await host.resume(conflict.runId, {
+    pauseId: conflict.status === 'paused' ? conflict.pause.id : 'unreachable',
+    kind: 'approve',
+  });
+  assert.equal(completed.status, 'completed');
+  assert.deepEqual(attempts, [1, 2]);
+  assert.equal(finalizations, 2);
 });
 
 test('passes workspace services to the backend factory', () => {
