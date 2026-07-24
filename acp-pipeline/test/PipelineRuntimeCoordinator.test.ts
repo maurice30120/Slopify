@@ -170,3 +170,63 @@ test("a finalization failure persists and emits failed without a premature compl
   assert.equal((await store.load("run-failed-finalization"))?.status, "failed");
   assert.deepEqual((await store.readEvents("run-failed-finalization")).map(event => event.type).filter(type => type === "completed" || type === "failed"), ["failed"]);
 });
+
+test("a rejected Promotion cancels the run without emitting completed", async () => {
+  const program = multiAgentProgram();
+  const store = new InMemoryPipelineRunStore();
+  const terminalEvents: string[] = [];
+  const adapter = successfulAdapter(async input => ({
+    ...noChangesResult(input),
+    promotion: "rejected",
+  }));
+  const runtime = new PipelineRuntime(adapter, {
+    runIdFactory: () => "run-rejected-promotion",
+    store,
+    onEvent: event => {
+      if (event.type === "completed" || event.type === "cancelled") terminalEvents.push(event.type);
+    },
+  });
+
+  const result = await runtime.start(program);
+
+  assert.equal(result.status, "cancelled");
+  assert.equal((result as typeof result & { promotion?: string }).promotion, "rejected");
+  assert.deepEqual(terminalEvents, ["cancelled"]);
+  assert.equal((await store.load("run-rejected-promotion"))?.status, "cancelled");
+  assert.deepEqual(
+    (await store.readEvents("run-rejected-promotion"))
+      .map(event => event.type)
+      .filter(type => type === "completed" || type === "cancelled"),
+    ["cancelled"],
+  );
+});
+
+test("a cancelled Promotion cancels the run without emitting completed", async () => {
+  const program = multiAgentProgram();
+  const store = new InMemoryPipelineRunStore();
+  const terminalEvents: string[] = [];
+  const adapter = successfulAdapter(async input => ({
+    ...noChangesResult(input),
+    promotion: "cancelled",
+  }));
+  const runtime = new PipelineRuntime(adapter, {
+    runIdFactory: () => "run-cancelled-promotion",
+    store,
+    onEvent: event => {
+      if (event.type === "completed" || event.type === "cancelled") terminalEvents.push(event.type);
+    },
+  });
+
+  const result = await runtime.start(program);
+
+  assert.equal(result.status, "cancelled");
+  assert.equal((result as typeof result & { promotion?: string }).promotion, "cancelled");
+  assert.deepEqual(terminalEvents, ["cancelled"]);
+  assert.equal((await store.load("run-cancelled-promotion"))?.status, "cancelled");
+  assert.deepEqual(
+    (await store.readEvents("run-cancelled-promotion"))
+      .map(event => event.type)
+      .filter(type => type === "completed" || type === "cancelled"),
+    ["cancelled"],
+  );
+});

@@ -108,6 +108,20 @@ export interface PromotionResult extends PromotionRequest {
 export class GitPromotion {
   constructor(private readonly execute: SubprocessExecutor) {}
 
+  async deleteAgentCheckpoints(
+    workspaceCwd: string,
+    checkpoints: readonly AgentCheckpointResult[],
+  ): Promise<void> {
+    for (const result of checkpoints) {
+      await this.requireSuccess({
+        command: 'git',
+        args: ['update-ref', '-d', result.checkpoint.ref],
+        cwd: workspaceCwd,
+        stdin: 'ignore',
+      }, `delete superseded Agent Checkpoint "${result.checkpoint.nodeId}" attempt ${result.checkpoint.attempt}`);
+    }
+  }
+
   async createAgentCheckpoint(input: CreateAgentCheckpointInput): Promise<AgentCheckpointResult> {
     const sandboxGit = (args: string[]): SubprocessRequest => ({
       command: 'sbx',

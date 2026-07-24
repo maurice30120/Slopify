@@ -109,3 +109,79 @@ test('collects parallel sandbox checkpoints, previews once, and promotes one det
     [['merge', '--ff-only', '--no-edit', finalized.changeSetRef]],
   );
 });
+
+test('integrates the highest checkpoint attempt and cleans up superseded attempt refs', async () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'acp-workspace-retry-'));
+  const calls: SubprocessRequest[] = [];
+  const runtime = createWorkspaceRuntime({
+    workspaceCwd: cwd,
+    resolvedCatalog: {
+      agents: { Isolated: { transport: 'sandbox', agent: 'codex', model: 'gpt-5.6-codex' } },
+      native: {
+        filePath: path.join(cwd, '.acp', 'acp-agents.json'),
+        agents: {},
+        pipeline: { enabled: true, instructionsMaxBytes: 256 * 1024, timeouts: {} },
+        errors: [],
+      },
+      sandcastle: {
+        filePath: path.join(cwd, '.acp', '.sandcastle', 'config.json'),
+        promotion: 'ask',
+        agents: {},
+        errors: [],
+      },
+      errors: [],
+    },
+    host: {
+      permissionContext: () => undefined,
+      requestPromotion: async () => 'cancelled',
+      logger: { log: () => undefined, error: () => undefined },
+    },
+    sandboxExecutor: async request => {
+      calls.push(request);
+      const args = request.args;
+      const joined = args.join(' ');
+      if (request.command === 'git' && joined === 'rev-parse --is-inside-work-tree') return result('true\n');
+      if (request.command === 'git' && joined === 'status --porcelain=v1') return result();
+      if (request.command === 'git' && joined === 'rev-parse HEAD') return result('base123\n');
+      if (request.command === 'git' && args[0] === 'rev-parse' && args[1]?.startsWith('refs/slopify/checkpoints/')) {
+        return result(`checkpoint-${args[1].match(/-(\d+)-[a-f0-9]+$/)?.[1]}\n`);
+      }
+      if (request.command === 'git' && joined === 'show -s --format=%cI base123') return result('2026-07-24T10:00:00+02:00\n');
+      if (request.command === 'git' && args[0] === 'merge-tree') return result('tree\n');
+      if (request.command === 'git' && args[0] === 'commit-tree') return result('integrated\n');
+      if (request.command === 'git' && args[0] === 'diff' && args.includes('--name-only')) return result('src/a.ts\n');
+      if (request.command === 'git' && args[0] === 'diff') return result('diff\n');
+      if (joined === 'version') return result('Docker Sandbox 0.35.0\n');
+      if (joined === 'create --help') return result('Usage: sbx create --clone');
+      if (joined === 'ls --help') return result('Usage: sbx ls --json');
+      if (joined === 'policy init --help') return result('Usage: sbx policy init');
+      return result();
+    },
+  });
+  const program = compilePipelineV3Definition({
+    version: 3,
+    id: 'retry',
+    title: 'Retry',
+    nodes: [{
+      id: 'a', agent: 'Isolated', prompt: 'A',
+      policy: { filesystem: 'workspace-write', terminal: 'workspace-write', promotion: 'discard' },
+      output: { name: 'out', type: 'note', format: 'text' },
+    }],
+  }, { Isolated: {} }).program!;
+
+  for (const attempt of [2, 1]) {
+    await runtime.runAgent({
+      workspaceCwd: cwd, agentName: 'Isolated', runId: 'run-retry', nodeId: 'a', attempt,
+      promptText: 'A', sideEffects: 'workspace', promotion: 'discard',
+    });
+  }
+  await runtime.runAgent.finalizePipelineChangeSet!({ runId: 'run-retry', program });
+
+  const integratedRef = calls.find(call => call.command === 'git' && call.args[0] === 'merge-tree')?.args.at(-1);
+  assert.match(integratedRef ?? '', /-2-[a-f0-9]+$/);
+  assert.deepEqual(
+    calls.filter(call => call.command === 'git' && call.args[0] === 'update-ref' && call.args[1] === '-d')
+      .map(call => call.args[2]?.match(/-(\d+)-[a-f0-9]+$/)?.[1]),
+    ['1'],
+  );
+});

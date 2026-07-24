@@ -69,7 +69,7 @@ export function createWorkspaceRuntime(options: CreateWorkspaceRuntimeOptions): 
   const programs = getPipelinePrograms(options.workspaceCwd, options.host.logger);
   const runner = new AcpRunner();
   const sandboxRuntime = new DockerSandboxRuntime(options.sandboxExecutor);
-  const checkpointsByRunId = new Map<string, Map<string, AgentCheckpointResult>>();
+  const checkpointsByRunId = new Map<string, Map<string, Map<number, AgentCheckpointResult>>>();
 
   const runAgent = (async input => {
     const config = resolveAgent(catalog, input.agentName);
@@ -93,12 +93,16 @@ export function createWorkspaceRuntime(options: CreateWorkspaceRuntimeOptions): 
       if (input.sideEffects === 'workspace') {
         const runId = input.runId ?? 'run';
         const nodeId = input.nodeId ?? input.agentName;
-        const checkpoints = checkpointsByRunId.get(runId) ?? new Map<string, AgentCheckpointResult>();
-        checkpoints.set(nodeId, {
+        const attempt = input.attempt ?? 1;
+        const checkpoints = checkpointsByRunId.get(runId)
+          ?? new Map<string, Map<number, AgentCheckpointResult>>();
+        const attempts = checkpoints.get(nodeId) ?? new Map<number, AgentCheckpointResult>();
+        attempts.set(attempt, {
           checkpointStatus: result.checkpointStatus,
           checkpoint: result.checkpoint,
           preview: result.preview,
         });
+        checkpoints.set(nodeId, attempts);
         checkpointsByRunId.set(runId, checkpoints);
       }
       return { text: result.stdout, promotion: result.status };
@@ -146,7 +150,7 @@ export function createWorkspaceRuntime(options: CreateWorkspaceRuntimeOptions): 
 
 interface FinalizePipelineChangeSetOptions {
   input: PipelineChangeSetFinalizationInput;
-  checkpointsByRunId: Map<string, Map<string, AgentCheckpointResult>>;
+  checkpointsByRunId: Map<string, Map<string, Map<number, AgentCheckpointResult>>>;
   workspaceCwd: string;
   host: WorkspaceRuntimeHost;
   execute?: SubprocessExecutor;
@@ -173,9 +177,21 @@ async function finalizePipelineChangeSet(
 
   try {
     const orderedNodeIds = orderPipelineNodeIdsForIntegration(input.program, checkpoints.keys());
-    const orderedCheckpoints = orderedNodeIds.map(nodeId => checkpoints.get(nodeId)!);
+    const selectedCheckpoints = new Map<string, AgentCheckpointResult>();
+    const supersededCheckpoints: AgentCheckpointResult[] = [];
+    for (const nodeId of orderedNodeIds) {
+      const attempts = checkpoints.get(nodeId)!;
+      const attemptNumbers = [...attempts.keys()].sort((left, right) => left - right);
+      const highestAttempt = attemptNumbers.at(-1)!;
+      selectedCheckpoints.set(nodeId, attempts.get(highestAttempt)!);
+      for (const attempt of attemptNumbers.slice(0, -1)) {
+        supersededCheckpoints.push(attempts.get(attempt)!);
+      }
+    }
+    const orderedCheckpoints = orderedNodeIds.map(nodeId => selectedCheckpoints.get(nodeId)!);
     const policy = resolvePipelinePromotionPolicy(input.program, orderedNodeIds);
     const gitPromotion = new GitPromotion(options.execute ?? createNodeSubprocessExecutor());
+    await gitPromotion.deleteAgentCheckpoints(options.workspaceCwd, supersededCheckpoints);
     const changeSet = await gitPromotion.integrateAgentCheckpoints({
       workspaceCwd: options.workspaceCwd,
       runId: input.runId,

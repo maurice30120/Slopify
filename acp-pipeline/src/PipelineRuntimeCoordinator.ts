@@ -120,10 +120,29 @@ export class PipelineRuntime extends CorePipelineRuntime {
 
     try {
       const changeSet = await this.finalizer({ runId: result.runId, program });
-      await this.completionBuffer.flush(result.runId);
       if (!changeSet) {
+        await this.completionBuffer.flush(result.runId);
         return result;
       }
+      if (changeSet.promotion === "rejected" || changeSet.promotion === "cancelled") {
+        const snapshot = structuredClone(result.snapshot);
+        snapshot.status = "cancelled";
+        snapshot.updatedAt = new Date().toISOString();
+        await this.completionBuffer.cancel(
+          result.runId,
+          snapshot,
+          `Pipeline Change Set Promotion ${changeSet.promotion}.`,
+        );
+        return Object.assign({
+          status: "cancelled" as const,
+          runId: result.runId,
+          snapshot,
+        }, {
+          promotion: changeSet.promotion,
+          changeSet,
+        }) as CoordinatedPipelineRuntimeResult;
+      }
+      await this.completionBuffer.flush(result.runId);
       return Object.assign(result, {
         promotion: changeSet.promotion,
         changeSet,
@@ -226,6 +245,23 @@ class PipelineCompletionBuffer {
       type: "failed",
       nodeId: diagnostic.nodeId,
       message: diagnostic.message,
+      at: snapshot.updatedAt,
+    };
+    await this.targetOnEvent?.(event);
+    await this.targetStore?.appendEvent(runId, event);
+  }
+
+  async cancel(
+    runId: string,
+    snapshot: PipelineRuntimeSnapshot,
+    message: string,
+  ): Promise<void> {
+    this.completions.delete(runId);
+    await this.targetStore?.save(snapshot);
+    const event: PipelineRuntimeEvent = {
+      runId,
+      type: "cancelled",
+      message,
       at: snapshot.updatedAt,
     };
     await this.targetOnEvent?.(event);
