@@ -20,7 +20,7 @@ export async function main(
       return 0;
     }
 
-    const keepSandboxes = command.kind === 'run' && command.keepSandboxes;
+    const keepSandboxes = command.kind === 'run' && command.keepSandboxes === true;
     host = new CliPipelineHost(command.cwd, {
       terminal,
       backendFactory: (workspaceCwd, context) => backendFactory(
