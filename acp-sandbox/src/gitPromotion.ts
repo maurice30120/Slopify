@@ -68,6 +68,13 @@ export interface PromotionResult extends PromotionRequest {
   status: PromotionStatus;
 }
 
+/**
+ * Gère le cycle Git des changements produits par un agent isolé.
+ *
+ * La classe crée et récupère les Agent Checkpoints sans modifier le workspace
+ * hôte, construit leur aperçu, puis applique une décision unique de Promotion
+ * sur l'ensemble du Pipeline Change Set après revalidation de sa base Git.
+ */
 export class GitPromotion {
   constructor(private readonly execute: SubprocessExecutor) {}
 
