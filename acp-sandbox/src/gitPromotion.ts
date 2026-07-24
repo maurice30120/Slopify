@@ -40,6 +40,31 @@ export interface AgentCheckpointResult {
   preview: AgentCheckpointPreview;
 }
 
+export interface IntegrationConflict {
+  runId: string;
+  baseCommit: string;
+  currentCommit: string;
+  incomingCheckpoint: AgentCheckpoint;
+  checkpoints: AgentCheckpoint[];
+  files: string[];
+}
+
+export class IntegrationConflictError extends Error {
+  readonly code = 'integration_conflict';
+
+  constructor(readonly conflict: IntegrationConflict) {
+    const checkpoints = conflict.checkpoints
+      .map(checkpoint => `${checkpoint.nodeId}#${checkpoint.attempt}`)
+      .join(', ');
+    const files = conflict.files.length > 0 ? conflict.files.join(', ') : 'unknown files';
+    super(
+      `Integration Conflict while applying Agent Checkpoint "${conflict.incomingCheckpoint.nodeId}" `
+      + `attempt ${conflict.incomingCheckpoint.attempt}. Checkpoints: ${checkpoints}. Files: ${files}.`,
+    );
+    this.name = 'IntegrationConflictError';
+  }
+}
+
 export interface CreateAgentCheckpointInput {
   workspaceCwd: string;
   sandboxName: string;
@@ -250,7 +275,7 @@ export class GitPromotion {
       };
     }
 
-    // Tous les commits techniques réutilisent la date de la base : à entrées et
+    // Tous les commits techniques réutilisent la date de la base : à entrées et
     // ordre identiques, l'identifiant du Pipeline Change Set reste reproductible.
     const integrationDate = (await this.requireSuccess({
       command: 'git',
@@ -261,6 +286,7 @@ export class GitPromotion {
     }, 'read the Pipeline base date')).stdout.trim() || '2000-01-01T00:00:00Z';
 
     let currentCommit = baseCommit;
+    const integratedCheckpoints: AgentCheckpoint[] = [];
     for (const [index, result] of changed.entries()) {
       const checkpoint = result.checkpoint;
       await this.requireSuccess({
@@ -271,15 +297,32 @@ export class GitPromotion {
         signal: input.signal,
       }, `verify Agent Checkpoint "${checkpoint.nodeId}" ancestry`);
 
-      // merge-tree et commit-tree construisent l'historique sur une ref privée ;
+      // merge-tree et commit-tree construisent l'historique sur une ref privée ;
       // aucun checkout ni fichier du workspace hôte n'est modifié ici.
-      const mergedTree = (await this.requireSuccess({
+      const mergeResult = await this.execute({
         command: 'git',
         args: ['merge-tree', '--write-tree', currentCommit, checkpoint.ref],
         cwd: input.workspaceCwd,
         stdin: 'ignore',
         signal: input.signal,
-      }, `integrate Agent Checkpoint "${checkpoint.nodeId}"`)).stdout.trim().split(/\r?\n/u)[0];
+      });
+      if (mergeResult.exitCode !== 0) {
+        const files = integrationConflictFiles(mergeResult);
+        if (mergeResult.exitCode === 1 || files.length > 0) {
+          throw new IntegrationConflictError({
+            runId: input.runId,
+            baseCommit,
+            currentCommit,
+            incomingCheckpoint: checkpoint,
+            checkpoints: [...integratedCheckpoints, checkpoint],
+            files,
+          });
+        }
+        const detail = mergeResult.stderr.trim() || mergeResult.stdout.trim() || `exit code ${mergeResult.exitCode}`;
+        throw new Error(`Unable to integrate Agent Checkpoint "${checkpoint.nodeId}": ${detail}`);
+      }
+
+      const mergedTree = mergeResult.stdout.trim().split(/\r?\n/u)[0];
       if (!mergedTree) {
         throw new Error(`Unable to integrate Agent Checkpoint "${checkpoint.nodeId}": git merge-tree returned an empty tree id.`);
       }
@@ -310,6 +353,7 @@ export class GitPromotion {
       if (!currentCommit) {
         throw new Error(`Unable to record integrated Agent Checkpoint "${checkpoint.nodeId}": git commit-tree returned an empty commit id.`);
       }
+      integratedCheckpoints.push(checkpoint);
     }
 
     const ref = pipelineChangeSetRef(input.runId);
@@ -454,6 +498,23 @@ export class GitPromotion {
     }
     return result;
   }
+}
+
+function integrationConflictFiles(result: SubprocessResult): string[] {
+  const files = new Set<string>();
+  const output = `${result.stdout}\n${result.stderr}`;
+  for (const line of output.split(/\r?\n/u)) {
+    const staged = /^\d{6}\s+[0-9a-f]+\s+[123]\t(.+)$/iu.exec(line);
+    if (staged?.[1]) {
+      files.add(staged[1]);
+      continue;
+    }
+    const conflictIn = /^CONFLICT\b.*?\bin\s+(.+)$/iu.exec(line);
+    if (conflictIn?.[1]) {
+      files.add(conflictIn[1]);
+    }
+  }
+  return [...files].sort();
 }
 
 function pipelineChangeSetRef(runId: string): string {

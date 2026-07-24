@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import {
   GitPromotion,
+  IntegrationConflictError,
   PROMOTION_POLICIES,
   type AgentCheckpointResult,
   type PipelineChangeSet,
@@ -135,6 +136,48 @@ test('integrates Agent Checkpoints in the supplied deterministic order without m
   const commitCalls = fake.calls.filter(call => call.args[0] === 'commit-tree');
   assert.equal(commitCalls.length, 2);
   assert.equal(commitCalls.every(call => call.env?.GIT_AUTHOR_DATE === '2026-07-24T10:00:00+02:00'), true);
+});
+
+test('reports an Integration Conflict without publishing or mutating the host workspace', async () => {
+  const fake = integrationGit();
+  let mergeIndex = 0;
+  const execute: SubprocessExecutor = async request => {
+    if (request.command === 'git' && request.args[0] === 'merge-tree' && ++mergeIndex === 2) {
+      fake.calls.push(request);
+      return result(
+        '100644 abc 1\tsrc/shared.ts\n'
+        + '100644 def 2\tsrc/shared.ts\n'
+        + '100644 ghi 3\tsrc/shared.ts\n'
+        + 'CONFLICT (content): Merge conflict in src/shared.ts\n',
+        '',
+        1,
+      );
+    }
+    return fake.execute(request);
+  };
+
+  await assert.rejects(
+    new GitPromotion(execute).integrateAgentCheckpoints({
+      workspaceCwd: '/repo',
+      runId: 'run-1',
+      checkpoints: [checkpoint('a'), checkpoint('b')],
+    }),
+    (error: unknown) => {
+      assert.ok(error instanceof IntegrationConflictError);
+      assert.deepEqual(
+        error.conflict.checkpoints.map(item => `${item.nodeId}#${item.attempt}`),
+        ['a#1', 'b#1'],
+      );
+      assert.deepEqual(error.conflict.files, ['src/shared.ts']);
+      return true;
+    },
+  );
+
+  assert.deepEqual(mutatingWorkspaceCalls(fake.calls), []);
+  assert.equal(
+    fake.calls.some(call => call.args[0] === 'update-ref' && call.args[1]?.includes('refs/slopify/runs/')),
+    false,
+  );
 });
 
 test('an empty checkpoint remains attributed but does not create an integration commit', async () => {

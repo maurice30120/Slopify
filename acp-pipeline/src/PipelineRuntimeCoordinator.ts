@@ -9,6 +9,7 @@ import type {
   PipelineChangeSetFinalizationInput,
   PipelineChangeSetFinalizationResult,
 } from "./PipelineAgentRunner";
+import { PipelineIntegrationConflictError } from "./PipelineAgentRunner";
 import type {
   CompiledPipelineNode,
   CompiledPipelineProgram,
@@ -85,6 +86,18 @@ export class PipelineRuntime extends CorePipelineRuntime {
     runId: string,
     decision: PipelineResumeDecision,
   ): Promise<PipelineRuntimeResult> {
+    const snapshot = await this.inspect(runId);
+    const conflict = snapshot?.pendingPause?.integrationConflict;
+    if (
+      conflict
+      && snapshot.pendingPause?.id === decision.pauseId
+      && decision.kind === "approve"
+    ) {
+      const program = this.programsByRunId.get(runId)
+        ?? this.coordinatedProgramsById.get(snapshot.pipelineId);
+      const result = await super.retryNode(runId, conflict.retryNodeId, decision.pauseId);
+      return program ? this.finalizeTerminalResult(result, program) : result;
+    }
     const result = await super.resume(runId, decision);
     const program = this.programsByRunId.get(runId)
       ?? this.coordinatedProgramsById.get(result.snapshot.pipelineId);
@@ -124,6 +137,7 @@ export class PipelineRuntime extends CorePipelineRuntime {
       const changeSet = await this.finalizer({ runId: result.runId, program });
       if (!changeSet) {
         await this.completionBuffer.flush(result.runId);
+        this.cleanupRun(result.runId);
         return result;
       }
       if (changeSet.promotion === "rejected" || changeSet.promotion === "cancelled") {
@@ -135,6 +149,7 @@ export class PipelineRuntime extends CorePipelineRuntime {
           snapshot,
           `Pipeline Change Set Promotion ${changeSet.promotion}.`,
         );
+        this.cleanupRun(result.runId);
         return Object.assign({
           status: "cancelled" as const,
           runId: result.runId,
@@ -145,11 +160,26 @@ export class PipelineRuntime extends CorePipelineRuntime {
         }) as CoordinatedPipelineRuntimeResult;
       }
       await this.completionBuffer.flush(result.runId);
+      this.cleanupRun(result.runId);
       return Object.assign(result, {
         promotion: changeSet.promotion,
         changeSet,
       }) as CoordinatedPipelineRuntimeResult;
     } catch (error: unknown) {
+      if (error instanceof PipelineIntegrationConflictError) {
+        const snapshot = structuredClone(result.snapshot);
+        const pause = integrationConflictPause(error);
+        snapshot.status = "paused";
+        snapshot.pendingPause = pause;
+        snapshot.updatedAt = new Date().toISOString();
+        await this.completionBuffer.pause(result.runId, snapshot, pause);
+        return {
+          status: "paused",
+          runId: result.runId,
+          pause,
+          snapshot,
+        };
+      }
       const diagnostic: PipelineRuntimeDiagnostic = {
         code: "pipeline_change_set_finalization_failed",
         message: error instanceof Error && error.message ? error.message : String(error),
@@ -159,14 +189,13 @@ export class PipelineRuntime extends CorePipelineRuntime {
       snapshot.diagnostics.push(diagnostic);
       snapshot.updatedAt = new Date().toISOString();
       await this.completionBuffer.fail(result.runId, snapshot, diagnostic);
+      this.cleanupRun(result.runId);
       return {
         status: "failed",
         runId: result.runId,
         error: diagnostic,
         snapshot,
       };
-    } finally {
-      this.cleanupRun(result.runId);
     }
   }
 
@@ -253,6 +282,24 @@ class PipelineCompletionBuffer {
     await this.targetStore?.appendEvent(runId, event);
   }
 
+  async pause(
+    runId: string,
+    snapshot: PipelineRuntimeSnapshot,
+    pause: NonNullable<PipelineRuntimeSnapshot["pendingPause"]>,
+  ): Promise<void> {
+    this.completions.delete(runId);
+    await this.targetStore?.save(snapshot);
+    const event: PipelineRuntimeEvent = {
+      runId,
+      type: "paused",
+      nodeId: pause.nodeId,
+      message: pause.content,
+      at: snapshot.updatedAt,
+    };
+    await this.targetOnEvent?.(event);
+    await this.targetStore?.appendEvent(runId, event);
+  }
+
   async cancel(
     runId: string,
     snapshot: PipelineRuntimeSnapshot,
@@ -279,6 +326,40 @@ class PipelineCompletionBuffer {
     this.completions.set(runId, created);
     return created;
   }
+}
+
+function integrationConflictPause(error: PipelineIntegrationConflictError): NonNullable<PipelineRuntimeSnapshot["pendingPause"]> {
+  const conflict = error.conflict;
+  const checkpointLines = conflict.checkpoints
+    .map(checkpoint => `- ${checkpoint.nodeId}, tentative ${checkpoint.attempt}`)
+    .join("\n");
+  const fileLines = conflict.files.length > 0
+    ? conflict.files.map(file => `- ${file}`).join("\n")
+    : "- fichiers inconnus";
+  const attempt = conflict.checkpoints.find(checkpoint => checkpoint.nodeId === conflict.retryNodeId)?.attempt ?? 0;
+  return {
+    id: `${conflict.runId}:${conflict.retryNodeId}:integration-conflict:${attempt}`,
+    nodeId: conflict.retryNodeId,
+    type: "approval",
+    format: "markdown",
+    integrationConflict: conflict,
+    content: [
+      "## Integration Conflict",
+      "",
+      "Le Pipeline Change Set ne peut pas être intégré.",
+      "",
+      "Checkpoints impliqués:",
+      checkpointLines,
+      "",
+      "Fichiers en conflit:",
+      fileLines,
+      "",
+      "Aucun changement n'a été appliqué au workspace hôte.",
+      "Aucune résolution automatique ni Promotion n'a eu lieu.",
+      "",
+      `Approuver pour relancer uniquement le nœud ${conflict.retryNodeId}.`,
+    ].join("\n"),
+  };
 }
 
 /**

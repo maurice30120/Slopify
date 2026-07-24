@@ -2,6 +2,7 @@ import type { PromotionPolicy } from './gitPromotion.js';
 
 export {
   GitPromotion,
+  IntegrationConflictError,
   PROMOTION_POLICIES,
   SLOPIFY_GIT_EMAIL,
   SLOPIFY_GIT_NAME,
@@ -10,6 +11,7 @@ export {
   type AgentCheckpointResult,
   type CreateAgentCheckpointInput,
   type IntegrateAgentCheckpointsInput,
+  type IntegrationConflict,
   type PipelineChangeSet,
   type PipelineChangeSetPreview,
   type PipelineChangeSetResult,

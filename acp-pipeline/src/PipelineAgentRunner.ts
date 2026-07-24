@@ -116,6 +116,36 @@ export interface PipelineChangeSetFinalizationResult {
 	integratedNodeIds: string[];
 }
 
+export interface PipelineIntegrationConflictCheckpoint {
+	nodeId: string;
+	attempt: number;
+	commit: string;
+	ref: string;
+}
+
+export interface PipelineIntegrationConflict {
+	runId: string;
+	retryNodeId: string;
+	checkpoints: PipelineIntegrationConflictCheckpoint[];
+	files: string[];
+}
+
+export class PipelineIntegrationConflictError extends Error {
+	readonly code = "integration_conflict";
+
+	constructor(readonly conflict: PipelineIntegrationConflict) {
+		const checkpoints = conflict.checkpoints
+			.map(checkpoint => `${checkpoint.nodeId}#${checkpoint.attempt}`)
+			.join(", ");
+		const files = conflict.files.length > 0 ? conflict.files.join(", ") : "unknown files";
+		super(
+			`Integration Conflict for pipeline run "${conflict.runId}" while integrating ${checkpoints}. `
+			+ `Files: ${files}. Retry node: "${conflict.retryNodeId}".`,
+		);
+		this.name = "PipelineIntegrationConflictError";
+	}
+}
+
 export interface PipelineAgentRunner {
 	(input: PipelineAgentRunInput): Promise<PipelineStepRunResult>;
 	finalizePipelineChangeSet?(
