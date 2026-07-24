@@ -1,0 +1,138 @@
+import type { SessionNotification } from "@agentclientprotocol/sdk";
+
+import {
+  mapPolicyToLegacyPermissions,
+  mapPolicyToLegacySideEffects,
+} from "./PipelinePolicy";
+import type { PipelineAgentRunner, PipelineStepStatusUpdate } from "./PipelineAgentRunner";
+import type {
+  AgentNodeSession,
+  AgentNodeSessionFactory,
+  AgentNodeSessionFactoryInput,
+  CompiledPipelineNode,
+  PipelineNodeExecutionInput,
+  PipelineNodeExecutionResult,
+  PipelineRuntimeAdapter,
+} from "./PipelineV3Types";
+import { resolvePipelineStepText } from "./PipelineStepCompletion";
+
+export interface PipelineRuntimeAgentAdapterOptions {
+  workspaceCwd: () => string;
+  runAgent: PipelineAgentRunner;
+  onSessionUpdate?: (runId: string, node: CompiledPipelineNode, update: SessionNotification) => void;
+  onStatus?: (runId: string, node: CompiledPipelineNode, update: PipelineStepStatusUpdate) => void;
+}
+
+export class PipelineRuntimeAgentAdapter implements PipelineRuntimeAdapter {
+  constructor(private readonly options: PipelineRuntimeAgentAdapterOptions) {}
+
+  async createSession(input: AgentNodeSessionFactoryInput): Promise<AgentNodeSession> {
+    return new PipelineRuntimeAgentNodeSession(input, this.options);
+  }
+
+  async execute(input: PipelineNodeExecutionInput): Promise<PipelineNodeExecutionResult> {
+    const session = await this.createSession({
+      runId: input.runId,
+      node: input.node,
+      signal: input.signal,
+    });
+    try {
+      return await session.send(input);
+    } finally {
+      await session.close();
+    }
+  }
+
+  asSessionFactory(): AgentNodeSessionFactory {
+    return input => this.createSession(input);
+  }
+}
+
+class PipelineRuntimeAgentNodeSession implements AgentNodeSession {
+  readonly runId: string;
+  readonly nodeId: string;
+  private closed = false;
+  private controller: AbortController;
+
+  constructor(
+    input: AgentNodeSessionFactoryInput,
+    private readonly options: PipelineRuntimeAgentAdapterOptions,
+  ) {
+    this.runId = input.runId;
+    this.nodeId = input.node.id;
+    this.controller = new AbortController();
+    if (input.signal.aborted) {
+      this.controller.abort();
+    } else {
+      input.signal.addEventListener("abort", () => this.controller.abort(), { once: true });
+    }
+  }
+
+  async send(input: PipelineNodeExecutionInput): Promise<PipelineNodeExecutionResult> {
+    const node = input.node;
+    if (this.closed) {
+      return {
+        code: "agent_session_closed",
+        message: `AgentNodeSession for node "${this.nodeId}" is closed.`,
+      };
+    }
+    if (!node.agent) {
+      return {
+        code: "missing_agent",
+        message: `Node "${node.id}" does not declare an ACP agent.`,
+      };
+    }
+    if (!node.output) {
+      return {
+        code: "missing_output",
+        message: `Node "${node.id}" does not declare an output artifact.`,
+      };
+    }
+
+    try {
+      const result = await this.options.runAgent({
+        workspaceCwd: this.options.workspaceCwd(),
+        agentName: node.agent,
+        promptText: input.prompt,
+        prompt: {
+          skills: [...node.skills],
+          // The catalog resolves the public instructionsFile field into this
+          // compatibility slot before compilation.
+          instructions: node.promptFile,
+          task: input.prompt,
+          context: Object.values(input.inputs),
+        },
+        signal: this.controller.signal,
+        onSessionUpdate: update => this.options.onSessionUpdate?.(input.runId, node, update),
+        onStatus: update => this.options.onStatus?.(input.runId, node, update),
+        sideEffects: mapPolicyToLegacySideEffects(node.policy),
+        permissions: mapPolicyToLegacyPermissions(node.policy),
+        promotion: node.policy.promotion,
+        skills: [...node.skills],
+      });
+      return {
+        artifact: {
+          name: node.output.name,
+          type: node.output.type,
+          format: node.output.format,
+          value: resolvePipelineStepText(result),
+        },
+      };
+    } catch (e: unknown) {
+      return {
+        code: "agent_failed",
+        message: e instanceof Error && e.message ? e.message : String(e),
+        retryable: false,
+      };
+    }
+  }
+
+  async cancel(): Promise<void> {
+    this.controller.abort();
+  }
+
+  async close(): Promise<void> {
+    this.closed = true;
+    this.controller.abort();
+  }
+}

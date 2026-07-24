@@ -1,0 +1,21 @@
+{
+  "name": "slopify-workspace",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": [
+    "acp-pipeline",
+    "acp-runtime",
+    "acp-sandcastle",
+    "acp-workspace",
+    "slopify"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "clean": "npm run clean --workspaces --if-present",
+    "slopify": "npm run build -w slopify && node slopify/dist/src/cli.js"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  }
+}

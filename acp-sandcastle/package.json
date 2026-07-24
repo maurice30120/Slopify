@@ -1,0 +1,35 @@
+{
+  "name": "@acp-client/sandcastle",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.js"
+    },
+    "./bridge": {
+      "types": "./dist/bridge.d.ts",
+      "import": "./dist/bridge.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json --incremental false",
+    "test": "node -e \"require('fs').rmSync('dist-test', { recursive: true, force: true })\" && npm run build && tsc -p tsconfig.test.json && node --test \"dist-test/test/**/*.test.js\"",
+    "clean": "node -e \"require('fs').rmSync('dist', { recursive: true, force: true }); require('fs').rmSync('dist-test', { recursive: true, force: true })\""
+  },
+  "dependencies": {
+    "@ai-hero/sandcastle": "^0.10.0",
+    "@agentclientprotocol/sdk": "^0.21.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.5.0"
+  }
+}
