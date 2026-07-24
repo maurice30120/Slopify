@@ -1,10 +1,19 @@
 import { createWorkspaceRuntime, type RuntimePermissionContext } from '@acp-client/workspace';
-import type { RetainedSandbox } from '@acp-client/sandbox';
 import type { CliPipelineBackendFactory } from './host.js';
 
 type RuntimeCliPipelineBackendContext = Parameters<CliPipelineBackendFactory>[1] & {
   keepSandboxes?: boolean;
 };
+
+interface RetainedSandboxOutput {
+  sandboxName: string;
+  commands: {
+    run: string;
+    shell: string;
+    remove: string;
+  };
+  diagnosticsPath?: string;
+}
 
 export const createRuntimeCliBackend: CliPipelineBackendFactory = (workspaceCwd, context) => {
   const runtimeContext = context as RuntimeCliPipelineBackendContext;
@@ -59,7 +68,7 @@ export const createRuntimeCliBackend: CliPipelineBackendFactory = (workspaceCwd,
   };
 };
 
-export function formatRetainedSandbox(sandbox: RetainedSandbox): string {
+export function formatRetainedSandbox(sandbox: RetainedSandboxOutput): string {
   return [
     `Docker Sandbox kept: ${sandbox.sandboxName}`,
     `Run: ${sandbox.commands.run}`,
