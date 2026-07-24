@@ -7,6 +7,12 @@ import type {
 export const SLOPIFY_GIT_NAME = 'Slopify';
 export const SLOPIFY_GIT_EMAIL = 'slopify@localhost';
 
+export const PROMOTION_POLICIES = ['discard', 'ask', 'auto-apply', 'auto-reject'] as const;
+
+export type PromotionPolicy = typeof PROMOTION_POLICIES[number];
+export type PromotionDecision = 'apply' | 'reject' | 'cancel';
+export type PromotionStatus = 'applied' | 'no_changes' | 'rejected' | 'cancelled';
+
 export interface AgentCheckpoint {
   runId: string;
   nodeId: string;
@@ -42,6 +48,33 @@ export interface CreateAgentCheckpointInput {
   signal?: AbortSignal;
 }
 
+export interface PromotionRequest {
+  checkpoint: AgentCheckpoint;
+  preview: AgentCheckpointPreview;
+}
+
+export type PromotionDecider = (
+  request: PromotionRequest,
+) => PromotionDecision | Promise<PromotionDecision>;
+
+export interface PromotePipelineChangeSetInput extends PromotionRequest {
+  workspaceCwd: string;
+  policy: PromotionPolicy;
+  decide?: PromotionDecider;
+  signal?: AbortSignal;
+}
+
+export interface PromotionResult extends PromotionRequest {
+  status: PromotionStatus;
+}
+
+/**
+ * Gère le cycle Git des changements produits par un agent isolé.
+ *
+ * La classe crée et récupère les Agent Checkpoints sans modifier le workspace
+ * hôte, construit leur aperçu, puis applique une décision unique de Promotion
+ * sur l'ensemble du Pipeline Change Set après revalidation de sa base Git.
+ */
 export class GitPromotion {
   constructor(private readonly execute: SubprocessExecutor) {}
 
@@ -128,6 +161,93 @@ export class GitPromotion {
       checkpoint,
       preview,
     };
+  }
+
+  async promotePipelineChangeSet(input: PromotePipelineChangeSetInput): Promise<PromotionResult> {
+    const request: PromotionRequest = {
+      checkpoint: input.checkpoint,
+      preview: input.preview,
+    };
+
+    if (input.preview.fileCount === 0) {
+      return { ...request, status: 'no_changes' };
+    }
+
+    const decision = await this.resolveDecision(input, request);
+    if (decision === 'reject') {
+      return { ...request, status: 'rejected' };
+    }
+    if (decision === 'cancel') {
+      return { ...request, status: 'cancelled' };
+    }
+
+    await this.requireSuccess({
+      command: 'git',
+      args: ['merge-base', '--is-ancestor', input.checkpoint.baseCommit, input.checkpoint.ref],
+      cwd: input.workspaceCwd,
+      stdin: 'ignore',
+      signal: input.signal,
+    }, 'verify the Pipeline Change Set ancestry');
+
+    const status = await this.requireSuccess({
+      command: 'git',
+      args: ['status', '--porcelain=v1'],
+      cwd: input.workspaceCwd,
+      stdin: 'ignore',
+      signal: input.signal,
+    }, 'revalidate the host workspace before Promotion');
+    if (status.stdout.trim()) {
+      throw new Error('Unable to promote the Pipeline Change Set: the host workspace changed after the sandbox run. No changes were applied.');
+    }
+
+    const currentHead = (await this.requireSuccess({
+      command: 'git',
+      args: ['rev-parse', 'HEAD'],
+      cwd: input.workspaceCwd,
+      stdin: 'ignore',
+      signal: input.signal,
+    }, 'revalidate the host Git base before Promotion')).stdout.trim();
+    if (currentHead !== input.checkpoint.baseCommit) {
+      throw new Error(`Unable to promote the Pipeline Change Set: the host Git base diverged from ${input.checkpoint.baseCommit} to ${currentHead || 'an unknown commit'}. No changes were applied.`);
+    }
+
+    await this.requireSuccess({
+      command: 'git',
+      args: ['merge', '--ff-only', '--no-edit', input.checkpoint.ref],
+      cwd: input.workspaceCwd,
+      stdin: 'ignore',
+      signal: input.signal,
+    }, 'promote the Pipeline Change Set atomically');
+
+    return { ...request, status: 'applied' };
+  }
+
+  private async resolveDecision(
+    input: PromotePipelineChangeSetInput,
+    request: PromotionRequest,
+  ): Promise<PromotionDecision> {
+    switch (input.policy) {
+      case 'auto-apply':
+        return 'apply';
+      case 'discard':
+      case 'auto-reject':
+        return 'reject';
+      case 'ask':
+        if (input.signal?.aborted || !input.decide) {
+          return 'cancel';
+        }
+        try {
+          const decision = await input.decide(request);
+          return input.signal?.aborted ? 'cancel' : decision;
+        } catch (error) {
+          if (input.signal?.aborted) {
+            return 'cancel';
+          }
+          throw error;
+        }
+      default:
+        throw new Error(`Unsupported Promotion policy: ${String(input.policy)}. Expected discard, ask, auto-apply or auto-reject.`);
+    }
   }
 
   private async requireSuccess(request: SubprocessRequest, action: string): Promise<SubprocessResult> {

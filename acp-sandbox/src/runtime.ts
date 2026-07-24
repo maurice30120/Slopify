@@ -1,7 +1,14 @@
 import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
 
-import { GitPromotion, type AgentCheckpoint, type AgentCheckpointPreview } from './gitPromotion.js';
+import {
+  GitPromotion,
+  type AgentCheckpoint,
+  type AgentCheckpointPreview,
+  type PromotionDecider,
+  type PromotionPolicy,
+  type PromotionStatus,
+} from './gitPromotion.js';
 
 export const MINIMUM_SBX_VERSION = '0.35.0';
 
@@ -32,10 +39,12 @@ export interface SandboxRunInput {
   effort?: 'low' | 'medium' | 'high' | 'xhigh';
   signal?: AbortSignal;
   workspaceEffects?: boolean;
+  promotionPolicy?: PromotionPolicy;
+  decidePromotion?: PromotionDecider;
 }
 
 export interface SandboxRunResult {
-  status?: 'no_changes';
+  status?: PromotionStatus;
   checkpointStatus: 'checkpointed' | 'no_changes';
   sandboxName: string;
   stdout: string;
@@ -44,6 +53,13 @@ export interface SandboxRunResult {
   preview: AgentCheckpointPreview;
 }
 
+/**
+ * Orchestre l'exécution d'un nœud Codex dans un clone Docker Sandbox privé.
+ *
+ * Le runtime valide les prérequis, crée et nettoie la sandbox, transmet les
+ * sorties de Codex, puis délègue à GitPromotion la création du checkpoint et
+ * l'éventuelle Promotion atomique vers le workspace hôte.
+ */
 export class DockerSandboxRuntime {
   constructor(private readonly execute: SubprocessExecutor = createNodeSubprocessExecutor()) {}
 
@@ -65,7 +81,8 @@ export class DockerSandboxRuntime {
       codexArgs.push(input.prompt);
       const codex = await this.requireSuccess({ command: 'sbx', args: codexArgs, cwd: input.workspaceCwd, stdin: 'ignore', observeOutput: true, signal: input.signal }, 'run Codex non-interactively');
 
-      const checkpoint = await new GitPromotion(this.execute).createAgentCheckpoint({
+      const gitPromotion = new GitPromotion(this.execute);
+      const checkpoint = await gitPromotion.createAgentCheckpoint({
         workspaceCwd: input.workspaceCwd,
         sandboxName,
         baseCommit,
@@ -74,9 +91,21 @@ export class DockerSandboxRuntime {
         attempt: input.attempt,
         signal: input.signal,
       });
+      const promotionStatus = checkpoint.checkpointStatus === 'no_changes'
+        ? 'no_changes' as const
+        : input.promotionPolicy
+          ? (await gitPromotion.promotePipelineChangeSet({
+              workspaceCwd: input.workspaceCwd,
+              policy: input.promotionPolicy,
+              decide: input.decidePromotion,
+              checkpoint: checkpoint.checkpoint,
+              preview: checkpoint.preview,
+              signal: input.signal,
+            })).status
+          : undefined;
       return {
         ...checkpoint,
-        ...(checkpoint.checkpointStatus === 'no_changes' ? { status: 'no_changes' as const } : {}),
+        ...(promotionStatus ? { status: promotionStatus } : {}),
         sandboxName,
         stdout: codex.stdout,
         stderr: codex.stderr,
