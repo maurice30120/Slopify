@@ -53,6 +53,13 @@ export interface SandboxRunResult {
   preview: AgentCheckpointPreview;
 }
 
+/**
+ * Orchestre l'exécution d'un nœud Codex dans un clone Docker Sandbox privé.
+ *
+ * Le runtime valide les prérequis, crée et nettoie la sandbox, transmet les
+ * sorties de Codex, puis délègue à GitPromotion la création du checkpoint et
+ * l'éventuelle Promotion atomique vers le workspace hôte.
+ */
 export class DockerSandboxRuntime {
   constructor(private readonly execute: SubprocessExecutor = createNodeSubprocessExecutor()) {}
 
