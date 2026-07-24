@@ -15,6 +15,7 @@ export interface CliRunCommand extends CliCommonOptions {
   pipelineName: string;
   prompt: string;
   yes: boolean;
+  keepSandboxes?: boolean;
 }
 
 export interface CliHelpCommand {
@@ -37,6 +38,7 @@ export function parseCliArgs(argv: string[], baseCwd = process.cwd()): CliComman
   let json = false;
   let verbose = false;
   let yes = false;
+  let keepSandboxes = false;
   const positional: string[] = [];
   let positionalOnly = false;
 
@@ -71,6 +73,10 @@ export function parseCliArgs(argv: string[], baseCwd = process.cwd()): CliComman
       yes = true;
       continue;
     }
+    if (value === '--keep-sandboxes') {
+      keepSandboxes = true;
+      continue;
+    }
     if (value.startsWith('-')) {
       throw new Error(`Unknown option "${value}".`);
     }
@@ -78,7 +84,7 @@ export function parseCliArgs(argv: string[], baseCwd = process.cwd()): CliComman
   }
 
   if (kind === 'list') {
-    if (positional.length > 0 || yes) {
+    if (positional.length > 0 || yes || keepSandboxes) {
       throw new Error('Usage: slopify list [--cwd <path>] [--json] [--verbose]');
     }
     return { kind, cwd, json, verbose };
@@ -88,7 +94,7 @@ export function parseCliArgs(argv: string[], baseCwd = process.cwd()): CliComman
   const prompt = positional.slice(1).join(' ').trim();
   if (!pipelineName || !prompt) {
     throw new Error(
-      'Usage: slopify run <pipeline-name> <prompt> [--cwd <path>] [--yes] [--json] [--verbose]',
+      'Usage: slopify run <pipeline-name> <prompt> [--cwd <path>] [--yes] [--keep-sandboxes] [--json] [--verbose]',
     );
   }
 
@@ -100,6 +106,7 @@ export function parseCliArgs(argv: string[], baseCwd = process.cwd()): CliComman
     json,
     verbose,
     yes,
+    keepSandboxes,
   };
 }
 
@@ -109,9 +116,10 @@ export function formatHelp(): string {
     '',
     'Usage:',
     '  slopify list [--cwd <path>] [--json] [--verbose]',
-    '  slopify run <pipeline-name> <prompt> [--cwd <path>] [--yes] [--json] [--verbose]',
+    '  slopify run <pipeline-name> <prompt> [--cwd <path>] [--yes] [--keep-sandboxes] [--json] [--verbose]',
     '',
     'The pipeline selects every ACP or Sandcastle agent used by its nodes.',
     'There is intentionally no --agent option.',
+    '--keep-sandboxes preserves every Docker Sandbox created by the run for local diagnostics.',
   ].join('\n');
 }
