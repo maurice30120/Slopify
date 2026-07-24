@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 import type {
   SubprocessExecutor,
   SubprocessRequest,
@@ -48,9 +50,37 @@ export interface CreateAgentCheckpointInput {
   signal?: AbortSignal;
 }
 
+export interface PipelineChangeSet {
+  runId: string;
+  baseCommit: string;
+  commit: string;
+  ref: string;
+  integratedNodeIds: string[];
+}
+
+export interface PipelineChangeSetPreview {
+  baseCommit: string;
+  changeSetCommit: string;
+  fileCount: number;
+  files: string[];
+  diff: string;
+}
+
+export interface PipelineChangeSetResult {
+  changeSet: PipelineChangeSet;
+  preview: PipelineChangeSetPreview;
+}
+
+export interface IntegrateAgentCheckpointsInput {
+  workspaceCwd: string;
+  runId: string;
+  checkpoints: readonly AgentCheckpointResult[];
+  signal?: AbortSignal;
+}
+
 export interface PromotionRequest {
-  checkpoint: AgentCheckpoint;
-  preview: AgentCheckpointPreview;
+  changeSet: PipelineChangeSet;
+  preview: PipelineChangeSetPreview;
 }
 
 export type PromotionDecider = (
@@ -69,11 +99,11 @@ export interface PromotionResult extends PromotionRequest {
 }
 
 /**
- * Gère le cycle Git des changements produits par un agent isolé.
+ * Gère le cycle Git des changements produits par des agents isolés.
  *
- * La classe crée et récupère les Agent Checkpoints sans modifier le workspace
- * hôte, construit leur aperçu, puis applique une décision unique de Promotion
- * sur l'ensemble du Pipeline Change Set après revalidation de sa base Git.
+ * Les Agent Checkpoints sont récupérés sans modifier le workspace hôte, puis
+ * rejoués sur une ref privée dans l'ordre fourni par le coordinateur du DAG.
+ * Une seule décision de Promotion porte ensuite sur le Pipeline Change Set.
  */
 export class GitPromotion {
   constructor(private readonly execute: SubprocessExecutor) {}
@@ -163,9 +193,152 @@ export class GitPromotion {
     };
   }
 
+  async integrateAgentCheckpoints(input: IntegrateAgentCheckpointsInput): Promise<PipelineChangeSetResult> {
+    if (input.checkpoints.length === 0) {
+      throw new Error('Cannot integrate an empty Agent Checkpoint collection.');
+    }
+
+    const first = input.checkpoints[0].checkpoint;
+    const baseCommit = first.baseCommit;
+    const integratedNodeIds = input.checkpoints.map(result => result.checkpoint.nodeId);
+    for (const result of input.checkpoints) {
+      const checkpoint = result.checkpoint;
+      if (checkpoint.runId !== input.runId) {
+        throw new Error(`Agent Checkpoint for run "${checkpoint.runId}" cannot be integrated into run "${input.runId}".`);
+      }
+      if (checkpoint.baseCommit !== baseCommit || result.preview.baseCommit !== baseCommit) {
+        throw new Error(`Agent Checkpoint "${checkpoint.nodeId}" does not share Pipeline base ${baseCommit}.`);
+      }
+      if (result.preview.checkpointCommit !== checkpoint.commit) {
+        throw new Error(`Agent Checkpoint "${checkpoint.nodeId}" preview does not match commit ${checkpoint.commit}.`);
+      }
+    }
+
+    const changed = input.checkpoints.filter(result => result.preview.fileCount > 0);
+    if (changed.length === 0) {
+      return {
+        changeSet: {
+          runId: input.runId,
+          baseCommit,
+          commit: baseCommit,
+          ref: baseCommit,
+          integratedNodeIds,
+        },
+        preview: {
+          baseCommit,
+          changeSetCommit: baseCommit,
+          fileCount: 0,
+          files: [],
+          diff: '',
+        },
+      };
+    }
+
+    const integrationDate = (await this.requireSuccess({
+      command: 'git',
+      args: ['show', '-s', '--format=%cI', baseCommit],
+      cwd: input.workspaceCwd,
+      stdin: 'ignore',
+      signal: input.signal,
+    }, 'read the Pipeline base date')).stdout.trim() || '2000-01-01T00:00:00Z';
+
+    let currentCommit = baseCommit;
+    for (const [index, result] of changed.entries()) {
+      const checkpoint = result.checkpoint;
+      await this.requireSuccess({
+        command: 'git',
+        args: ['merge-base', '--is-ancestor', baseCommit, checkpoint.ref],
+        cwd: input.workspaceCwd,
+        stdin: 'ignore',
+        signal: input.signal,
+      }, `verify Agent Checkpoint "${checkpoint.nodeId}" ancestry`);
+
+      const mergedTree = (await this.requireSuccess({
+        command: 'git',
+        args: ['merge-tree', '--write-tree', currentCommit, checkpoint.ref],
+        cwd: input.workspaceCwd,
+        stdin: 'ignore',
+        signal: input.signal,
+      }, `integrate Agent Checkpoint "${checkpoint.nodeId}"`)).stdout.trim().split(/\r?\n/u)[0];
+      if (!mergedTree) {
+        throw new Error(`Unable to integrate Agent Checkpoint "${checkpoint.nodeId}": git merge-tree returned an empty tree id.`);
+      }
+
+      currentCommit = (await this.requireSuccess({
+        command: 'git',
+        args: [
+          'commit-tree', mergedTree,
+          '-p', currentCommit,
+          '-m', 'chore(slopify): integrate Agent Checkpoint',
+          '-m', `Slopify-Run: ${input.runId}`,
+          '-m', `Slopify-Node: ${checkpoint.nodeId}`,
+          '-m', `Slopify-Attempt: ${checkpoint.attempt}`,
+          '-m', `Slopify-Integration-Index: ${index}`,
+        ],
+        cwd: input.workspaceCwd,
+        stdin: 'ignore',
+        signal: input.signal,
+        env: {
+          GIT_AUTHOR_NAME: SLOPIFY_GIT_NAME,
+          GIT_AUTHOR_EMAIL: SLOPIFY_GIT_EMAIL,
+          GIT_AUTHOR_DATE: integrationDate,
+          GIT_COMMITTER_NAME: SLOPIFY_GIT_NAME,
+          GIT_COMMITTER_EMAIL: SLOPIFY_GIT_EMAIL,
+          GIT_COMMITTER_DATE: integrationDate,
+        },
+      }, `record integrated Agent Checkpoint "${checkpoint.nodeId}"`)).stdout.trim();
+      if (!currentCommit) {
+        throw new Error(`Unable to record integrated Agent Checkpoint "${checkpoint.nodeId}": git commit-tree returned an empty commit id.`);
+      }
+    }
+
+    const ref = pipelineChangeSetRef(input.runId);
+    await this.requireSuccess({
+      command: 'git',
+      args: ['update-ref', ref, currentCommit],
+      cwd: input.workspaceCwd,
+      stdin: 'ignore',
+      signal: input.signal,
+    }, 'publish the private Pipeline Change Set ref');
+
+    const range = `${baseCommit}..${ref}`;
+    const filesResult = await this.requireSuccess({
+      command: 'git',
+      args: ['diff', '--name-only', range],
+      cwd: input.workspaceCwd,
+      stdin: 'ignore',
+      signal: input.signal,
+    }, 'list the Pipeline Change Set files');
+    const diffResult = await this.requireSuccess({
+      command: 'git',
+      args: ['diff', '--no-ext-diff', '--no-color', range],
+      cwd: input.workspaceCwd,
+      stdin: 'ignore',
+      signal: input.signal,
+    }, 'preview the Pipeline Change Set');
+    const files = filesResult.stdout.split(/\r?\n/u).filter(Boolean);
+
+    return {
+      changeSet: {
+        runId: input.runId,
+        baseCommit,
+        commit: currentCommit,
+        ref,
+        integratedNodeIds,
+      },
+      preview: {
+        baseCommit,
+        changeSetCommit: currentCommit,
+        fileCount: files.length,
+        files,
+        diff: diffResult.stdout,
+      },
+    };
+  }
+
   async promotePipelineChangeSet(input: PromotePipelineChangeSetInput): Promise<PromotionResult> {
     const request: PromotionRequest = {
-      checkpoint: input.checkpoint,
+      changeSet: input.changeSet,
       preview: input.preview,
     };
 
@@ -183,7 +356,7 @@ export class GitPromotion {
 
     await this.requireSuccess({
       command: 'git',
-      args: ['merge-base', '--is-ancestor', input.checkpoint.baseCommit, input.checkpoint.ref],
+      args: ['merge-base', '--is-ancestor', input.changeSet.baseCommit, input.changeSet.ref],
       cwd: input.workspaceCwd,
       stdin: 'ignore',
       signal: input.signal,
@@ -197,7 +370,7 @@ export class GitPromotion {
       signal: input.signal,
     }, 'revalidate the host workspace before Promotion');
     if (status.stdout.trim()) {
-      throw new Error('Unable to promote the Pipeline Change Set: the host workspace changed after the sandbox run. No changes were applied.');
+      throw new Error('Unable to promote the Pipeline Change Set: the host workspace changed after the sandbox runs. No changes were applied.');
     }
 
     const currentHead = (await this.requireSuccess({
@@ -207,13 +380,13 @@ export class GitPromotion {
       stdin: 'ignore',
       signal: input.signal,
     }, 'revalidate the host Git base before Promotion')).stdout.trim();
-    if (currentHead !== input.checkpoint.baseCommit) {
-      throw new Error(`Unable to promote the Pipeline Change Set: the host Git base diverged from ${input.checkpoint.baseCommit} to ${currentHead || 'an unknown commit'}. No changes were applied.`);
+    if (currentHead !== input.changeSet.baseCommit) {
+      throw new Error(`Unable to promote the Pipeline Change Set: the host Git base diverged from ${input.changeSet.baseCommit} to ${currentHead || 'an unknown commit'}. No changes were applied.`);
     }
 
     await this.requireSuccess({
       command: 'git',
-      args: ['merge', '--ff-only', '--no-edit', input.checkpoint.ref],
+      args: ['merge', '--ff-only', '--no-edit', input.changeSet.ref],
       cwd: input.workspaceCwd,
       stdin: 'ignore',
       signal: input.signal,
@@ -258,4 +431,10 @@ export class GitPromotion {
     }
     return result;
   }
+}
+
+function pipelineChangeSetRef(runId: string): string {
+  const normalized = runId.toLowerCase().replace(/[^a-z0-9._-]+/gu, '-').replace(/^-+|-+$/gu, '') || 'run';
+  const hash = createHash('sha256').update(runId).digest('hex').slice(0, 10);
+  return `refs/slopify/runs/${normalized.slice(0, 50)}-${hash}/change-set`;
 }
