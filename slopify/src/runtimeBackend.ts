@@ -1,45 +1,56 @@
 import { createWorkspaceRuntime, type RuntimePermissionContext } from '@acp-client/workspace';
+import type { RetainedSandbox } from '@acp-client/sandbox';
 import type { CliPipelineBackendFactory } from './host.js';
 
+type RuntimeCliPipelineBackendContext = Parameters<CliPipelineBackendFactory>[1] & {
+  keepSandboxes?: boolean;
+};
+
 export const createRuntimeCliBackend: CliPipelineBackendFactory = (workspaceCwd, context) => {
-  const runtime = createWorkspaceRuntime({ workspaceCwd, host: {
-    permissionContext: (): RuntimePermissionContext => ({
-      hasUI: true,
-      ui: {
-        select: (title, options) => context.terminal.select(title, options),
-        confirm: (title, message) => context.terminal.confirm(title, message),
+  const runtimeContext = context as RuntimeCliPipelineBackendContext;
+  const runtime = createWorkspaceRuntime({
+    workspaceCwd,
+    keepSandboxes: runtimeContext.keepSandboxes,
+    onSandboxRetained: sandbox => context.logger.error(formatRetainedSandbox(sandbox)),
+    host: {
+      permissionContext: (): RuntimePermissionContext => ({
+        hasUI: true,
+        ui: {
+          select: (title, options) => context.terminal.select(title, options),
+          confirm: (title, message) => context.terminal.confirm(title, message),
+        },
+      }),
+      requestPromotion: async request => {
+        const selected = await context.terminal.select(
+          [
+            `Sandcastle promotion for ${request.agentName}`,
+            `Files changed: ${request.preview.filesChanged}`,
+            `Branch: ${request.preview.branch || '(unknown)'}`,
+            `Base: ${request.preview.baseRef || '(unknown)'}`,
+          ].join('\n'),
+          ['Apply Sandcastle changes', 'Reject Sandcastle changes'],
+        );
+        if (selected === 'Apply Sandcastle changes') return 'approve';
+        if (selected === 'Reject Sandcastle changes') return 'reject';
+        return 'cancelled';
       },
-    }),
-    requestPromotion: async request => {
-      const selected = await context.terminal.select(
-        [
-          `Sandcastle promotion for ${request.agentName}`,
-          `Files changed: ${request.preview.filesChanged}`,
-          `Branch: ${request.preview.branch || '(unknown)'}`,
-          `Base: ${request.preview.baseRef || '(unknown)'}`,
-        ].join('\n'),
-        ['Apply Sandcastle changes', 'Reject Sandcastle changes'],
-      );
-      if (selected === 'Apply Sandcastle changes') return 'approve';
-      if (selected === 'Reject Sandcastle changes') return 'reject';
-      return 'cancelled';
+      requestPipelinePromotion: async request => {
+        const selected = await context.terminal.select(
+          [
+            `Pipeline Change Set for ${request.pipelineId}`,
+            `Agent checkpoints: ${request.integratedNodeIds.join(', ') || '(none)'}`,
+            `Files changed: ${request.preview.fileCount}`,
+            `Base: ${request.preview.baseCommit || '(unknown)'}`,
+          ].join('\n'),
+          ['Apply Pipeline Change Set', 'Reject Pipeline Change Set'],
+        );
+        if (selected === 'Apply Pipeline Change Set') return 'approve';
+        if (selected === 'Reject Pipeline Change Set') return 'reject';
+        return 'cancelled';
+      },
+      logger: context.logger,
     },
-    requestPipelinePromotion: async request => {
-      const selected = await context.terminal.select(
-        [
-          `Pipeline Change Set for ${request.pipelineId}`,
-          `Agent checkpoints: ${request.integratedNodeIds.join(', ') || '(none)'}`,
-          `Files changed: ${request.preview.fileCount}`,
-          `Base: ${request.preview.baseCommit || '(unknown)'}`,
-        ].join('\n'),
-        ['Apply Pipeline Change Set', 'Reject Pipeline Change Set'],
-      );
-      if (selected === 'Apply Pipeline Change Set') return 'approve';
-      if (selected === 'Reject Pipeline Change Set') return 'reject';
-      return 'cancelled';
-    },
-    logger: context.logger,
-  }});
+  });
 
   return {
     programs: [...runtime.programs],
@@ -47,3 +58,13 @@ export const createRuntimeCliBackend: CliPipelineBackendFactory = (workspaceCwd,
     clearRunLogs: () => runtime.clearRunLogs(),
   };
 };
+
+export function formatRetainedSandbox(sandbox: RetainedSandbox): string {
+  return [
+    `Docker Sandbox kept: ${sandbox.sandboxName}`,
+    `Run: ${sandbox.commands.run}`,
+    `Shell: ${sandbox.commands.shell}`,
+    `Remove: ${sandbox.commands.remove}`,
+    ...(sandbox.diagnosticsPath ? [`Diagnostics: ${sandbox.diagnosticsPath}`] : []),
+  ].join('\n');
+}
