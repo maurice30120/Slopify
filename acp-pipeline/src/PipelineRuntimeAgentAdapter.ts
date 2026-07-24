@@ -91,6 +91,9 @@ class PipelineRuntimeAgentNodeSession implements AgentNodeSession {
 
     try {
       const result = await this.options.runAgent({
+        runId: input.runId,
+        nodeId: node.id,
+        attempt: input.attempt,
         workspaceCwd: this.options.workspaceCwd(),
         agentName: node.agent,
         promptText: input.prompt,

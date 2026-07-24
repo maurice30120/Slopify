@@ -5,6 +5,7 @@
   "workspaces": [
     "acp-pipeline",
     "acp-runtime",
+    "acp-sandbox",
     "acp-sandcastle",
     "acp-workspace",
     "slopify"
@@ -13,7 +14,8 @@
     "build": "npm run build --workspaces --if-present",
     "test": "npm run test --workspaces --if-present",
     "clean": "npm run clean --workspaces --if-present",
-    "slopify": "npm run build -w slopify && node slopify/dist/src/cli.js"
+    "slopify": "npm run build -w slopify && node slopify/dist/src/cli.js",
+    "prototype:docker-sandbox-codex": "node acp-sandcastle/prototype/docker-sandbox-codex/prototype.mjs"
   },
   "engines": {
     "node": ">=22.19.0"

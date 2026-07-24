@@ -61,6 +61,7 @@ export type {
   SandcastlePromotionRequest,
   SandcastlePreview,
   SandcastleAgentConfig,
+  SandboxAgentConfig,
   WorkspaceRuntimeOptions,
 } from './types.js';
 export { consoleLogger } from './types.js';

@@ -20,11 +20,12 @@ import {
   type SandcastlePreview,
   type SandcastlePromotion,
 } from '@acp-client/sandcastle';
+import { DockerSandboxRuntime, type SubprocessExecutor } from '@acp-client/sandbox';
 
 import { getPipelinePrograms } from '../catalog/pipelineCatalog.js';
 import { loadSkillCatalog, renderSkillsCatalog } from '../catalog/skillCatalog.js';
 import { loadAgentCatalog } from '../config/config.js';
-import { isSandcastleConfig } from '../selection/connectorSelection.js';
+import { isSandboxConfig, isSandcastleConfig } from '../selection/connectorSelection.js';
 import type {
   AgentCatalog,
   AgentConfigEntry,
@@ -47,6 +48,8 @@ export interface CreateWorkspaceRuntimeOptions extends WorkspaceRuntimeOptions {
   connectorOverrides?: WorkspaceConnectorOverrides;
   /** Internal/test seam for already-loaded configuration. */
   resolvedCatalog?: AgentCatalog;
+  /** Internal/test seam for exercising Docker Sandbox without a microVM. */
+  sandboxExecutor?: SubprocessExecutor;
 }
 
 /** Compose workspace discovery, Pipeline V3 adaptation, and connector selection. */
@@ -54,12 +57,28 @@ export function createWorkspaceRuntime(options: CreateWorkspaceRuntimeOptions): 
   const catalog = options.resolvedCatalog ?? loadValidCatalog(options.workspaceCwd);
   const programs = getPipelinePrograms(options.workspaceCwd, options.host.logger);
   const runner = new AcpRunner();
+  const sandboxRuntime = new DockerSandboxRuntime(options.sandboxExecutor);
 
   const runAgent: PipelineAgentRunner = async input => {
     const config = resolveAgent(catalog, input.agentName);
     const sandcastle = isSandcastleConfig(config);
+    const sandbox = isSandboxConfig(config);
     if (input.skills && input.skills.length > 0 && config.skills === false) {
       throw new Error(`Pipeline node declares skills but agent "${input.agentName}" has skills disabled.`);
+    }
+    if (sandbox) {
+      const result = await sandboxRuntime.runCodex({
+        workspaceCwd: input.workspaceCwd,
+        runId: input.runId ?? 'run',
+        nodeId: input.nodeId ?? input.agentName,
+        attempt: input.attempt ?? 1,
+        prompt: input.promptText,
+        model: config.model,
+        effort: config.effort,
+        signal: input.signal,
+        workspaceEffects: input.sideEffects === 'workspace',
+      });
+      return { text: result.stdout, promotion: result.status };
     }
     const processConfig = sandcastle
       ? buildSandcastleBridgeProcessConfig(config, options.workspaceCwd)

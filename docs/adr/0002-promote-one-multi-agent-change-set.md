@@ -1,0 +1,3 @@
+# Promote one multi-agent change set
+
+Each agent node runs in its own isolated sandbox and Slopify records a technical checkpoint identified by pipeline run, node and attempt. Slopify integrates those checkpoints away from the host workspace in DAG topological order, using declaration order for parallel peers, and offers one atomic promotion for the complete pipeline change set rather than promoting agents independently. Conflicts pause the pipeline without mutating the host. This preserves attribution, deterministic retries and crash recovery while preventing parallel agents from partially or concurrently mutating the user’s workspace.

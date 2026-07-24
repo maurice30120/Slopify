@@ -15,6 +15,7 @@ import {
   type WorkspaceConnectorOverrides,
 } from '../src/index.js';
 import type { PipelineRuntimeResult } from '@acp-client/pipeline';
+import type { SubprocessRequest, SubprocessResult } from '@acp-client/sandbox';
 
 function workspace(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'acp-workspace-'));
@@ -22,8 +23,22 @@ function workspace(): string {
 
 test('public entry point parses native configuration', () => {
   const config = parseAcpConfig(JSON.stringify({ agents: { Codex: { command: 'codex', args: ['acp'] } } }));
-  assert.equal(config.agents.Codex.command, 'codex');
+  assert.equal('command' in config.agents.Codex ? config.agents.Codex.command : undefined, 'codex');
   assert.deepEqual(config.errors, []);
+});
+
+test('accepts only Codex for the sandbox transport with corrective errors', () => {
+  const accepted = parseAcpConfig(JSON.stringify({ agents: {
+    Isolated: { transport: 'sandbox', agent: 'codex', model: 'gpt-5.6-codex', effort: 'high' },
+  } }));
+  assert.deepEqual(accepted.errors, []);
+  assert.equal(accepted.agents.Isolated.transport, 'sandbox');
+
+  const rejected = parseAcpConfig(JSON.stringify({ agents: {
+    Other: { transport: 'sandbox', agent: 'pi', model: 'pi-model' },
+  } }));
+  assert.equal(rejected.agents.Other, undefined);
+  assert.match(rejected.errors.join('\n'), /must be "codex".*other Docker Sandbox agents are not supported yet/);
 });
 
 test('writes, moves and removes agents while preserving configuration envelopes', () => {
@@ -33,7 +48,8 @@ test('writes, moves and removes agents while preserving configuration envelopes'
   fs.writeFileSync(path.join(cwd, '.acp', '.sandcastle', 'config.json'), JSON.stringify({ promotion: 'ask', agents: {} }));
 
   upsertAgentConfig('Agent', { command: 'agent' }, cwd);
-  assert.equal(loadAgentCatalog(cwd).native.agents.Agent.command, 'agent');
+  const nativeAgent = loadAgentCatalog(cwd).native.agents.Agent;
+  assert.equal('command' in nativeAgent ? nativeAgent.command : undefined, 'agent');
   upsertAgentConfig('Agent', { transport: 'sandcastle', provider: 'codex', model: 'gpt-5', effort: 'high', maxIterations: 3 }, cwd);
   const moved = loadAgentCatalog(cwd);
   assert.equal(moved.native.agents.Agent, undefined);
@@ -87,6 +103,36 @@ test('WorkspaceRuntime selects native and Sandcastle connectors from one configu
 
   assert.equal(selected[0], 'native:native-acp');
   assert.match(selected[1], /^sandcastle:.+node/);
+});
+
+test('WorkspaceRuntime completes the Codex Docker Sandbox tracer path as no_changes with a fake sbx executor', async () => {
+  const cwd = workspace();
+  fs.mkdirSync(path.join(cwd, '.acp'), { recursive: true });
+  fs.writeFileSync(path.join(cwd, '.acp', 'acp-agents.json'), JSON.stringify({ agents: {
+    Isolated: { transport: 'sandbox', agent: 'codex', model: 'gpt-5.6-codex' },
+  } }));
+  const calls: SubprocessRequest[] = [];
+  const runtime = createWorkspaceRuntime({
+    workspaceCwd: cwd,
+    host: {
+      permissionContext: () => undefined,
+      requestPromotion: async () => 'cancelled',
+      logger: { log: () => undefined, error: () => undefined },
+    },
+    sandboxExecutor: async request => {
+      calls.push(request);
+      return fakeSandboxResponse(request);
+    },
+  });
+
+  const outcome = await runtime.runAgent({
+    workspaceCwd: cwd, agentName: 'Isolated', runId: 'run-7', nodeId: 'verify', attempt: 1,
+    promptText: 'Inspect without changing files.', sideEffects: 'workspace',
+  });
+
+  assert.deepEqual(outcome, { text: '', promotion: 'no_changes' });
+  assert.ok(calls.some(call => call.args[0] === 'create' && call.args.includes('--clone')));
+  assert.deepEqual(calls.at(-1)?.args.slice(0, 2), ['rm', '--force']);
 });
 
 test('public pipeline catalog resolves instructionsFile and keeps promptFile compatibility', () => {
@@ -281,6 +327,14 @@ function runtimeSnapshot(status: 'paused' | 'completed') {
     runId: 'run-1', pipelineId: 'test', status, nodeStates: {}, artifacts: {}, diagnostics: [],
     createdAt: '2026-07-23T00:00:00.000Z', updatedAt: '2026-07-23T00:00:00.000Z',
   };
+}
+
+function fakeSandboxResponse(request: SubprocessRequest): SubprocessResult {
+  if (request.command === 'git' && request.args[0] === 'rev-parse') return { exitCode: 0, stdout: 'true\n', stderr: '' };
+  if (request.args.join(' ') === 'version') return { exitCode: 0, stdout: 'sbx 0.35.0\n', stderr: '' };
+  if (request.args.join(' ') === 'create --help') return { exitCode: 0, stdout: '--clone\n', stderr: '' };
+  if (request.args.join(' ') === 'ls --help') return { exitCode: 0, stdout: '--json\n', stderr: '' };
+  return { exitCode: 0, stdout: '', stderr: '' };
 }
 
 function walk(dir: string): string[] {

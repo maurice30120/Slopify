@@ -6,6 +6,7 @@ import type {
   AcpRuntimeConfig,
   AgentCatalog,
   AgentConfigEntry,
+  SandboxAgentConfig,
   SandcastleAgentConfig,
   SandcastleConfig,
   SandcastleEffort,
@@ -73,7 +74,7 @@ export function parseAcpConfig(text: string, filePath = CONFIG_PATH): AcpRuntime
   }
 
   const errors: string[] = [];
-  const agents: Record<string, NativeAcpAgentConfig> = {};
+  const agents: Record<string, NativeAcpAgentConfig | SandboxAgentConfig> = {};
   const agentsValue = parsed.agents;
 
   if (!isRecord(agentsValue)) {
@@ -175,7 +176,7 @@ export function writeAgentConfigs(
 ): void {
   const nativePath = path.join(workspaceCwd, CONFIG_PATH);
   const sandcastlePath = path.join(workspaceCwd, SANDCASTLE_CONFIG_PATH);
-  const nativeAgents: Record<string, NativeAcpAgentConfig> = {};
+  const nativeAgents: Record<string, NativeAcpAgentConfig | SandboxAgentConfig> = {};
   const sandcastleAgents: Record<string, SandcastleAgentConfig> = {};
   for (const [name, config] of Object.entries(agents)) {
     if (isSandcastleAgentConfig(config)) sandcastleAgents[name] = config;
@@ -191,7 +192,7 @@ export function writeAgentConfigs(
 
 export function upsertAgentConfig(
   agentName: string,
-  config: NativeAcpAgentConfig | SandcastleAgentConfig,
+  config: NativeAcpAgentConfig | SandboxAgentConfig | SandcastleAgentConfig,
   workspaceCwd: string,
 ): void {
   const catalog = loadAgentCatalog(workspaceCwd);
@@ -240,10 +241,30 @@ function parseAgent(
   name: string,
   value: unknown,
   errors: string[],
-): NativeAcpAgentConfig | null {
+): NativeAcpAgentConfig | SandboxAgentConfig | null {
   if (!isRecord(value)) {
     errors.push(`agents.${name} must be an object.`);
     return null;
+  }
+
+  if (value.transport === 'sandbox') {
+    if (value.agent !== 'codex') {
+      errors.push(`agents.${name}.agent must be "codex" for transport "sandbox"; other Docker Sandbox agents are not supported yet.`);
+      return null;
+    }
+    const model = readNonEmptyString(value.model, `agents.${name}.model`, errors);
+    const effort = value.effort === undefined
+      ? undefined
+      : readSandcastleEffort(value.effort, `agents.${name}.effort`, errors);
+    if (!model || effort === null) return null;
+    return {
+      transport: 'sandbox',
+      agent: 'codex',
+      model,
+      ...(effort === undefined ? {} : { effort }),
+      ...(typeof value.displayName === 'string' ? { displayName: value.displayName } : {}),
+      ...(typeof value.skills === 'boolean' ? { skills: value.skills } : {}),
+    };
   }
 
   if (value.transport === 'sandcastle') {
@@ -252,7 +273,7 @@ function parseAgent(
   }
 
   if (value.transport !== undefined && value.transport !== 'acp') {
-    errors.push(`agents.${name}.transport must be "acp" when provided.`);
+    errors.push(`agents.${name}.transport must be "acp" or "sandbox" when provided.`);
     return null;
   }
 

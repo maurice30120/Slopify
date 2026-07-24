@@ -4,6 +4,7 @@ import type {
   SandcastlePromotion,
   SandcastleProvider,
 } from '@acp-client/sandcastle';
+import type { SandboxAgentConfig } from '@acp-client/sandbox';
 
 export type {
   SandcastleAgentConfig,
@@ -11,6 +12,7 @@ export type {
   SandcastlePromotion,
   SandcastleProvider,
 } from '@acp-client/sandcastle';
+export type { SandboxAgentConfig } from '@acp-client/sandbox';
 
 export interface NativeAcpAgentConfig {
   transport?: 'acp';
@@ -24,7 +26,7 @@ export interface NativeAcpAgentConfig {
   skills?: boolean;
 }
 
-export type AgentConfigEntry = NativeAcpAgentConfig | SandcastleAgentConfig;
+export type AgentConfigEntry = NativeAcpAgentConfig | SandboxAgentConfig | SandcastleAgentConfig;
 
 export interface RuntimeTimeoutConfig {
   initializeMs?: number;
@@ -44,7 +46,7 @@ export interface RuntimePipelineConfig {
 
 export interface AcpRuntimeConfig {
   filePath: string;
-  agents: Record<string, NativeAcpAgentConfig>;
+  agents: Record<string, NativeAcpAgentConfig | SandboxAgentConfig>;
   pipeline: RuntimePipelineConfig;
   errors: string[];
 }

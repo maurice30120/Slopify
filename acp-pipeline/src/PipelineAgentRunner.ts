@@ -71,6 +71,9 @@ export function renderAcpPrompt(
 }
 
 export interface PipelineAgentRunInput {
+	runId?: string;
+	nodeId?: string;
+	attempt?: number;
 	workspaceCwd: string;
 	agentName: string;
 	/** Structured prompt preferred by ACP-capable runners. */

@@ -376,6 +376,7 @@ export class PipelineRuntime {
       try {
         const result = await session.send({
           runId: active.snapshot.runId,
+          attempt,
           node,
           prompt,
           inputs,

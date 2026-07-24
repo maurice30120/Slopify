@@ -222,6 +222,7 @@ export interface PipelineResumeDecision {
 
 export interface PipelineNodeExecutionInput {
   runId: string;
+  attempt?: number;
   node: CompiledPipelineNode;
   prompt: string;
   inputs: Record<string, PipelineArtifact>;
