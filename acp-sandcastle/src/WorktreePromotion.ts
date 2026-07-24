@@ -64,7 +64,8 @@ export async function applyWorktreeToHost(
     try {
       fs.unlinkSync(patchPath);
     } catch {
-      // Ignore temporary patch cleanup failures.
+      // Le résultat de l'application est déjà déterminé. Un échec de nettoyage
+      // dans le répertoire temporaire ne doit pas transformer ce résultat métier.
     }
   }
 }

@@ -57,18 +57,27 @@ export interface WorkspaceConnectorOverrides {
 
 export interface CreateWorkspaceRuntimeOptions extends WorkspaceRuntimeOptions {
   connectorOverrides?: WorkspaceConnectorOverrides;
-  /** Internal/test seam for already-loaded configuration. */
+  /** Point d'injection interne et de test pour une configuration déjà chargée. */
   resolvedCatalog?: AgentCatalog;
-  /** Internal/test seam for exercising Docker Sandbox without a microVM. */
+  /** Point d'injection interne et de test pour exercer Docker Sandbox sans microVM. */
   sandboxExecutor?: SubprocessExecutor;
 }
 
-/** Compose workspace discovery, Pipeline V3 adaptation, and connector selection. */
+/**
+ * Maintient la frontière entre découverte du workspace, adaptation Pipeline V3
+ * et sélection du connecteur. Le pipeline reste ainsi indépendant de la CLI
+ * Docker et des détails propres aux runtimes d'agents.
+ *
+ * Voir `docs/adr/0003-keep-acp-as-the-sandbox-runtime-boundary.md`.
+ */
 export function createWorkspaceRuntime(options: CreateWorkspaceRuntimeOptions): WorkspaceRuntime {
   const catalog = options.resolvedCatalog ?? loadValidCatalog(options.workspaceCwd);
   const programs = getPipelinePrograms(options.workspaceCwd, options.host.logger);
   const runner = new AcpRunner();
   const sandboxRuntime = new DockerSandboxRuntime(options.sandboxExecutor);
+  // Toutes les tentatives sont conservées jusqu'à la finalisation : un retry
+  // remplace uniquement le checkpoint du même nœud, sans toucher aux résultats
+  // valides des autres agents.
   const checkpointsByRunId = new Map<string, Map<string, Map<number, AgentCheckpointResult>>>();
 
   const runAgent = (async input => {
@@ -179,6 +188,9 @@ async function finalizePipelineChangeSet(
     const orderedNodeIds = orderPipelineNodeIdsForIntegration(input.program, checkpoints.keys());
     const selectedCheckpoints = new Map<string, AgentCheckpointResult>();
     const supersededCheckpoints: AgentCheckpointResult[] = [];
+    // Seule la tentative la plus récente de chaque nœud contribue au Pipeline
+    // Change Set. Les refs plus anciennes sont supprimées avant l'intégration
+    // pour éviter qu'une reprise ne réutilise un résultat obsolète.
     for (const nodeId of orderedNodeIds) {
       const attempts = checkpoints.get(nodeId)!;
       const attemptNumbers = [...attempts.keys()].sort((left, right) => left - right);
@@ -222,6 +234,9 @@ function resolvePipelinePromotionPolicy(
   program: CompiledPipelineProgram,
   nodeIds: readonly string[],
 ): PromotionPolicy {
+  // La Promotion porte sur le Pipeline Change Set complet : des politiques par
+  // nœud contradictoires rendraient impossible une décision finale atomique.
+  // Voir `docs/adr/0004-make-promotion-a-pipeline-policy.md`.
   const policies = new Set(nodeIds.map(nodeId => program.nodesById.get(nodeId)!.policy.promotion));
   if (policies.size > 1) {
     throw new Error(`Workspace-writing nodes declare conflicting Promotion policies: ${[...policies].join(', ')}. A multi-agent Pipeline Change Set requires one policy.`);

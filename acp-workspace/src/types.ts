@@ -79,8 +79,8 @@ export interface RuntimePermissionContext {
 }
 
 /**
- * Host contract for workspace composition.
- * Hosts provide UI decisions, permissions, and logging.
+ * Contrat de l'hôte pour composer le workspace.
+ * L'hôte fournit les décisions d'interface, les permissions et la journalisation.
  */
 export interface WorkspaceRuntimeHost {
   permissionContext(): RuntimePermissionContext | undefined;
@@ -128,7 +128,7 @@ export const consoleLogger: Logger = {
 };
 
 /**
- * Options for creating a WorkspaceRuntime
+ * Options de création d'un WorkspaceRuntime.
  */
 export interface WorkspaceRuntimeOptions {
   workspaceCwd: string;

@@ -28,6 +28,11 @@ export interface PipelineRuntimeAgentAdapterOptions {
   onStatus?: (runId: string, node: CompiledPipelineNode, update: PipelineStepStatusUpdate) => void;
 }
 
+/**
+ * Isole le runtime de DAG du contrat historique PipelineAgentRunner. Cette
+ * couche est le seul endroit où un prompt structuré et une politique normalisée
+ * sont rabattus vers les champs de compatibilité attendus par les runners tiers.
+ */
 export class PipelineRuntimeAgentAdapter implements PipelineRuntimeAdapter {
   constructor(private readonly options: PipelineRuntimeAgentAdapterOptions) {}
 
@@ -55,6 +60,9 @@ export class PipelineRuntimeAgentAdapter implements PipelineRuntimeAdapter {
   }
 
   asSessionFactory(): AgentNodeSessionFactory {
+    // La factory est une fonction enrichie d'un hook de finalisation. Conserver
+    // ce hook sur l'objet callable permet aux hôtes historiques de participer à
+    // la Promotion globale sans modifier la signature AgentNodeSessionFactory.
     const factory = (input => this.createSession(input)) as AgentNodeSessionFactory & {
       finalizePipelineChangeSet?: PipelineRuntimeAgentAdapter["finalizePipelineChangeSet"];
     };
@@ -114,8 +122,8 @@ class PipelineRuntimeAgentNodeSession implements AgentNodeSession {
         promptText: input.prompt,
         prompt: {
           skills: [...node.skills],
-          // The catalog resolves the public instructionsFile field into this
-          // compatibility slot before compilation.
+          // Le catalogue résout instructionsFile dans ce champ de compatibilité
+          // avant la compilation afin de ne pas modifier le contrat du runtime.
           instructions: node.promptFile,
           task: input.prompt,
           context: Object.values(input.inputs),

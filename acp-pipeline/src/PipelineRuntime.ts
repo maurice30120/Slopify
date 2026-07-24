@@ -78,6 +78,14 @@ type NodeTaskResult =
   | { nodeId: string; result: PipelineRuntimeDiagnostic | { ok: true } | { paused: PipelineRuntimeResult } }
   | { nodeId: string; thrown: unknown };
 
+/**
+ * Orchestre le DAG sans connaître le runtime concret ni effectuer de Promotion.
+ * Chaque transition durable est persistée avant l'événement correspondant afin
+ * qu'une reprise ne reconstruise jamais un état plus ancien que celui observé.
+ * Les sessions restent strictement attachées à un couple run/nœud.
+ *
+ * Voir `docs/adr/0003-keep-acp-as-the-sandbox-runtime-boundary.md`.
+ */
 export class PipelineRuntime {
   private readonly runs = new Map<string, ActiveRun>();
   private readonly programsById = new Map<string, CompiledPipelineProgram>();
@@ -516,6 +524,9 @@ export class PipelineRuntime {
             await this.persist(active.snapshot);
             return { nodeId: node.id, attempt, code: result.code, message: result.message };
           }
+          // Un historique ACP ne doit être rejoué que si la session distante a
+          // été perdue. Une autre erreur retryable relance la tentative sans
+          // dupliquer dans l'agent les tours déjà présents dans la session.
           const shouldReplayTransportLoss = isInterviewTransportLoss(result);
           await this.closeInterviewSession(active, node.id);
           replayNextAttempt = shouldReplayTransportLoss;
@@ -734,6 +745,8 @@ export class PipelineRuntime {
   }
 
   private recordInterviewHistory(active: ActiveRun, interview: NonNullable<PipelineRuntimeSnapshot["activeInterview"]>): void {
+    // L'historique est aussi publié comme artefact structuré : une reprise peut
+    // reconstruire l'entretien sans dépendre des chunks de diagnostic éphémères.
     const history = cloneJson(interview);
     active.snapshot.nodeInterviewHistories = {
       ...active.snapshot.nodeInterviewHistories,
@@ -815,6 +828,9 @@ export class PipelineRuntime {
   }
 
   private async closeSessionForRun(active: ActiveRun, session: AgentNodeSession): Promise<void> {
+    // Plusieurs chemins terminaux convergent ici (succès, retry, échec et
+    // annulation). La fermeture doit rester idempotente pour ne pas envoyer deux
+    // close au même transport ACP.
     if (active.closedSessions.has(session)) {
       return;
     }

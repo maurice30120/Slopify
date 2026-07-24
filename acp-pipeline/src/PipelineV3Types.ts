@@ -55,11 +55,11 @@ export interface PipelineAgentNodeDefinition {
   id: string;
   type?: "agent";
   agent: string;
-  /** Run-specific task and data. */
+  /** Tâche et données propres au run. */
   prompt?: string;
-  /** Invariant role and rules loaded separately from prompt. */
+  /** Rôle et règles invariants, chargés séparément de la tâche. */
   instructionsFile?: string;
-  /** @deprecated Use instructionsFile. */
+  /** @deprecated Utiliser `instructionsFile`. */
   promptFile?: string;
   skills?: string[];
   needs?: string[];
@@ -108,7 +108,7 @@ export interface CompiledPipelineNode {
   kind: "agent" | "pause";
   agent?: string;
   prompt?: string;
-  /** Resolved invariant instructions; retained in this compatibility slot. */
+  /** Instructions invariantes résolues, conservées dans ce champ de compatibilité. */
   promptFile?: string;
   skills: readonly string[];
   needs: readonly string[];

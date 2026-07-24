@@ -13,7 +13,7 @@ export interface PipelineV3CatalogOptions {
   workspaceCwd: string;
   configRoot?: string;
   maxInstructionsFileBytes?: number;
-  /** @deprecated Use maxInstructionsFileBytes. */
+  /** @deprecated Utiliser `maxInstructionsFileBytes`. */
   maxPromptFileBytes?: number;
   agentConfigs?: Record<string, unknown>;
 }
@@ -93,15 +93,15 @@ export interface PipelineV3InstructionFileResolveError {
 }
 
 /**
- * Resolves the public instructionsFile field while preserving the role/rules
- * separately from the run-specific prompt. The compiler compatibility field
- * promptFile carries the resolved instruction text internally; it is no longer
- * a path and is never concatenated with prompt.
+ * Résout le champ public instructionsFile sans mélanger le rôle et les règles
+ * avec la tâche propre au run. Le champ de compatibilité promptFile transporte
+ * en interne le texte d'instructions résolu : ce n'est plus un chemin et il
+ * n'est jamais concaténé avec prompt.
  *
- * The former promptFile YAML field is accepted as a deprecated alias. When it
- * is the node's only prompt source, its content remains the complete task for
- * backward compatibility. When an inline prompt also exists, the file content
- * becomes the invariant instructions layer.
+ * L'ancien champ YAML promptFile reste accepté comme alias obsolète. S'il est
+ * la seule source de prompt du nœud, son contenu reste la tâche complète. En
+ * présence d'un prompt inline, le fichier devient la couche d'instructions
+ * invariantes.
  */
 export function resolvePipelineV3InstructionFiles(
   definition: unknown,
@@ -157,7 +157,7 @@ export function resolvePipelineV3InstructionFiles(
     }
     return {
       ...rest,
-      // Internal compatibility slot consumed as PipelineNodePrompt.instructions.
+      // Ce champ de compatibilité est consommé comme PipelineNodePrompt.instructions.
       promptFile: outcome.content,
     };
   });
@@ -168,11 +168,11 @@ export function resolvePipelineV3InstructionFiles(
   };
 }
 
-/** @deprecated Use resolvePipelineV3InstructionFiles. */
+/** @deprecated Utiliser `resolvePipelineV3InstructionFiles`. */
 export const resolvePipelineV3PromptFiles = resolvePipelineV3InstructionFiles;
-/** @deprecated Use PipelineV3InstructionFileResolveOptions. */
+/** @deprecated Utiliser `PipelineV3InstructionFileResolveOptions`. */
 export type PipelineV3PromptFileResolveOptions = PipelineV3InstructionFileResolveOptions;
-/** @deprecated Use PipelineV3InstructionFileResolveError. */
+/** @deprecated Utiliser `PipelineV3InstructionFileResolveError`. */
 export type PipelineV3PromptFileResolveError = PipelineV3InstructionFileResolveError;
 
 function rejectUnsupportedVersion(definition: unknown): string | null {

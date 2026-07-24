@@ -104,6 +104,8 @@ export interface PromotionResult extends PromotionRequest {
  * Les Agent Checkpoints sont récupérés sans modifier le workspace hôte, puis
  * rejoués sur une ref privée dans l'ordre fourni par le coordinateur du DAG.
  * Une seule décision de Promotion porte ensuite sur le Pipeline Change Set.
+ *
+ * Voir `docs/adr/0002-promote-one-multi-agent-change-set.md`.
  */
 export class GitPromotion {
   constructor(private readonly execute: SubprocessExecutor) {}
@@ -248,6 +250,8 @@ export class GitPromotion {
       };
     }
 
+    // Tous les commits techniques réutilisent la date de la base : à entrées et
+    // ordre identiques, l'identifiant du Pipeline Change Set reste reproductible.
     const integrationDate = (await this.requireSuccess({
       command: 'git',
       args: ['show', '-s', '--format=%cI', baseCommit],
@@ -267,6 +271,8 @@ export class GitPromotion {
         signal: input.signal,
       }, `verify Agent Checkpoint "${checkpoint.nodeId}" ancestry`);
 
+      // merge-tree et commit-tree construisent l'historique sur une ref privée ;
+      // aucun checkout ni fichier du workspace hôte n'est modifié ici.
       const mergedTree = (await this.requireSuccess({
         command: 'git',
         args: ['merge-tree', '--write-tree', currentCommit, checkpoint.ref],
@@ -376,6 +382,9 @@ export class GitPromotion {
       signal: input.signal,
     }, 'verify the Pipeline Change Set ancestry');
 
+    // La décision peut intervenir longtemps après les Sandbox Runs. La base et
+    // la propreté du workspace sont donc revérifiées juste avant le fast-forward,
+    // qui constitue l'unique mutation du workspace hôte.
     const status = await this.requireSuccess({
       command: 'git',
       args: ['status', '--porcelain=v1'],

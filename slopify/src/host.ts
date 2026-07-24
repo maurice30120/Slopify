@@ -55,6 +55,11 @@ export interface CliPipelineHostOptions {
   runIdFactory?: () => string;
 }
 
+/**
+ * Adapte le runtime de pipeline au cycle de vie de la CLI. Les runs en pause
+ * restent attachés à leur instance pour pouvoir reprendre leurs sessions ; les
+ * runs terminaux sont retirés immédiatement pour ne pas conserver de processus.
+ */
 export class CliPipelineHost {
   private readonly backend: CliPipelineBackend;
   private readonly programs: CompiledPipelineProgram[];
@@ -384,6 +389,9 @@ function sanitizeSessionNotification(notification: SessionNotification): unknown
     return update;
   }
   if (kind === 'agent_thought_chunk') {
+    // Les logs conservent l'existence et la taille d'une pensée pour le diagnostic,
+    // jamais son contenu. Le texte de raisonnement ne doit pas être persisté dans
+    // `.acp/logs`, même en mode verbose.
     const content = update.content;
     const text = content.type === 'text' ? content.text : '';
     return {

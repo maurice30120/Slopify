@@ -37,12 +37,14 @@ export type CoordinatedPipelineRuntimeResult = PipelineRuntimeResult & {
 };
 
 /**
- * Adds a run-level finalization boundary around the core DAG runtime.
+ * Ajoute au runtime du DAG une frontière de finalisation à l'échelle du run.
  *
- * The core runtime may reach its terminal graph state before the workspace
- * checkpoint coordinator completes. Completion persistence and events are
- * buffered so hosts observe exactly one terminal outcome after the global
- * Pipeline Change Set has been integrated and its Promotion decided.
+ * Le graphe peut atteindre son état terminal avant la fin de l'intégration des
+ * Agent Checkpoints. La persistance et l'événement `completed` sont donc mis en
+ * mémoire tampon : l'hôte ne doit observer qu'un seul état terminal, après
+ * intégration du Pipeline Change Set et décision de Promotion.
+ *
+ * Voir `docs/adr/0002-promote-one-multi-agent-change-set.md`.
  */
 export class PipelineRuntime extends CorePipelineRuntime {
   private readonly programsByRunId = new Map<string, CompiledPipelineProgram>();
@@ -280,8 +282,11 @@ class PipelineCompletionBuffer {
 }
 
 /**
- * Orders selected nodes by DAG level, then by their declaration position.
- * Completion timing never participates in the comparison.
+ * Ordonne les nœuds par niveau dans le DAG, puis par ordre de déclaration.
+ * L'ordre de terminaison des agents ne doit jamais influencer l'intégration :
+ * un même ensemble d'Agent Checkpoints doit produire le même Pipeline Change Set.
+ *
+ * Voir `docs/adr/0002-promote-one-multi-agent-change-set.md`.
  */
 export function orderPipelineNodeIdsForIntegration(
   program: CompiledPipelineProgram,
