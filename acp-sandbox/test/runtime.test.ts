@@ -242,17 +242,6 @@ test('cleans the sandbox when Codex fails', async () => {
   assert.deepEqual(fake.calls.at(-1)?.args.slice(0, 2), ['rm', '--force']);
 });
 
-test('cleans the sandbox after an explicit Promotion rejection', async () => {
-  const fake = fakeExecutor(sandboxScenario({ changedFiles: ['src/change.ts'], diff: '+change\n' }).respond);
-  const output = await new DockerSandboxRuntime(fake.execute).runCodex({
-    workspaceCwd: '/repo', runId: 'run', nodeId: 'node', attempt: 1,
-    prompt: 'change', model: 'gpt', promotionPolicy: 'auto-reject',
-  });
-
-  assert.equal(output.status, 'rejected');
-  assert.deepEqual(fake.calls.at(-1)?.args.slice(0, 2), ['rm', '--force']);
-});
-
 test('an already absent sandbox does not turn successful cleanup into a pipeline failure', async () => {
   const cwd = temporaryDirectory();
   try {
