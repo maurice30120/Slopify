@@ -1,7 +1,14 @@
 import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
 
-import { GitPromotion, type AgentCheckpoint, type AgentCheckpointPreview } from './gitPromotion.js';
+import {
+  GitPromotion,
+  type AgentCheckpoint,
+  type AgentCheckpointPreview,
+  type PromotionDecider,
+  type PromotionPolicy,
+  type PromotionStatus,
+} from './gitPromotion.js';
 
 export const MINIMUM_SBX_VERSION = '0.35.0';
 
@@ -32,10 +39,12 @@ export interface SandboxRunInput {
   effort?: 'low' | 'medium' | 'high' | 'xhigh';
   signal?: AbortSignal;
   workspaceEffects?: boolean;
+  promotionPolicy?: PromotionPolicy;
+  decidePromotion?: PromotionDecider;
 }
 
 export interface SandboxRunResult {
-  status?: 'no_changes';
+  status: PromotionStatus;
   checkpointStatus: 'checkpointed' | 'no_changes';
   sandboxName: string;
   stdout: string;
@@ -65,7 +74,8 @@ export class DockerSandboxRuntime {
       codexArgs.push(input.prompt);
       const codex = await this.requireSuccess({ command: 'sbx', args: codexArgs, cwd: input.workspaceCwd, stdin: 'ignore', observeOutput: true, signal: input.signal }, 'run Codex non-interactively');
 
-      const checkpoint = await new GitPromotion(this.execute).createAgentCheckpoint({
+      const gitPromotion = new GitPromotion(this.execute);
+      const checkpoint = await gitPromotion.createAgentCheckpoint({
         workspaceCwd: input.workspaceCwd,
         sandboxName,
         baseCommit,
@@ -74,9 +84,17 @@ export class DockerSandboxRuntime {
         attempt: input.attempt,
         signal: input.signal,
       });
+      const promotion = await gitPromotion.promotePipelineChangeSet({
+        workspaceCwd: input.workspaceCwd,
+        policy: input.promotionPolicy ?? 'discard',
+        decide: input.decidePromotion,
+        checkpoint: checkpoint.checkpoint,
+        preview: checkpoint.preview,
+        signal: input.signal,
+      });
       return {
         ...checkpoint,
-        ...(checkpoint.checkpointStatus === 'no_changes' ? { status: 'no_changes' as const } : {}),
+        status: promotion.status,
         sandboxName,
         stdout: codex.stdout,
         stderr: codex.stderr,
