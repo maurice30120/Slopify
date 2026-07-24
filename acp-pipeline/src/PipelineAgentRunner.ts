@@ -2,8 +2,14 @@ import type { ContentBlock, SessionNotification } from "@agentclientprotocol/sdk
 
 import type { NormalizedPromotionPolicy } from "./PipelinePolicy";
 import type { PipelineStatus } from "./PipelineEvents";
-import type { PipelineStepRunResult } from "./PipelineStepCompletion";
-import type { PipelineArtifact } from "./PipelineV3Types";
+import type {
+	PipelinePromotionStatus,
+	PipelineStepRunResult,
+} from "./PipelineStepCompletion";
+import type {
+	CompiledPipelineProgram,
+	PipelineArtifact,
+} from "./PipelineV3Types";
 
 export type PipelineSideEffects = "none" | "workspace";
 export type PipelinePermissions = "ask" | "allowAll";
@@ -89,6 +95,30 @@ export interface PipelineAgentRunInput {
 	skills?: string[];
 }
 
-export type PipelineAgentRunner = (
-	input: PipelineAgentRunInput,
-) => Promise<PipelineStepRunResult>;
+export interface PipelineChangeSetPreview {
+	baseCommit: string;
+	changeSetCommit: string;
+	fileCount: number;
+	files: string[];
+	diff: string;
+}
+
+export interface PipelineChangeSetFinalizationInput {
+	runId: string;
+	program: CompiledPipelineProgram;
+}
+
+export interface PipelineChangeSetFinalizationResult {
+	promotion: PipelinePromotionStatus;
+	preview: PipelineChangeSetPreview;
+	changeSetRef?: string;
+	changeSetCommit?: string;
+	integratedNodeIds: string[];
+}
+
+export interface PipelineAgentRunner {
+	(input: PipelineAgentRunInput): Promise<PipelineStepRunResult>;
+	finalizePipelineChangeSet?(
+		input: PipelineChangeSetFinalizationInput,
+	): Promise<PipelineChangeSetFinalizationResult>;
+}
