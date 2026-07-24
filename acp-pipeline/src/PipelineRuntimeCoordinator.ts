@@ -1,5 +1,7 @@
 import {
   PipelineRuntime as CorePipelineRuntime,
+  type PipelineRunStore,
+  type PipelineRuntimeEvent,
   type PipelineRuntimeOptions,
   type PipelineRuntimeStartOptions,
 } from "./PipelineRuntime";
@@ -14,6 +16,7 @@ import type {
   PipelineRuntimeAdapter,
   PipelineRuntimeDiagnostic,
   PipelineRuntimeResult,
+  PipelineRuntimeSnapshot,
 } from "./PipelineV3Types";
 
 interface PipelineChangeSetFinalizingAdapter extends PipelineRuntimeAdapter {
@@ -36,23 +39,30 @@ export type CoordinatedPipelineRuntimeResult = PipelineRuntimeResult & {
 /**
  * Adds a run-level finalization boundary around the core DAG runtime.
  *
- * Agents still execute and finish independently inside the core runtime. Once
- * the complete DAG succeeds, an adapter may integrate every retained workspace
- * checkpoint and make one final Promotion decision for the whole run.
+ * The core runtime may reach its terminal graph state before the workspace
+ * checkpoint coordinator completes. Completion persistence and events are
+ * buffered so hosts observe exactly one terminal outcome after the global
+ * Pipeline Change Set has been integrated and its Promotion decided.
  */
 export class PipelineRuntime extends CorePipelineRuntime {
   private readonly programsByRunId = new Map<string, CompiledPipelineProgram>();
   private readonly coordinatedProgramsById = new Map<string, CompiledPipelineProgram>();
-  private readonly finalizedRunIds = new Set<string>();
   private readonly finalizer?: PipelineChangeSetFinalizingAdapter["finalizePipelineChangeSet"];
+  private readonly completionBuffer: PipelineCompletionBuffer;
 
   constructor(
     adapter: PipelineRuntimeAdapter,
     options: PipelineRuntimeOptions = {},
   ) {
-    super(adapter, options);
+    const completionBuffer = new PipelineCompletionBuffer(options.store, options.onEvent);
+    super(adapter, {
+      ...options,
+      store: completionBuffer.store,
+      onEvent: event => completionBuffer.captureEvent(event),
+    });
+    this.completionBuffer = completionBuffer;
     const adapterFinalizer = (adapter as PipelineChangeSetFinalizingAdapter).finalizePipelineChangeSet;
-    const factoryFinalizer = (adapter.createSession as PipelineChangeSetFinalizingSessionFactory).finalizePipelineChangeSet;
+    const factoryFinalizer = (adapter.createSession as unknown as PipelineChangeSetFinalizingSessionFactory).finalizePipelineChangeSet;
     this.finalizer = adapterFinalizer?.bind(adapter) ?? factoryFinalizer?.bind(adapter.createSession);
     for (const program of options.programs ?? []) {
       this.coordinatedProgramsById.set(program.id, program);
@@ -66,7 +76,7 @@ export class PipelineRuntime extends CorePipelineRuntime {
     this.coordinatedProgramsById.set(program.id, program);
     const result = await super.start(program, options);
     this.programsByRunId.set(result.runId, program);
-    return this.finalizeCompletedResult(result, program);
+    return this.finalizeTerminalResult(result, program);
   }
 
   override async resume(
@@ -77,9 +87,10 @@ export class PipelineRuntime extends CorePipelineRuntime {
     const program = this.programsByRunId.get(runId)
       ?? this.coordinatedProgramsById.get(result.snapshot.pipelineId);
     if (!program) {
+      await this.completionBuffer.flush(runId);
       return result;
     }
-    return this.finalizeCompletedResult(result, program);
+    return this.finalizeTerminalResult(result, program);
   }
 
   override async cancel(runId: string): Promise<PipelineRuntimeResult> {
@@ -90,20 +101,26 @@ export class PipelineRuntime extends CorePipelineRuntime {
     }
   }
 
-  private async finalizeCompletedResult(
+  private async finalizeTerminalResult(
     result: PipelineRuntimeResult,
     program: CompiledPipelineProgram,
   ): Promise<PipelineRuntimeResult> {
-    if (result.status !== "completed" || !this.finalizer || this.finalizedRunIds.has(result.runId)) {
+    if (result.status !== "completed") {
       if (result.status !== "paused") {
         this.cleanupRun(result.runId);
       }
       return result;
     }
 
-    this.finalizedRunIds.add(result.runId);
+    if (!this.finalizer) {
+      await this.completionBuffer.flush(result.runId);
+      this.cleanupRun(result.runId);
+      return result;
+    }
+
     try {
       const changeSet = await this.finalizer({ runId: result.runId, program });
+      await this.completionBuffer.flush(result.runId);
       if (!changeSet) {
         return result;
       }
@@ -120,6 +137,7 @@ export class PipelineRuntime extends CorePipelineRuntime {
       snapshot.status = "failed";
       snapshot.diagnostics.push(diagnostic);
       snapshot.updatedAt = new Date().toISOString();
+      await this.completionBuffer.fail(result.runId, snapshot, diagnostic);
       return {
         status: "failed",
         runId: result.runId,
@@ -133,6 +151,95 @@ export class PipelineRuntime extends CorePipelineRuntime {
 
   private cleanupRun(runId: string): void {
     this.programsByRunId.delete(runId);
+  }
+}
+
+interface BufferedCompletion {
+  snapshot?: PipelineRuntimeSnapshot;
+  event?: PipelineRuntimeEvent;
+}
+
+class PipelineCompletionBuffer {
+  private readonly completions = new Map<string, BufferedCompletion>();
+  readonly store?: PipelineRunStore;
+
+  constructor(
+    private readonly targetStore: PipelineRunStore | undefined,
+    private readonly targetOnEvent: PipelineRuntimeOptions["onEvent"],
+  ) {
+    if (!targetStore) {
+      return;
+    }
+    this.store = {
+      create: snapshot => targetStore.create(snapshot),
+      load: runId => targetStore.load(runId),
+      listResumable: () => targetStore.listResumable(),
+      save: async snapshot => {
+        if (snapshot.status === "completed") {
+          this.completion(snapshot.runId).snapshot = structuredClone(snapshot);
+          return;
+        }
+        await targetStore.save(snapshot);
+      },
+      appendEvent: async (runId, event) => {
+        if (event.type === "completed") {
+          this.completion(runId).event = { ...event };
+          return;
+        }
+        await targetStore.appendEvent(runId, event);
+      },
+    };
+  }
+
+  async captureEvent(event: PipelineRuntimeEvent): Promise<void> {
+    if (event.type === "completed") {
+      this.completion(event.runId).event = { ...event };
+      return;
+    }
+    await this.targetOnEvent?.(event);
+  }
+
+  async flush(runId: string): Promise<void> {
+    const completion = this.completions.get(runId);
+    if (!completion) {
+      return;
+    }
+    this.completions.delete(runId);
+    if (completion.snapshot) {
+      await this.targetStore?.save(completion.snapshot);
+    }
+    if (completion.event) {
+      await this.targetOnEvent?.(completion.event);
+      await this.targetStore?.appendEvent(runId, completion.event);
+    }
+  }
+
+  async fail(
+    runId: string,
+    snapshot: PipelineRuntimeSnapshot,
+    diagnostic: PipelineRuntimeDiagnostic,
+  ): Promise<void> {
+    this.completions.delete(runId);
+    await this.targetStore?.save(snapshot);
+    const event: PipelineRuntimeEvent = {
+      runId,
+      type: "failed",
+      nodeId: diagnostic.nodeId,
+      message: diagnostic.message,
+      at: snapshot.updatedAt,
+    };
+    await this.targetOnEvent?.(event);
+    await this.targetStore?.appendEvent(runId, event);
+  }
+
+  private completion(runId: string): BufferedCompletion {
+    const existing = this.completions.get(runId);
+    if (existing) {
+      return existing;
+    }
+    const created: BufferedCompletion = {};
+    this.completions.set(runId, created);
+    return created;
   }
 }
 
