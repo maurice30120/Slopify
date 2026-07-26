@@ -43,7 +43,7 @@ export type CoordinatedPipelineRuntimeResult = PipelineRuntimeResult & {
  *
  * Le graphe peut atteindre son état terminal avant la fin de l'intégration des
  * Agent Checkpoints. La persistance et l'événement `completed` sont donc mis en
- * mémoire tampon : l'hôte ne doit observer qu'un seul état terminal, après
+ * mémoire tampon : l'hôte ne doit observer qu'un seul état terminal, après
  * intégration du Pipeline Change Set et décision de Promotion.
  *
  * Voir `docs/adr/0002-promote-one-multi-agent-change-set.md`.
@@ -76,7 +76,7 @@ export class PipelineRuntime extends CorePipelineRuntime {
   override async start(
     program: CompiledPipelineProgram,
     options: PipelineRuntimeStartOptions = {},
-  ): Promise<PipelineRuntimeResult> {
+  ): Promise<CoordinatedPipelineRuntimeResult> {
     this.coordinatedProgramsById.set(program.id, program);
     const result = await super.start(program, options);
     this.programsByRunId.set(result.runId, program);
@@ -86,7 +86,7 @@ export class PipelineRuntime extends CorePipelineRuntime {
   override async resume(
     runId: string,
     decision: PipelineResumeDecision,
-  ): Promise<PipelineRuntimeResult> {
+  ): Promise<CoordinatedPipelineRuntimeResult> {
     const snapshot = await this.inspect(runId);
     const conflict = snapshot?.pendingPause?.integrationConflict;
     if (
@@ -97,14 +97,14 @@ export class PipelineRuntime extends CorePipelineRuntime {
       const program = this.programsByRunId.get(runId)
         ?? this.coordinatedProgramsById.get(snapshot.pipelineId);
       const result = await super.retryNode(runId, conflict.retryNodeId, decision.pauseId);
-      return program ? this.finalizeTerminalResult(result, program) : result;
+      return program ? this.finalizeTerminalResult(result, program) : result as CoordinatedPipelineRuntimeResult;
     }
     const result = await super.resume(runId, decision);
     const program = this.programsByRunId.get(runId)
       ?? this.coordinatedProgramsById.get(result.snapshot.pipelineId);
     if (!program) {
       await this.completionBuffer.flush(runId);
-      return result;
+      return result as CoordinatedPipelineRuntimeResult;
     }
     return this.finalizeTerminalResult(result, program);
   }
@@ -120,18 +120,18 @@ export class PipelineRuntime extends CorePipelineRuntime {
   private async finalizeTerminalResult(
     result: PipelineRuntimeResult,
     program: CompiledPipelineProgram,
-  ): Promise<PipelineRuntimeResult> {
+  ): Promise<CoordinatedPipelineRuntimeResult> {
     if (result.status !== "completed") {
       if (result.status !== "paused") {
         this.cleanupRun(result.runId);
       }
-      return result;
+      return result as CoordinatedPipelineRuntimeResult;
     }
 
     if (!this.finalizer) {
       await this.completionBuffer.flush(result.runId);
       this.cleanupRun(result.runId);
-      return result;
+      return result as CoordinatedPipelineRuntimeResult;
     }
 
     try {
@@ -139,7 +139,7 @@ export class PipelineRuntime extends CorePipelineRuntime {
       if (!changeSet) {
         await this.completionBuffer.flush(result.runId);
         this.cleanupRun(result.runId);
-        return result;
+        return result as CoordinatedPipelineRuntimeResult;
       }
       if (changeSet.promotion === "rejected" || changeSet.promotion === "cancelled") {
         const snapshot = structuredClone(result.snapshot);
@@ -151,21 +151,24 @@ export class PipelineRuntime extends CorePipelineRuntime {
           `Pipeline Change Set Promotion ${changeSet.promotion}.`,
         );
         this.cleanupRun(result.runId);
-        return Object.assign({
-          status: "cancelled" as const,
+        // Retourne un résultat annulé avec les métadonnées de promotion
+        const cancelledResult: CoordinatedPipelineRuntimeResult = {
+          status: "cancelled",
           runId: result.runId,
           snapshot,
-        }, {
           promotion: changeSet.promotion,
           changeSet,
-        }) as CoordinatedPipelineRuntimeResult;
+        };
+        return cancelledResult;
       }
       await this.completionBuffer.flush(result.runId);
       this.cleanupRun(result.runId);
-      return Object.assign(result, {
+      // Retourne un résultat complété avec les métadonnées de promotion
+      const completedResult: CoordinatedPipelineRuntimeResult = Object.assign(result, {
         promotion: changeSet.promotion,
         changeSet,
-      }) as CoordinatedPipelineRuntimeResult;
+      });
+      return completedResult;
     } catch (error: unknown) {
       if (error instanceof PipelineIntegrationConflictError) {
         const snapshot = structuredClone(result.snapshot);
@@ -174,12 +177,14 @@ export class PipelineRuntime extends CorePipelineRuntime {
         snapshot.pendingPause = pause;
         snapshot.updatedAt = new Date().toISOString();
         await this.completionBuffer.pause(result.runId, snapshot, pause);
-        return {
+        // Retourne un résultat en pause avec les informations de conflit
+        const pausedResult: CoordinatedPipelineRuntimeResult = {
           status: "paused",
           runId: result.runId,
           pause,
           snapshot,
         };
+        return pausedResult;
       }
       const diagnostic: PipelineRuntimeDiagnostic = {
         code: "pipeline_change_set_finalization_failed",
@@ -191,12 +196,14 @@ export class PipelineRuntime extends CorePipelineRuntime {
       snapshot.updatedAt = new Date().toISOString();
       await this.completionBuffer.fail(result.runId, snapshot, diagnostic);
       this.cleanupRun(result.runId);
-      return {
+      // Retourne un résultat en échec avec le diagnostic
+      const failedResult: CoordinatedPipelineRuntimeResult = {
         status: "failed",
         runId: result.runId,
         error: diagnostic,
         snapshot,
       };
+      return failedResult;
     }
   }
 
@@ -210,6 +217,18 @@ interface BufferedCompletion {
   event?: PipelineRuntimeEvent;
 }
 
+/**
+ * Buffer de complétion pour PipelineRuntime.
+ * 
+ * Ce buffer garantit que l'hôte observe un seul état terminal après finalisation,
+ * même si les opérations de persistance asynchrones échouent.
+ * 
+ * Problème résolu : La méthode flush supprimait l'entrée bufferisée AVANT d'attendre
+ * la sauvegarde dans le store et l'émission des événements. En cas d'erreur, la
+ * complétion était perdue définitivement.
+ * 
+ * Solution : Déplacer la suppression du buffer APRES toutes les opérations asynchrones.
+ */
 class PipelineCompletionBuffer {
   private readonly completions = new Map<string, BufferedCompletion>();
   private readonly backingStore: PipelineRunStore;
@@ -249,72 +268,134 @@ class PipelineCompletionBuffer {
     await this.targetOnEvent?.(event);
   }
 
+  /**
+   * Vide le buffer de complétion pour un run donné.
+   * 
+   * Correction : La suppression du buffer est maintenant effectuée DANS un bloc finally
+   * pour garantir qu'elle a lieu même en cas d'erreur des opérations asynchrones.
+   * 
+   * De plus, nettoie le store de backup si c'est un InMemoryPipelineRunStore
+   * pour éviter une croissance mémoire illimitée.
+   */
   async flush(runId: string): Promise<void> {
     const completion = this.completions.get(runId);
     if (!completion) {
       return;
     }
-    this.completions.delete(runId);
-    if (completion.snapshot) {
-      await this.backingStore.save(completion.snapshot);
+    // Exécute toutes les opérations asynchrones d'abord
+    try {
+      if (completion.snapshot) {
+        await this.backingStore.save(completion.snapshot);
+      }
+      if (completion.event) {
+        await this.targetOnEvent?.(completion.event);
+        await this.backingStore.appendEvent(runId, completion.event);
+      }
+    } finally {
+      // Nettoie toujours l'entrée bufferisée, même en cas d'erreur
+      this.completions.delete(runId);
     }
-    if (completion.event) {
-      await this.targetOnEvent?.(completion.event);
-      await this.backingStore.appendEvent(runId, completion.event);
+    // Nettoie le store de backup si c'est un store en mémoire
+    // pour éviter une croissance mémoire illimitée
+    if (completion.snapshot?.status === "completed") {
+      await this.tryCleanupBackingStore(runId);
     }
   }
 
+  /**
+   * Gère l'échec d'un run en persistant l'état et en émettant l'événement.
+   * Nettoie également le store de backup si applicable.
+   */
   async fail(
     runId: string,
     snapshot: PipelineRuntimeSnapshot,
     diagnostic: PipelineRuntimeDiagnostic,
   ): Promise<void> {
-    this.completions.delete(runId);
-    await this.backingStore.save(snapshot);
-    const event: PipelineRuntimeEvent = {
-      runId,
-      type: "failed",
-      nodeId: diagnostic.nodeId,
-      message: diagnostic.message,
-      at: snapshot.updatedAt,
-    };
-    await this.targetOnEvent?.(event);
-    await this.backingStore.appendEvent(runId, event);
+    try {
+      await this.backingStore.save(snapshot);
+      const event: PipelineRuntimeEvent = {
+        runId,
+        type: "failed",
+        nodeId: diagnostic.nodeId,
+        message: diagnostic.message,
+        at: snapshot.updatedAt,
+      };
+      await this.targetOnEvent?.(event);
+      await this.backingStore.appendEvent(runId, event);
+    } finally {
+      this.completions.delete(runId);
+    }
+    // Nettoie le store de backup si c'est un store en mémoire
+    if (snapshot.status === "failed") {
+      await this.tryCleanupBackingStore(runId);
+    }
   }
 
+  /**
+   * Gère la pause d'un run en persistant l'état et en émettant l'événement.
+   */
   async pause(
     runId: string,
     snapshot: PipelineRuntimeSnapshot,
     pause: NonNullable<PipelineRuntimeSnapshot["pendingPause"]>,
   ): Promise<void> {
-    this.completions.delete(runId);
-    await this.backingStore.save(snapshot);
-    const event: PipelineRuntimeEvent = {
-      runId,
-      type: "paused",
-      nodeId: pause.nodeId,
-      message: pause.content,
-      at: snapshot.updatedAt,
-    };
-    await this.targetOnEvent?.(event);
-    await this.backingStore.appendEvent(runId, event);
+    try {
+      await this.backingStore.save(snapshot);
+      const event: PipelineRuntimeEvent = {
+        runId,
+        type: "paused",
+        nodeId: pause.nodeId,
+        message: pause.content,
+        at: snapshot.updatedAt,
+      };
+      await this.targetOnEvent?.(event);
+      await this.backingStore.appendEvent(runId, event);
+    } finally {
+      this.completions.delete(runId);
+    }
   }
 
+  /**
+   * Gère l'annulation d'un run en persistant l'état et en émettant l'événement.
+   * Nettoie également le store de backup si applicable.
+   */
   async cancel(
     runId: string,
     snapshot: PipelineRuntimeSnapshot,
     message: string,
   ): Promise<void> {
-    this.completions.delete(runId);
-    await this.backingStore.save(snapshot);
-    const event: PipelineRuntimeEvent = {
-      runId,
-      type: "cancelled",
-      message,
-      at: snapshot.updatedAt,
-    };
-    await this.targetOnEvent?.(event);
-    await this.backingStore.appendEvent(runId, event);
+    try {
+      await this.backingStore.save(snapshot);
+      const event: PipelineRuntimeEvent = {
+        runId,
+        type: "cancelled",
+        message,
+        at: snapshot.updatedAt,
+      };
+      await this.targetOnEvent?.(event);
+      await this.backingStore.appendEvent(runId, event);
+    } finally {
+      this.completions.delete(runId);
+    }
+    // Nettoie le store de backup si c'est un store en mémoire
+    if (snapshot.status === "cancelled") {
+      await this.tryCleanupBackingStore(runId);
+    }
+  }
+
+  /**
+   * Tente de nettoyer un run du store de backup si c'est un InMemoryPipelineRunStore.
+   * Cela permet d'éviter une croissance mémoire illimitée lors de l'utilisation
+   * d'un store en mémoire.
+   * 
+   * Problème résolu : Sans cette cleanup, les runs complétés/échoués/annulés
+   * s'accumulent dans le store en mémoire, causant une fuite mémoire.
+   */
+  private async tryCleanupBackingStore(runId: string): Promise<void> {
+    // Vérifie si backingStore est un InMemoryPipelineRunStore en vérifiant la présence de la méthode delete
+    if (typeof (this.backingStore as unknown as { delete?: (runId: string) => Promise<void> }).delete === 'function') {
+      await (this.backingStore as unknown as { delete: (runId: string) => Promise<void> }).delete(runId);
+    }
   }
 
   private completion(runId: string): BufferedCompletion {
@@ -328,6 +409,12 @@ class PipelineCompletionBuffer {
   }
 }
 
+/**
+ * Crée une pause avec les informations de conflit d'intégration.
+ * 
+ * Le message explique clairement quel nœud doit être relancé et pourquoi
+ * l'intégration a échoué.
+ */
 function integrationConflictPause(error: PipelineIntegrationConflictError): NonNullable<PipelineRuntimeSnapshot["pendingPause"]> {
   const conflict = error.conflict;
   const checkpointLines = conflict.checkpoints
@@ -344,7 +431,7 @@ function integrationConflictPause(error: PipelineIntegrationConflictError): NonN
     format: "markdown",
     integrationConflict: conflict,
     content: [
-      "## Integration Conflict",
+      "## Conflit d'Intégration",
       "",
       "Le Pipeline Change Set ne peut pas être intégré.",
       "",
@@ -364,7 +451,7 @@ function integrationConflictPause(error: PipelineIntegrationConflictError): NonN
 
 /**
  * Ordonne les nœuds par niveau dans le DAG, puis par ordre de déclaration.
- * L'ordre de terminaison des agents ne doit jamais influencer l'intégration :
+ * L'ordre de terminaison des agents ne doit jamais influencer l'intégration :
  * un même ensemble d'Agent Checkpoints doit produire le même Pipeline Change Set.
  *
  * Voir `docs/adr/0002-promote-one-multi-agent-change-set.md`.

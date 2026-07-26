@@ -42,6 +42,21 @@ export class InMemoryPipelineRunStore implements PipelineRunStore {
   async readEvents(runId: string): Promise<PipelineRuntimeEvent[]> {
     return [...(this.events.get(runId) ?? [])];
   }
+
+  /**
+   * Supprime un run du store en mémoire.
+   * 
+   * Cette méthode est utilisée par PipelineCompletionBuffer pour nettoyer
+   * les runs complétés/échoués/annulés et éviter une croissance mémoire illimitée.
+   * 
+   * Problème résolu : Sans cette méthode, les runs s'accumulent dans les Maps
+   * snapshots et events, causant une fuite mémoire dans les applications
+   * long-lived qui exécutent de nombreux pipelines.
+   */
+  async delete(runId: string): Promise<void> {
+    this.snapshots.delete(runId);
+    this.events.delete(runId);
+  }
 }
 
 export class FilePipelineRunStore implements PipelineRunStore {
@@ -72,7 +87,7 @@ export class FilePipelineRunStore implements PipelineRunStore {
   async save(snapshot: PipelineRuntimeSnapshot): Promise<void> {
     const path = this.snapshotPath(snapshot.runId);
     await mkdir(dirname(path), { recursive: true });
-    // Le renommage remplace atomiquement le snapshot : après une interruption,
+    // Le renommage remplace atomiquement le snapshot : après une interruption,
     // une reprise lit soit l'ancienne version complète, soit la nouvelle, jamais
     // un JSON partiellement écrit.
     const tempPath = `${path}.${process.pid}.${Date.now()}.tmp`;
