@@ -289,6 +289,53 @@ test("an Integration Conflict remains retryable without a persistent run store",
   assert.equal(finalization, 2);
 });
 
+test("completed runs do not remain retained by the fallback store", async () => {
+  const program = multiAgentProgram();
+  const adapterWithFinalizer = successfulAdapter(async input => noChangesResult(input));
+  const adapter: PipelineRuntimeAdapter = {
+    createSession: adapterWithFinalizer.createSession,
+  };
+  const runtime = new PipelineRuntime(adapter, {
+    runIdFactory: () => "run-ephemeral-completion",
+  });
+
+  const completed = await runtime.start(program);
+
+  assert.equal(completed.status, "completed");
+  assert.equal(await runtime.inspect(completed.runId), null);
+});
+
+test("persists a completed run before notifying a failing observer", async () => {
+  const program = multiAgentProgram();
+  const store = new InMemoryPipelineRunStore();
+  const adapterWithFinalizer = successfulAdapter(async input => noChangesResult(input));
+  const adapter: PipelineRuntimeAdapter = {
+    createSession: adapterWithFinalizer.createSession,
+  };
+  const runtime = new PipelineRuntime(adapter, {
+    runIdFactory: () => "run-failing-completed-observer",
+    store,
+    onEvent: event => {
+      if (event.type === "completed") {
+        throw new Error("completed observer unavailable");
+      }
+    },
+  });
+
+  await assert.rejects(
+    runtime.start(program),
+    /completed observer unavailable/,
+  );
+
+  assert.equal((await store.load("run-failing-completed-observer"))?.status, "completed");
+  assert.deepEqual(
+    (await store.readEvents("run-failing-completed-observer"))
+      .map(event => event.type)
+      .filter(type => type === "completed"),
+    ["completed"],
+  );
+});
+
 test("a rejected Promotion cancels the run without emitting completed", async () => {
   const program = multiAgentProgram();
   const store = new InMemoryPipelineRunStore();

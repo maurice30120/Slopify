@@ -208,18 +208,23 @@ export class PipelineRuntime extends CorePipelineRuntime {
 interface BufferedCompletion {
   snapshot?: PipelineRuntimeSnapshot;
   event?: PipelineRuntimeEvent;
+  snapshotPersisted?: boolean;
+  eventPersisted?: boolean;
+  eventEmitted?: boolean;
 }
 
 class PipelineCompletionBuffer {
   private readonly completions = new Map<string, BufferedCompletion>();
   private readonly backingStore: PipelineRunStore;
+  private readonly fallbackStore?: InMemoryPipelineRunStore;
   readonly store: PipelineRunStore;
 
   constructor(
     targetStore: PipelineRunStore | undefined,
     private readonly targetOnEvent: PipelineRuntimeOptions["onEvent"],
   ) {
-    this.backingStore = targetStore ?? new InMemoryPipelineRunStore();
+    this.fallbackStore = targetStore ? undefined : new InMemoryPipelineRunStore();
+    this.backingStore = targetStore ?? this.fallbackStore!;
     this.store = {
       create: snapshot => this.backingStore.create(snapshot),
       load: runId => this.backingStore.load(runId),
@@ -254,14 +259,20 @@ class PipelineCompletionBuffer {
     if (!completion) {
       return;
     }
-    this.completions.delete(runId);
-    if (completion.snapshot) {
+    if (completion.snapshot && !completion.snapshotPersisted) {
       await this.backingStore.save(completion.snapshot);
+      completion.snapshotPersisted = true;
     }
-    if (completion.event) {
-      await this.targetOnEvent?.(completion.event);
+    if (completion.event && !completion.eventPersisted) {
       await this.backingStore.appendEvent(runId, completion.event);
+      completion.eventPersisted = true;
     }
+    if (completion.event && !completion.eventEmitted) {
+      await this.targetOnEvent?.(completion.event);
+      completion.eventEmitted = true;
+    }
+    this.completions.delete(runId);
+    await this.releaseFallbackRun(runId);
   }
 
   async fail(
@@ -269,7 +280,6 @@ class PipelineCompletionBuffer {
     snapshot: PipelineRuntimeSnapshot,
     diagnostic: PipelineRuntimeDiagnostic,
   ): Promise<void> {
-    this.completions.delete(runId);
     await this.backingStore.save(snapshot);
     const event: PipelineRuntimeEvent = {
       runId,
@@ -278,8 +288,10 @@ class PipelineCompletionBuffer {
       message: diagnostic.message,
       at: snapshot.updatedAt,
     };
-    await this.targetOnEvent?.(event);
     await this.backingStore.appendEvent(runId, event);
+    await this.targetOnEvent?.(event);
+    this.completions.delete(runId);
+    await this.releaseFallbackRun(runId);
   }
 
   async pause(
@@ -287,7 +299,6 @@ class PipelineCompletionBuffer {
     snapshot: PipelineRuntimeSnapshot,
     pause: NonNullable<PipelineRuntimeSnapshot["pendingPause"]>,
   ): Promise<void> {
-    this.completions.delete(runId);
     await this.backingStore.save(snapshot);
     const event: PipelineRuntimeEvent = {
       runId,
@@ -296,8 +307,9 @@ class PipelineCompletionBuffer {
       message: pause.content,
       at: snapshot.updatedAt,
     };
-    await this.targetOnEvent?.(event);
     await this.backingStore.appendEvent(runId, event);
+    await this.targetOnEvent?.(event);
+    this.completions.delete(runId);
   }
 
   async cancel(
@@ -305,7 +317,6 @@ class PipelineCompletionBuffer {
     snapshot: PipelineRuntimeSnapshot,
     message: string,
   ): Promise<void> {
-    this.completions.delete(runId);
     await this.backingStore.save(snapshot);
     const event: PipelineRuntimeEvent = {
       runId,
@@ -313,8 +324,10 @@ class PipelineCompletionBuffer {
       message,
       at: snapshot.updatedAt,
     };
-    await this.targetOnEvent?.(event);
     await this.backingStore.appendEvent(runId, event);
+    await this.targetOnEvent?.(event);
+    this.completions.delete(runId);
+    await this.releaseFallbackRun(runId);
   }
 
   private completion(runId: string): BufferedCompletion {
@@ -325,6 +338,10 @@ class PipelineCompletionBuffer {
     const created: BufferedCompletion = {};
     this.completions.set(runId, created);
     return created;
+  }
+
+  private async releaseFallbackRun(runId: string): Promise<void> {
+    await this.fallbackStore?.delete(runId);
   }
 }
 
