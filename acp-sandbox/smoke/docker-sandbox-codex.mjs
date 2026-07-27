@@ -106,7 +106,7 @@ nodes:
     '--cwd', repo,
     '--json',
   ], { capture: true, acceptedStatuses: action === 'promote' ? [0] : [2] });
-  const expectedStatus = action === 'promote' ? 'completed' : 'cancelled';
+  const expectedStatus = action === 'promote' ? 'completed' : 'rejected';
   if (!result.stdout.includes(`"status": "${expectedStatus}"`)) {
     throw new Error(`Slopify did not report the expected ${expectedStatus} result: ${result.stderr || result.stdout}`);
   }

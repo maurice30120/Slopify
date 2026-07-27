@@ -259,7 +259,12 @@ export type PipelineRuntimeResult =
   | { status: "completed"; runId: string; artifact?: PipelineArtifact; snapshot: PipelineRuntimeSnapshot }
   | { status: "paused"; runId: string; pause: PipelinePauseSnapshot; snapshot: PipelineRuntimeSnapshot }
   | { status: "failed"; runId: string; error: PipelineRuntimeDiagnostic; snapshot: PipelineRuntimeSnapshot }
-  | { status: "cancelled"; runId: string; snapshot: PipelineRuntimeSnapshot };
+  | {
+      status: "cancelled";
+      runId: string;
+      snapshot: PipelineRuntimeSnapshot;
+      promotion?: "rejected" | "cancelled";
+    };
 
 export interface PipelineResumeDecision {
   pauseId: string;

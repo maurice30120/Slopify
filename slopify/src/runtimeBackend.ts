@@ -35,15 +35,10 @@ export const createRuntimeCliBackend: CliPipelineBackendFactory = (workspaceCwd,
       }),
       requestPipelinePromotion: async request => {
         const selected = await context.terminal.select(
-          [
-            `Pipeline Change Set for ${request.pipelineId}`,
-            `Agent checkpoints: ${request.integratedNodeIds.join(', ') || '(none)'}`,
-            `Files changed: ${request.preview.fileCount}`,
-            `Base: ${request.preview.baseCommit || '(unknown)'}`,
-          ].join('\n'),
-          ['Apply Pipeline Change Set', 'Reject Pipeline Change Set'],
+          formatPipelineChangeSetPrompt(request),
+          ['Promote Pipeline Change Set', 'Reject Pipeline Change Set'],
         );
-        if (selected === 'Apply Pipeline Change Set') return 'approve';
+        if (selected === 'Promote Pipeline Change Set') return 'approve';
         if (selected === 'Reject Pipeline Change Set') return 'reject';
         return 'cancelled';
       },
@@ -53,10 +48,34 @@ export const createRuntimeCliBackend: CliPipelineBackendFactory = (workspaceCwd,
 
   return {
     programs: [...runtime.programs],
+    preflightPipeline: (program, runId) => runtime.preflightPipeline(program, runId),
     runAgent: runtime.runAgent,
     clearRunLogs: () => runtime.clearRunLogs(),
   };
 };
+
+export function formatPipelineChangeSetPrompt(request: {
+  pipelineId: string;
+  integratedNodeIds: readonly string[];
+  preview: {
+    baseCommit: string;
+    changeSetCommit: string;
+    fileCount: number;
+    files: readonly string[];
+    diff: string;
+  };
+}): string {
+  return [
+    `Pipeline Change Set for ${request.pipelineId}`,
+    `Agent checkpoints: ${request.integratedNodeIds.join(', ') || '(none)'}`,
+    `Files changed: ${request.preview.fileCount}`,
+    ...request.preview.files.map(file => `- ${file}`),
+    `Base: ${request.preview.baseCommit || '(unknown)'}`,
+    '',
+    'Diff:',
+    request.preview.diff || '(no diff)',
+  ].join('\n');
+}
 
 export function formatRetainedSandbox(sandbox: RetainedSandboxOutput): string {
   return [

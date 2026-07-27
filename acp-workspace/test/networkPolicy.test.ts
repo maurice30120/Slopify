@@ -71,6 +71,7 @@ function fakeSandboxResponse(request: SubprocessRequest): SubprocessResult {
   if (request.args.join(' ') === 'version') return response('sbx 0.35.0\n');
   if (request.args.join(' ') === 'create --help') return response('--clone\n');
   if (request.args.join(' ') === 'ls --help') return response('--json\n');
+  if (request.args.join(' ') === 'ls --json') return response('[]\n');
   if (request.args.join(' ') === 'policy init --help') return response('Usage: sbx policy init\n');
   if (request.args.join(' ') === 'policy ls --json') return response('', 'policy is not initialized', 1);
   return response();

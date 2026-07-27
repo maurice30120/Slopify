@@ -9,7 +9,7 @@ import type { CliPipelineHost, CliPipelineListEntry } from './host.js';
 import type { CliTerminal } from './terminal.js';
 
 export interface CliRunResult {
-  status: 'completed' | 'cancelled' | 'failed';
+  status: 'completed' | 'rejected' | 'cancelled' | 'failed';
   runId: string;
   artifact?: WorkspaceArtifact;
   error?: { code: string; message: string; nodeId?: string; attempt?: number };
@@ -54,7 +54,7 @@ export async function runPipelineInteractive(
       : await terminal.confirm(
         interaction.kind === 'promotion' ? 'Approve pipeline promotion?' : 'Approve pipeline pause?',
         interaction.kind === 'promotion'
-          ? 'This decision may apply isolated workspace changes.'
+          ? 'This decision may promote isolated workspace changes.'
           : undefined,
       );
 
@@ -73,6 +73,8 @@ export async function runPipelineInteractive(
     }
   } else if (final.status === 'failed') {
     terminal.writeError(formatFailure(final.error));
+  } else if (final.status === 'rejected') {
+    terminal.writeError('Pipeline Change Set rejected.');
   } else {
     terminal.writeError('Pipeline cancelled.');
   }

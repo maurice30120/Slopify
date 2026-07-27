@@ -292,6 +292,26 @@ test('reports failed and cancelled final results on stderr', async () => {
   assert.deepEqual(cancelledTerminal.errors, ['Pipeline cancelled.']);
 });
 
+test('reports a rejected Pipeline Change Set distinctly from cancellation', async () => {
+  const terminal = new FakeTerminal();
+  const rejected = Object.assign({
+    status: 'cancelled' as const,
+    runId: 'run-rejected',
+    snapshot: { ...snapshot('cancelled'), runId: 'run-rejected' },
+  }, { promotion: 'rejected' as const }) as PipelineRuntimeResult;
+  const host = {
+    start: async (): Promise<PipelineRuntimeResult> => rejected,
+    resume: async (): Promise<PipelineRuntimeResult> => {
+      throw new Error('resume should not be called');
+    },
+  };
+
+  const result = await runPipelineInteractive(host, terminal, command());
+
+  assert.equal(result.status, 'rejected');
+  assert.deepEqual(terminal.errors, ['Pipeline Change Set rejected.']);
+});
+
 test('reports failed final results with node and attempt context when available', async () => {
   const terminal = new FakeTerminal();
   const host = {

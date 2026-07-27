@@ -220,7 +220,12 @@ export class DockerSandboxRuntime {
     let durableState: SandboxRunState | undefined;
 
     try {
-      await this.preflightWorkspace(input.workspaceCwd, input.workspaceEffects !== false, execution.signal);
+      await this.preflightWorkspace(
+        input.workspaceCwd,
+        input.workspaceEffects !== false,
+        execution.signal,
+        input.resumeState ? [] : [sandboxName],
+      );
       let baseCommit: string;
       if (input.resumeState) {
         baseCommit = input.resumeState.baseCommit;
@@ -471,7 +476,12 @@ export class DockerSandboxRuntime {
     };
   }
 
-  async preflightWorkspace(cwd: string, workspaceEffects = true, signal?: AbortSignal): Promise<void> {
+  async preflightWorkspace(
+    cwd: string,
+    workspaceEffects = true,
+    signal?: AbortSignal,
+    plannedSandboxNames: readonly string[] = [],
+  ): Promise<void> {
     this.activePreflights += 1;
     try {
       await this.requireSuccess({ command: 'git', args: ['rev-parse', '--is-inside-work-tree'], cwd, stdin: 'ignore', signal }, 'verify that the workspace is a Git repository');
@@ -479,7 +489,20 @@ export class DockerSandboxRuntime {
         // `sbx --clone` ne voit pas les changements non commités. Autoriser un
         // workspace sale ferait donc calculer le Pipeline Change Set depuis une
         // base différente de celle que la Promotion doit avancer atomiquement.
-        const status = await this.requireSuccess({ command: 'git', args: ['status', '--porcelain=v1'], cwd, stdin: 'ignore', signal }, 'inspect the Git workspace');
+        const status = await this.requireSuccess({
+          command: 'git',
+          args: [
+            'status',
+            '--porcelain=v1',
+            '--',
+            '.',
+            ':(exclude).acp/logs',
+            ':(exclude).acp/runs-v3',
+          ],
+          cwd,
+          stdin: 'ignore',
+          signal,
+        }, 'inspect the Git workspace');
         if (status.stdout.trim()) {
           throw new Error('Docker Sandbox requires a clean Git workspace for workspace-writing pipelines: sbx --clone cannot see uncommitted changes, so safe Promotion is impossible. Commit or remove the local changes and retry.');
         }
@@ -491,6 +514,16 @@ export class DockerSandboxRuntime {
       }
       await this.requireCapability(cwd, ['create', '--help'], '--clone', signal);
       await this.requireCapability(cwd, ['ls', '--help'], '--json', signal);
+      if (plannedSandboxNames.length > 0) {
+        const listed = await this.requireSuccess({
+          command: 'sbx', args: ['ls', '--json'], cwd, stdin: 'ignore', signal,
+        }, 'check planned Docker Sandbox names');
+        const occupiedNames = new Set(parseSandboxList(listed.stdout).map(resource => resource.name));
+        const collision = plannedSandboxNames.find(name => occupiedNames.has(name));
+        if (collision) {
+          throw new Error(`Docker Sandbox name collision: ${collision} already exists and cannot be reused without matching persisted state.`);
+        }
+      }
       await this.requireCapability(cwd, ['policy', 'init', '--help'], 'policy init', signal, false);
       await this.ensureGlobalNetworkPolicy(cwd, signal);
     } finally {
@@ -822,7 +855,7 @@ function abortError(signal: AbortSignal): Error {
 }
 
 function extractVersion(output: string): string | undefined {
-  return output.match(/\b(\d+)\.(\d+)\.(\d+)\b/)?.[0];
+  return output.match(/\bv?(\d+\.\d+\.\d+)\b/i)?.[1];
 }
 
 function compareVersions(left: string, right: string): number {

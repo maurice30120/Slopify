@@ -73,6 +73,7 @@ export type WorkspaceRunOutcome =
   | { status: 'completed'; runId: string; artifact?: WorkspaceArtifact }
   | { status: 'interaction-required'; runId: string; interaction: WorkspaceRunInteraction }
   | { status: 'failed'; runId: string; error: { code: string; message: string; nodeId?: string; attempt?: number } }
+  | { status: 'rejected'; runId: string }
   | { status: 'cancelled'; runId: string };
 
 export interface WorkspaceRun {
@@ -138,6 +139,9 @@ export function createWorkspaceRun(options: CreateWorkspaceRunOptions): Workspac
       }
       prompts.delete(result.runId);
       approvalValues.delete(result.runId);
+      if (delivered.promotion === 'rejected') {
+        return { status: 'rejected', runId: delivered.runId };
+      }
       return { status: 'cancelled', runId: delivered.runId };
     } catch (error: unknown) {
       prompts.delete(result.runId);

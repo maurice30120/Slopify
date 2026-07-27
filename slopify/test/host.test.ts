@@ -193,6 +193,28 @@ test('passes workspace services to the backend factory', () => {
   assert.equal(host.listPipelines()[0]?.id, 'question-flow');
 });
 
+test('preflights a workspace-writing pipeline before creating run artifacts', async () => {
+  const cwd = workspace();
+  let runnerCalls = 0;
+  const host = new CliPipelineHost(cwd, {
+    terminal: new FakeTerminal(),
+    backendFactory: (() => ({
+      programs: [program()],
+      preflightPipeline: async () => { throw new Error('workspace preflight failed'); },
+      runAgent: async () => {
+        runnerCalls += 1;
+        return { text: 'must not run' };
+      },
+    })) as CliPipelineBackendFactory,
+    runIdFactory: () => 'run-preflight',
+  });
+
+  await assert.rejects(() => host.start('question-flow', 'add a CLI'), /workspace preflight failed/);
+  assert.equal(runnerCalls, 0);
+  assert.equal(fs.existsSync(path.join(cwd, '.acp', 'logs')), false);
+  assert.equal(fs.existsSync(path.join(cwd, '.acp', 'runs-v3')), false);
+});
+
 test('requires a runner from the host or backend', () => {
   assert.throws(
     () => new CliPipelineHost(workspace(), {

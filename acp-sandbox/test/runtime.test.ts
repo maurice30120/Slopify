@@ -244,7 +244,27 @@ test('rejects a dirty workspace before creating a sandbox with corrective guidan
     new DockerSandboxRuntime(fake.execute).runCodex({ workspaceCwd: '/repo', runId: 'run', nodeId: 'node', attempt: 1, prompt: 'x', model: 'gpt', workspaceEffects: true }),
     /sbx --clone cannot see uncommitted changes, so safe Promotion is impossible/,
   );
-  assert.equal(fake.calls.some(call => call.args[0] === 'create'), false);
+  assert.equal(fake.calls.some(call => call.args[0] === 'create' && !call.args.includes('--help')), false);
+});
+
+test('ignores Slopify run state created before the clean-workspace preflight', async () => {
+  const scenario = sandboxScenario();
+  const fake = fakeExecutor(request => {
+    if (request.command === 'git' && request.args[0] === 'status') {
+      const excludesRuntimeState = request.args.includes(':(exclude).acp/logs')
+        && request.args.includes(':(exclude).acp/runs-v3');
+      return result(excludesRuntimeState ? '' : '?? .acp/logs/\n?? .acp/runs-v3/\n');
+    }
+    return scenario.respond(request);
+  });
+
+  const output = await new DockerSandboxRuntime(fake.execute).runCodex({
+    workspaceCwd: '/repo', runId: 'run', nodeId: 'node', attempt: 1,
+    prompt: 'x', model: 'gpt', workspaceEffects: true,
+  });
+
+  assert.equal(output.status, 'no_changes');
+  assert.equal(fake.calls.some(call => call.args[0] === 'create'), true);
 });
 
 test('does not apply the clean-workspace check to a read-only pipeline node', async () => {
@@ -266,6 +286,32 @@ test('requires sbx 0.35.0 and required clone/list capabilities', async () => {
   const missingBaseline = sandboxScenario();
   const missing = fakeExecutor(request => request.args.join(' ') === 'create --help' ? result('Usage: sbx create') : missingBaseline.respond(request));
   await assert.rejects(new DockerSandboxRuntime(missing.execute).preflightWorkspace('/repo'), /required --clone capability/);
+});
+
+test('accepts the installed sbx version output format', async () => {
+  const scenario = sandboxScenario();
+  const fake = fakeExecutor(request => request.args.join(' ') === 'version'
+    ? result('sbx version: v0.35.0 01e01520456e4126a9653471e7072e4d9b280321\n')
+    : scenario.respond(request));
+
+  await new DockerSandboxRuntime(fake.execute).preflightWorkspace('/repo');
+});
+
+test('rejects an occupied planned sandbox name before creation', async () => {
+  const scenario = sandboxScenario();
+  const sandboxName = stableSandboxName('run', 'node', 1);
+  const fake = fakeExecutor(request => request.args.join(' ') === 'ls --json'
+    ? result(JSON.stringify([{ id: 'foreign-id', name: sandboxName }]))
+    : scenario.respond(request));
+
+  await assert.rejects(
+    new DockerSandboxRuntime(fake.execute).runCodex({
+      workspaceCwd: '/repo', runId: 'run', nodeId: 'node', attempt: 1,
+      prompt: 'x', model: 'gpt', workspaceEffects: true,
+    }),
+    /name collision.*cannot be reused without matching persisted state/i,
+  );
+  assert.equal(fake.calls.some(call => call.args[0] === 'create' && !call.args.includes('--help')), false);
 });
 
 test('initializes each Docker global network preset from the exact CLI choices without per-sandbox rules', async t => {

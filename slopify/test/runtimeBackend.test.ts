@@ -4,7 +4,11 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import test from 'node:test';
 
-import { createRuntimeCliBackend, formatRetainedSandbox } from '../src/runtimeBackend.js';
+import {
+  createRuntimeCliBackend,
+  formatPipelineChangeSetPrompt,
+  formatRetainedSandbox,
+} from '../src/runtimeBackend.js';
 
 function workspace(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'acp-cli-runtime-'));
@@ -91,5 +95,31 @@ test('formats every retained sandbox command as copyable CLI output', () => {
     'Shell: sbx exec -it slopify-run-node-1-deadbeef bash',
     'Remove: sbx rm --force slopify-run-node-1-deadbeef',
     'Diagnostics: /repo/.acp/logs/sandboxes/slopify-run-node-1-deadbeef.json',
+  ].join('\n'));
+});
+
+test('formats the complete Pipeline Change Set preview for the Promotion decision', () => {
+  assert.equal(formatPipelineChangeSetPrompt({
+    pipelineId: 'delivery',
+    integratedNodeIds: ['plan', 'implement'],
+    preview: {
+      baseCommit: 'base123',
+      changeSetCommit: 'change456',
+      fileCount: 2,
+      files: ['src/a.ts', 'src/b.ts'],
+      diff: 'diff --git a/src/a.ts b/src/a.ts\n+change\n',
+    },
+  }), [
+    'Pipeline Change Set for delivery',
+    'Agent checkpoints: plan, implement',
+    'Files changed: 2',
+    '- src/a.ts',
+    '- src/b.ts',
+    'Base: base123',
+    '',
+    'Diff:',
+    'diff --git a/src/a.ts b/src/a.ts',
+    '+change',
+    '',
   ].join('\n'));
 });

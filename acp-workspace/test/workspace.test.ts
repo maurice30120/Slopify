@@ -175,7 +175,7 @@ test('WorkspaceRuntime exposes only the deep run interface', () => {
       logger: { log: () => undefined, error: () => undefined },
     },
   });
-  assert.deepEqual(Object.keys(runtime).sort(), ['clearRunLogs', 'programs', 'runAgent']);
+  assert.deepEqual(Object.keys(runtime).sort(), ['clearRunLogs', 'preflightPipeline', 'programs', 'runAgent']);
 });
 
 test('low-level runtime has no workspace, Pipeline V3, or isolated-runtime ownership', () => {
@@ -306,6 +306,7 @@ function fakeSandboxResponse(request: SubprocessRequest): SubprocessResult {
   if (request.args.join(' ') === 'version') return { exitCode: 0, stdout: 'sbx 0.35.0\n', stderr: '' };
   if (request.args.join(' ') === 'create --help') return { exitCode: 0, stdout: '--clone\n', stderr: '' };
   if (request.args.join(' ') === 'ls --help') return { exitCode: 0, stdout: '--json\n', stderr: '' };
+  if (request.args.join(' ') === 'ls --json') return { exitCode: 0, stdout: '[]\n', stderr: '' };
   return { exitCode: 0, stdout: '', stderr: '' };
 }
 

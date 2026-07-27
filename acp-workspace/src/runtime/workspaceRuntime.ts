@@ -30,13 +30,13 @@ import {
   SandboxAcpExtensionHandler,
   SandboxAcpExtensionAgent,
   createNodeSubprocessExecutor,
+  stableSandboxName,
   type AgentCheckpointResult,
   type DockerSandboxNetworkPolicyChoice,
   type IntegrateAgentCheckpointsInput,
   type IntegrationConflict,
   type PipelineChangeSetResult,
   type PromotionDecision,
-  type PromotionPolicy,
   type PromotePipelineChangeSetInput,
   type PromotionResult,
   type RetainedSandbox,
@@ -60,6 +60,7 @@ import type {
 export interface WorkspaceRuntime {
   readonly programs: readonly CompiledPipelineProgram[];
   readonly runAgent: PipelineAgentRunner;
+  preflightPipeline(program: CompiledPipelineProgram, runId: string): Promise<void>;
   clearRunLogs(): void;
 }
 
@@ -200,6 +201,25 @@ export function createWorkspaceRuntime(options: CreateWorkspaceRuntimeOptions): 
   return {
     programs,
     runAgent,
+    preflightPipeline: async (program, runId) => {
+      const plannedSandboxNames = program.nodes.flatMap(node => {
+        if (
+          node.kind !== 'agent'
+          || !node.agent
+          || mapPolicyToLegacySideEffects(node.policy) !== 'workspace'
+          || resolveAgent(catalog, node.agent).transport !== 'sandbox'
+        ) return [];
+        return [stableSandboxName(runId, node.id, 1)];
+      });
+      if (plannedSandboxNames.length > 0) {
+        await sandboxRuntime.preflightWorkspace(
+          options.workspaceCwd,
+          true,
+          undefined,
+          plannedSandboxNames,
+        );
+      }
+    },
     clearRunLogs: () => fs.rmSync(path.join(options.workspaceCwd, '.acp', 'logs', 'sandboxes'), { recursive: true, force: true }),
   };
 }
@@ -278,7 +298,7 @@ async function finalizePipelineChangeSet(
     }
   }
   const orderedCheckpoints = orderedNodeIds.map(nodeId => selectedCheckpoints.get(nodeId)!);
-  const policy = resolvePipelinePromotionPolicy(input.program);
+  const policy = input.program.promotion;
   try {
     const changeSet = await callSandboxExtension<IntegrateAgentCheckpointsInput, PipelineChangeSetResult>(
       extensions,
@@ -508,12 +528,6 @@ function checkpointsFromSnapshot(
     checkpoints.set(run.nodeId, attempts);
   }
   return checkpoints;
-}
-
-function resolvePipelinePromotionPolicy(
-  program: CompiledPipelineProgram,
-): PromotionPolicy {
-  return program.promotion;
 }
 
 async function decidePipelinePromotion(

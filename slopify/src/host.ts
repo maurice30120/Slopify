@@ -28,6 +28,7 @@ export interface CliLogger {
 
 export interface CliPipelineBackend {
   programs: CompiledPipelineProgram[];
+  preflightPipeline?(program: CompiledPipelineProgram, runId: string): Promise<void>;
   runAgent?: PipelineAgentRunner;
   clearRunLogs?(): void;
 }
@@ -130,6 +131,7 @@ export class CliPipelineHost {
     }
 
     const runId = this.options.runIdFactory?.() ?? randomUUID();
+    await this.backend.preflightPipeline?.(program, runId);
     PipelineRunLog.clear(this.workspaceCwd);
     this.backend.clearRunLogs?.();
     const runLog = PipelineRunLog.create(this.workspaceCwd, runId, program.id);

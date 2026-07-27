@@ -59,6 +59,7 @@ test('collects parallel sandbox checkpoints, previews once, and promotes one det
       if (joined === 'version') return result('Docker Sandbox 0.35.0\n');
       if (joined === 'create --help') return result('Usage: sbx create --clone');
       if (joined === 'ls --help') return result('Usage: sbx ls --json');
+      if (joined === 'ls --json') return result('[]');
       if (joined === 'policy init --help') return result('Usage: sbx policy init');
       return result();
     },
@@ -147,6 +148,7 @@ test('integrates the highest checkpoint attempt and cleans up superseded attempt
       if (joined === 'version') return result('Docker Sandbox 0.35.0\n');
       if (joined === 'create --help') return result('Usage: sbx create --clone');
       if (joined === 'ls --help') return result('Usage: sbx ls --json');
+      if (joined === 'ls --json') return result('[]');
       if (joined === 'policy init --help') return result('Usage: sbx policy init');
       return result();
     },
@@ -230,6 +232,7 @@ test('preserves valid checkpoints across an Integration Conflict and replaces on
       if (joined === 'version') return result('Docker Sandbox 0.35.0\n');
       if (joined === 'create --help') return result('Usage: sbx create --clone');
       if (joined === 'ls --help') return result('Usage: sbx ls --json');
+      if (joined === 'ls --json') return result('[]');
       if (joined === 'policy init --help') return result('Usage: sbx policy init');
       return result();
     },
@@ -316,6 +319,7 @@ test('preserves volatile checkpoint state and durable refs for an immediate fina
       if (joined === 'version') return result('Docker Sandbox 0.35.0\n');
       if (joined === 'create --help') return result('Usage: sbx create --clone');
       if (joined === 'ls --help') return result('Usage: sbx ls --json');
+      if (joined === 'ls --json') return result('[]');
       if (joined === 'policy init --help') return result('Usage: sbx policy init');
       return result();
     },
@@ -368,6 +372,7 @@ test('finalizes from persisted sandbox checkpoints after the workspace runtime i
     if (joined === 'version') return result('Docker Sandbox 0.35.0\n');
     if (joined === 'create --help') return result('Usage: sbx create --clone');
     if (joined === 'ls --help') return result('Usage: sbx ls --json');
+    if (joined === 'ls --json') return result('[]');
     if (joined === 'policy init --help') return result('Usage: sbx policy init');
     if (joined === 'policy ls --json') return result('[{"name":"local-policy"}]');
     return result();
