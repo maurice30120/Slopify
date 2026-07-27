@@ -111,7 +111,9 @@ export class PipelineRuntime extends CorePipelineRuntime {
 
   override async cancel(runId: string): Promise<PipelineRuntimeResult> {
     try {
-      return await super.cancel(runId);
+      const result = await super.cancel(runId);
+      await this.completionBuffer.releaseTerminalRun(runId);
+      return result;
     } finally {
       this.cleanupRun(runId);
     }
@@ -123,6 +125,7 @@ export class PipelineRuntime extends CorePipelineRuntime {
   ): Promise<PipelineRuntimeResult> {
     if (result.status !== "completed") {
       if (result.status !== "paused") {
+        await this.completionBuffer.releaseTerminalRun(result.runId);
         this.cleanupRun(result.runId);
       }
       return result;
@@ -272,7 +275,7 @@ class PipelineCompletionBuffer {
       completion.eventEmitted = true;
     }
     this.completions.delete(runId);
-    await this.releaseFallbackRun(runId);
+    await this.releaseTerminalRun(runId);
   }
 
   async fail(
@@ -291,7 +294,7 @@ class PipelineCompletionBuffer {
     await this.backingStore.appendEvent(runId, event);
     await this.targetOnEvent?.(event);
     this.completions.delete(runId);
-    await this.releaseFallbackRun(runId);
+    await this.releaseTerminalRun(runId);
   }
 
   async pause(
@@ -327,7 +330,7 @@ class PipelineCompletionBuffer {
     await this.backingStore.appendEvent(runId, event);
     await this.targetOnEvent?.(event);
     this.completions.delete(runId);
-    await this.releaseFallbackRun(runId);
+    await this.releaseTerminalRun(runId);
   }
 
   private completion(runId: string): BufferedCompletion {
@@ -340,7 +343,7 @@ class PipelineCompletionBuffer {
     return created;
   }
 
-  private async releaseFallbackRun(runId: string): Promise<void> {
+  async releaseTerminalRun(runId: string): Promise<void> {
     await this.fallbackStore?.delete(runId);
   }
 }
