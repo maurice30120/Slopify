@@ -4,7 +4,7 @@ import {
   type WorkspaceRunInteraction,
 } from '@acp-client/workspace';
 
-import type { CliRunCommand } from './args.js';
+import type { CliResumeCommand, CliRunCommand } from './args.js';
 import type { CliPipelineHost, CliPipelineListEntry } from './host.js';
 import type { CliTerminal } from './terminal.js';
 
@@ -16,17 +16,20 @@ export interface CliRunResult {
 }
 
 export async function runPipelineInteractive(
-  host: Pick<CliPipelineHost, 'start' | 'resume'>,
+  host: Pick<CliPipelineHost, 'start' | 'resume'> & Partial<Pick<CliPipelineHost, 'recover'>>,
   terminal: CliTerminal,
-  command: CliRunCommand,
+  command: CliRunCommand | CliResumeCommand,
 ): Promise<CliRunResult> {
   const workspaceRun = createWorkspaceRun({
     workspaceCwd: command.cwd,
     start: (pipelineName, prompt) => host.start(pipelineName, prompt),
+    ...(host.recover ? { recover: runId => host.recover!(runId) } : {}),
     resume: (runId, decision) => host.resume(runId, decision),
     onDeliveryProgress: message => terminal.writeError(`[slopify] ${message}`),
   });
-  let result = await workspaceRun.start(command.pipelineName, command.prompt);
+  let result = command.kind === 'resume'
+    ? await workspaceRun.recover(command.runId)
+    : await workspaceRun.start(command.pipelineName, command.prompt);
 
   while (result.status === 'interaction-required') {
     const interaction = result.interaction;

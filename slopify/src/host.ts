@@ -6,6 +6,7 @@ import {
   PipelineRuntime,
   PipelineRuntimeAgentAdapter,
   resolvePipelineStepText,
+  workspacePipelineRunStore,
   type AgentNodeSessionFactory,
   type CompiledPipelineProgram,
   type CompiledPipelineNode,
@@ -13,6 +14,7 @@ import {
   type PipelineAgentRunner,
   type PipelineResumeDecision,
   type PipelineRuntimeResult,
+  type PipelineRunStore,
 } from '@acp-client/pipeline';
 
 import type { CliTerminal } from './terminal.js';
@@ -69,11 +71,13 @@ export class CliPipelineHost {
   private readonly runLogs = new Map<string, PipelineRunLog>();
   private readonly activeAgentNodes = new Map<string, CompiledPipelineNode>();
   private readonly activityByNode = new Map<string, 'agent_message_chunk' | 'agent_thought_chunk'>();
+  private readonly runStore: PipelineRunStore;
 
   constructor(
     private readonly workspaceCwd: string,
     private readonly options: CliPipelineHostOptions,
   ) {
+    this.runStore = workspacePipelineRunStore(workspaceCwd);
     this.logger = {
       log: message => {
         this.appendHostLog('host_log', { message });
@@ -136,33 +140,7 @@ export class CliPipelineHost {
       pipelineTitle: program.title,
       promptBytes: Buffer.byteLength(prompt, 'utf8'),
     });
-    const runtime = new PipelineRuntime({ createSession: this.createSession }, {
-      runIdFactory: () => runId,
-      programs: [program],
-      onEvent: event => {
-        const log = this.runLogs.get(event.runId);
-        const eventNode = event.nodeId ? program.nodesById.get(event.nodeId) : undefined;
-        if (event.type === 'node_started' && eventNode?.agent) {
-          this.activeAgentNodes.set(eventNode.agent, eventNode);
-        }
-        if (eventNode?.agent) {
-          log?.appendNode(eventNode, 'runtime_event', event);
-        } else {
-          log?.append('runtime_event', event);
-        }
-        if ((event.type === 'node_completed' || event.type === 'node_failed') && eventNode?.agent) {
-          this.activeAgentNodes.delete(eventNode.agent);
-        }
-        if (this.options.verbose) {
-          const node = event.nodeId ? ` node=${event.nodeId}` : '';
-          const message = event.message ? ` ${event.message}` : '';
-          this.options.terminal.writeError(`[runtime] ${event.type}${node}${message}`);
-        }
-        if ((event.type === 'node_completed' || event.type === 'node_failed') && event.nodeId) {
-          this.activityByNode.delete(activityKey(event.runId, event.nodeId));
-        }
-      },
-    });
+    const runtime = this.createRuntime(program, runId);
     this.runtimes.set(runId, runtime);
     const result = await runtime.start(program, { inputs: { userPrompt: prompt } });
     runLog.append('run_result', summarizeRuntimeResult(result));
@@ -171,10 +149,7 @@ export class CliPipelineHost {
   }
 
   async resume(runId: string, decision: PipelineResumeDecision): Promise<PipelineRuntimeResult> {
-    const runtime = this.runtimes.get(runId);
-    if (!runtime) {
-      throw new Error(`Unknown active ACP pipeline run "${runId}".`);
-    }
+    const runtime = await this.requireRuntime(runId);
     const result = await runtime.resume(runId, decision);
     this.runLogs.get(runId)?.append('run_resumed_result', summarizeRuntimeResult(result));
     this.cleanupTerminalResult(result);
@@ -182,10 +157,7 @@ export class CliPipelineHost {
   }
 
   async cancel(runId: string): Promise<PipelineRuntimeResult> {
-    const runtime = this.runtimes.get(runId);
-    if (!runtime) {
-      throw new Error(`Unknown active ACP pipeline run "${runId}".`);
-    }
+    const runtime = await this.requireRuntime(runId);
     const result = await runtime.cancel(runId);
     this.runLogs.get(runId)?.append('run_cancelled_result', summarizeRuntimeResult(result));
     this.runtimes.delete(runId);
@@ -216,6 +188,57 @@ export class CliPipelineHost {
         }
       }
     }
+  }
+
+  async recover(runId: string): Promise<PipelineRuntimeResult> {
+    const runtime = await this.requireRuntime(runId);
+    const result = await runtime.recover(runId);
+    this.runLogs.get(runId)?.append('run_recovered_result', summarizeRuntimeResult(result));
+    this.cleanupTerminalResult(result);
+    return result;
+  }
+
+  private createRuntime(program: CompiledPipelineProgram, runId: string): PipelineRuntime {
+    return new PipelineRuntime({ createSession: this.createSession }, {
+      runIdFactory: () => runId,
+      programs: [program],
+      store: this.runStore,
+      onEvent: event => {
+        const log = this.runLogs.get(event.runId);
+        const eventNode = event.nodeId ? program.nodesById.get(event.nodeId) : undefined;
+        if (event.type === 'node_started' && eventNode?.agent) {
+          this.activeAgentNodes.set(eventNode.agent, eventNode);
+        }
+        if (eventNode?.agent) log?.appendNode(eventNode, 'runtime_event', event);
+        else log?.append('runtime_event', event);
+        if ((event.type === 'node_completed' || event.type === 'node_failed') && eventNode?.agent) {
+          this.activeAgentNodes.delete(eventNode.agent);
+        }
+        if (this.options.verbose) {
+          const node = event.nodeId ? ` node=${event.nodeId}` : '';
+          const message = event.message ? ` ${event.message}` : '';
+          this.options.terminal.writeError(`[runtime] ${event.type}${node}${message}`);
+        }
+        if ((event.type === 'node_completed' || event.type === 'node_failed') && event.nodeId) {
+          this.activityByNode.delete(activityKey(event.runId, event.nodeId));
+        }
+      },
+    });
+  }
+
+  private async requireRuntime(runId: string): Promise<PipelineRuntime> {
+    const active = this.runtimes.get(runId);
+    if (active) return active;
+    const snapshot = await this.runStore.load(runId);
+    const program = snapshot
+      ? this.programs.find(candidate => candidate.id === snapshot.pipelineId)
+      : undefined;
+    if (!snapshot || !program || (snapshot.status !== 'paused' && snapshot.status !== 'running')) {
+      throw new Error(`Unknown active ACP pipeline run "${runId}".`);
+    }
+    const restored = this.createRuntime(program, runId);
+    this.runtimes.set(runId, restored);
+    return restored;
   }
 
   private findRunLog(_input: unknown): PipelineRunLog | undefined {

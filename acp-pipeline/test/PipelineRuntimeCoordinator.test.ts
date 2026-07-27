@@ -4,6 +4,7 @@ import { test } from "node:test";
 import {
   InMemoryPipelineRunStore,
   PipelineIntegrationConflictError,
+  PipelineSandboxResumeDivergenceError,
   PipelineRuntime,
   compilePipelineV3Definition,
   orderPipelineNodeIdsForIntegration,
@@ -150,6 +151,375 @@ test("parallel agents may finish in opposite orders while finalization stays uni
   assert.deepEqual(second.integrated, first.integrated);
 });
 
+test("persists sandbox identity, base, checkpoint, integration state, and diagnostics before finalization", async () => {
+  const program = compilePipelineV3Definition({
+    version: 3,
+    id: "durable-sandbox-run",
+    title: "Durable sandbox run",
+    nodes: [{
+      id: "work",
+      agent: "Codex",
+      prompt: "Work",
+      policy: { filesystem: "workspace-write", terminal: "workspace-write", promotion: "discard" },
+      output: { name: "out", type: "note", format: "text" },
+    }],
+  }, agents).program!;
+  const store = new InMemoryPipelineRunStore();
+  let finalizationSnapshot: unknown;
+  const adapter: PipelineRuntimeAdapter & {
+    finalizePipelineChangeSet(input: PipelineChangeSetFinalizationInput): Promise<PipelineChangeSetFinalizationResult>;
+  } = {
+    async createSession({ runId, node }) {
+      return {
+        runId,
+        nodeId: node.id,
+        async send(input): Promise<PipelineNodeExecutionResult> {
+          await input.onSandboxRunState?.({
+            sandboxName: "slopify-run-work-1-deadbeef",
+            sandboxId: "sandbox-id-42",
+            runId,
+            nodeId: node.id,
+            attempt: input.attempt ?? 1,
+            baseCommit: "base123",
+            integrationState: "sandbox_created",
+            resourceState: "active",
+            diagnosticsPath: "/repo/.acp/logs/sandboxes/slopify-run-work-1-deadbeef.json",
+          });
+          await input.onSandboxRunState?.({
+            sandboxName: "slopify-run-work-1-deadbeef",
+            sandboxId: "sandbox-id-42",
+            runId,
+            nodeId: node.id,
+            attempt: input.attempt ?? 1,
+            baseCommit: "base123",
+            integrationState: "checkpointed",
+            resourceState: "removed",
+            diagnosticsPath: "/repo/.acp/logs/sandboxes/slopify-run-work-1-deadbeef.json",
+            checkpoint: {
+              status: "checkpointed",
+              commit: "checkpoint456",
+              remote: "sandbox-slopify-run-work-1-deadbeef",
+              ref: "refs/slopify/checkpoints/slopify-run-work-1-deadbeef",
+              preview: {
+                baseCommit: "base123",
+                checkpointCommit: "checkpoint456",
+                fileCount: 1,
+                files: ["src/work.ts"],
+                diff: "diff",
+              },
+            },
+          });
+          return { artifact: { name: "out", type: "note", format: "text", value: "done" } };
+        },
+        async cancel() {},
+        async close() {},
+      };
+    },
+    async finalizePipelineChangeSet(input) {
+      finalizationSnapshot = input.snapshot;
+      return {
+        promotion: "no_changes",
+        preview: { baseCommit: "base123", changeSetCommit: "base123", fileCount: 0, files: [], diff: "" },
+        integratedNodeIds: ["work"],
+      };
+    },
+  };
+  const runtime = new PipelineRuntime(adapter, {
+    runIdFactory: () => "run-durable-sandbox",
+    store,
+  });
+
+  const completed = await runtime.start(program);
+
+  assert.equal(completed.status, "completed");
+  const sandboxRun = completed.snapshot.sandboxRuns?.["slopify-run-work-1-deadbeef"];
+  assert.equal(sandboxRun?.sandboxId, "sandbox-id-42");
+  assert.equal(sandboxRun?.baseCommit, "base123");
+  assert.equal(sandboxRun?.checkpoint?.commit, "checkpoint456");
+  assert.equal(sandboxRun?.integrationState, "integrated");
+  assert.match(sandboxRun?.diagnosticsPath ?? "", /slopify-run-work-1-deadbeef\.json$/);
+  assert.equal(
+    (finalizationSnapshot as { sandboxRuns?: Record<string, { integrationState: string }> })
+      .sandboxRuns?.["slopify-run-work-1-deadbeef"]?.integrationState,
+    "integrating",
+  );
+});
+
+test("recovers a running node from its persisted Sandbox Run after process reconstruction", async () => {
+  const program = compilePipelineV3Definition({
+    version: 3, id: "recover-created", title: "Recover created",
+    nodes: [{ id: "work", agent: "Codex", prompt: "Work", output: { name: "out", type: "note", format: "text" } }],
+  }, agents).program!;
+  const store = new InMemoryPipelineRunStore();
+  await store.create({
+    runId: "run-recover-created",
+    pipelineId: program.id,
+    status: "running",
+    nodeStates: { work: { status: "running", attempts: 1 } },
+    artifacts: {},
+    diagnostics: [],
+    sandboxRuns: {
+      "sandbox-work": {
+        sandboxName: "sandbox-work", sandboxId: "stable-id", runId: "run-recover-created", nodeId: "work", attempt: 1,
+        baseCommit: "base", integrationState: "sandbox_created", resourceState: "active",
+      },
+    },
+    createdAt: "2026-07-24T10:00:00.000Z",
+    updatedAt: "2026-07-24T10:00:01.000Z",
+  });
+  const resumedStates: string[] = [];
+  const adapter = successfulAdapter(async () => ({
+    promotion: "no_changes",
+    preview: { baseCommit: "base", changeSetCommit: "base", fileCount: 0, files: [], diff: "" },
+    integratedNodeIds: ["work"],
+  }));
+  const originalCreateSession = adapter.createSession;
+  adapter.createSession = async input => {
+    const session = await originalCreateSession(input);
+    const originalSend = session.send.bind(session);
+    session.send = async turn => {
+      resumedStates.push(turn.resumeSandboxRun?.integrationState ?? "missing");
+      return originalSend(turn);
+    };
+    return session;
+  };
+  const runtime = new PipelineRuntime(adapter, { programs: [program], store });
+
+  const completed = await runtime.recover("run-recover-created");
+
+  assert.equal(completed.status, "completed");
+  assert.deepEqual(resumedStates, ["sandbox_created"]);
+  assert.equal(completed.snapshot.nodeStates.work.attempts, 1);
+});
+
+test("approving a node-recovery divergence retries the unfinished node instead of finalizing it", async () => {
+  const program = compilePipelineV3Definition({
+    version: 3, id: "recover-node-divergence", title: "Recover node divergence",
+    nodes: [{ id: "work", agent: "Codex", prompt: "Work", output: { name: "out", type: "note", format: "text" } }],
+  }, agents).program!;
+  const store = new InMemoryPipelineRunStore();
+  await store.create({
+    runId: "run-node-divergence", pipelineId: program.id, status: "running",
+    nodeStates: { work: { status: "running", attempts: 1 } }, artifacts: {}, diagnostics: [],
+    sandboxRuns: {
+      "sandbox-work": {
+        sandboxName: "sandbox-work", sandboxId: "stable-id", runId: "run-node-divergence", nodeId: "work", attempt: 1,
+        baseCommit: "base", integrationState: "sandbox_created", resourceState: "active",
+      },
+    },
+    createdAt: "2026-07-24T10:00:00.000Z", updatedAt: "2026-07-24T10:00:01.000Z",
+  });
+  let sends = 0;
+  let finalizations = 0;
+  const adapter: PipelineRuntimeAdapter & {
+    finalizePipelineChangeSet(input: PipelineChangeSetFinalizationInput): Promise<PipelineChangeSetFinalizationResult>;
+  } = {
+    async createSession({ runId, node }) {
+      return {
+        runId, nodeId: node.id,
+        async send(input) {
+          sends += 1;
+          if (sends <= 2) {
+            throw new PipelineSandboxResumeDivergenceError({
+              runId, sandboxName: "sandbox-work", nodeId: node.id, attempt: input.attempt ?? 1,
+              diagnostic: "Sandbox identity divergence: observed foreign, expected stable.",
+            });
+          }
+          return { artifact: { name: "out", type: "note", format: "text", value: "recovered" } };
+        },
+        async cancel() {}, async close() {},
+      };
+    },
+    async finalizePipelineChangeSet() {
+      finalizations += 1;
+      return {
+        promotion: "no_changes",
+        preview: { baseCommit: "base", changeSetCommit: "base", fileCount: 0, files: [], diff: "" },
+        integratedNodeIds: ["work"],
+      };
+    },
+  };
+  const runtime = new PipelineRuntime(adapter, { programs: [program], store });
+  const paused = await runtime.recover("run-node-divergence");
+
+  assert.equal(paused.status, "paused");
+  assert.equal(paused.snapshot.nodeStates.work.status, "running");
+  assert.equal(finalizations, 0);
+
+  const pausedAgain = await runtime.resume(paused.runId, {
+    pauseId: paused.status === "paused" ? paused.pause.id : "unreachable", kind: "approve",
+  });
+
+  assert.equal(pausedAgain.status, "paused");
+  assert.equal(pausedAgain.snapshot.nodeStates.work.status, "running");
+  assert.equal(finalizations, 0);
+
+  const completed = await runtime.resume(pausedAgain.runId, {
+    pauseId: pausedAgain.status === "paused" ? pausedAgain.pause.id : "unreachable", kind: "approve",
+  });
+
+  assert.equal(completed.status, "completed");
+  assert.equal(completed.snapshot.nodeStates.work.status, "completed");
+  assert.equal(sends, 3);
+  assert.equal(finalizations, 1);
+});
+
+test("a recovery divergence cancels and drains parallel node sessions before pausing", async () => {
+  const program = compilePipelineV3Definition({
+    version: 3, id: "recover-parallel-divergence", title: "Recover parallel divergence",
+    nodes: [
+      { id: "work", agent: "Codex", prompt: "Work", output: { name: "out", type: "note", format: "text" } },
+      { id: "peer", agent: "Codex", prompt: "Peer", output: { name: "out", type: "note", format: "text" } },
+    ],
+  }, agents).program!;
+  const store = new InMemoryPipelineRunStore();
+  await store.create({
+    runId: "run-parallel-divergence", pipelineId: program.id, status: "running",
+    nodeStates: { work: { status: "running", attempts: 1 }, peer: { status: "running", attempts: 1 } },
+    artifacts: {}, diagnostics: [],
+    sandboxRuns: {
+      "sandbox-work": {
+        sandboxName: "sandbox-work", runId: "run-parallel-divergence", nodeId: "work", attempt: 1,
+        baseCommit: "base", integrationState: "sandbox_created", resourceState: "active",
+      },
+    },
+    createdAt: "2026-07-24T10:00:00.000Z", updatedAt: "2026-07-24T10:00:01.000Z",
+  });
+  let releasePeer: (() => void) | undefined;
+  let peerCancelled = 0;
+  const adapter: PipelineRuntimeAdapter = {
+    async createSession({ runId, node }) {
+      return {
+        runId, nodeId: node.id,
+        async send(input) {
+          if (node.id === "work") {
+            throw new PipelineSandboxResumeDivergenceError({
+              runId, sandboxName: "sandbox-work", nodeId: node.id, attempt: input.attempt ?? 1,
+              diagnostic: "Sandbox identity divergence.",
+            });
+          }
+          await new Promise<void>(resolve => { releasePeer = resolve; });
+          return { artifact: { name: "out", type: "note", format: "text", value: "peer" } };
+        },
+        async cancel() {
+          if (node.id === "peer") peerCancelled += 1;
+          releasePeer?.();
+        },
+        async close() {},
+      };
+    },
+  };
+  const runtime = new PipelineRuntime(adapter, { programs: [program], store });
+
+  const paused = await runtime.recover("run-parallel-divergence");
+
+  assert.equal(paused.status, "paused");
+  assert.equal(peerCancelled, 1);
+  assert.equal(paused.snapshot.nodeStates.peer.status, "running");
+  assert.equal(paused.snapshot.artifacts["peer.out"], undefined);
+});
+
+test("read-only sandbox checkpoints remain checkpointed instead of being recorded as integrated", async () => {
+  const program = compilePipelineV3Definition({
+    version: 3, id: "read-only-state", title: "Read-only state",
+    nodes: [{ id: "inspect", agent: "Codex", prompt: "Inspect", output: { name: "out", type: "note", format: "text" } }],
+  }, agents).program!;
+  const adapter: PipelineRuntimeAdapter & {
+    finalizePipelineChangeSet(input: PipelineChangeSetFinalizationInput): Promise<PipelineChangeSetFinalizationResult>;
+  } = {
+    async createSession({ runId, node }) {
+      return {
+        runId, nodeId: node.id,
+        async send(input) {
+          await input.onSandboxRunState?.({
+            sandboxName: "sandbox-inspect", runId, nodeId: node.id, attempt: 1,
+            baseCommit: "base", integrationState: "checkpointed", resourceState: "removed",
+            checkpoint: {
+              status: "checkpointed", commit: "checkpoint", remote: "sandbox-inspect", ref: "refs/checkpoints/inspect",
+              preview: { baseCommit: "base", checkpointCommit: "checkpoint", fileCount: 1, files: ["ignored.ts"], diff: "diff" },
+            },
+          });
+          return { artifact: { name: "out", type: "note", format: "text", value: "inspected" } };
+        },
+        async cancel() {}, async close() {},
+      };
+    },
+    async finalizePipelineChangeSet() {
+      return {
+        promotion: "no_changes",
+        preview: { baseCommit: "", changeSetCommit: "", fileCount: 0, files: [], diff: "" },
+        integratedNodeIds: [],
+      };
+    },
+  };
+  const runtime = new PipelineRuntime(adapter, { runIdFactory: () => "run-read-only-state" });
+
+  const completed = await runtime.start(program);
+
+  assert.equal(completed.status, "completed");
+  assert.equal(completed.snapshot.sandboxRuns?.["sandbox-inspect"]?.integrationState, "checkpointed");
+});
+
+test("recovers a crash after checkpoint persistence and before Promotion without relaunching the agent", async () => {
+  const program = compilePipelineV3Definition({
+    version: 3, id: "recover-before-promotion", title: "Recover before Promotion",
+    nodes: [{
+      id: "work", agent: "Codex", prompt: "Work",
+      policy: { filesystem: "workspace-write", terminal: "workspace-write", promotion: "discard" },
+      output: { name: "out", type: "note", format: "text" },
+    }],
+  }, agents).program!;
+  const store = new InMemoryPipelineRunStore();
+  await store.create({
+    runId: "run-recover-before-promotion",
+    pipelineId: program.id,
+    status: "running",
+    nodeStates: { work: { status: "completed", attempts: 1 } },
+    artifacts: {
+      "work.out": { name: "out", type: "note", format: "text", value: "done", producerNodeId: "work" },
+    },
+    diagnostics: [],
+    sandboxRuns: {
+      "sandbox-work": {
+        sandboxName: "sandbox-work", sandboxId: "stable-id", runId: "run-recover-before-promotion", nodeId: "work", attempt: 1,
+        baseCommit: "base", integrationState: "checkpointed", resourceState: "removed", output: "done",
+        checkpoint: {
+          status: "checkpointed", commit: "checkpoint", remote: "sandbox-sandbox-work", ref: "refs/checkpoints/work",
+          preview: { baseCommit: "base", checkpointCommit: "checkpoint", fileCount: 1, files: ["work.ts"], diff: "diff" },
+        },
+      },
+    },
+    createdAt: "2026-07-24T10:00:00.000Z",
+    updatedAt: "2026-07-24T10:00:01.000Z",
+  });
+  let sessions = 0;
+  let finalizations = 0;
+  const adapter: PipelineRuntimeAdapter & {
+    finalizePipelineChangeSet(input: PipelineChangeSetFinalizationInput): Promise<PipelineChangeSetFinalizationResult>;
+  } = {
+    async createSession() {
+      sessions += 1;
+      throw new Error("The recovered completed node must not be relaunched.");
+    },
+    async finalizePipelineChangeSet() {
+      finalizations += 1;
+      return {
+        promotion: "no_changes",
+        preview: { baseCommit: "base", changeSetCommit: "base", fileCount: 0, files: [], diff: "" },
+        integratedNodeIds: ["work"],
+      };
+    },
+  };
+  const runtime = new PipelineRuntime(adapter, { programs: [program], store });
+
+  const completed = await runtime.recover("run-recover-before-promotion");
+
+  assert.equal(completed.status, "completed");
+  assert.equal(sessions, 0);
+  assert.equal(finalizations, 1);
+  assert.equal(completed.snapshot.sandboxRuns?.["sandbox-work"]?.integrationState, "integrated");
+});
+
 test("a finalization failure persists and emits failed without a premature completed event", async () => {
   const program = multiAgentProgram();
   const store = new InMemoryPipelineRunStore();
@@ -253,6 +623,79 @@ test("an Integration Conflict pauses finalization and approval retries only the 
     ["a", "b", "c"],
   );
   assert.deepEqual(terminalEvents, ["paused", "completed"]);
+});
+
+test("a sandbox resume divergence pauses without relaunch and approval only retries reconciliation", async () => {
+  const program = compilePipelineV3Definition({
+    version: 3,
+    id: "resume-divergence",
+    title: "Resume divergence",
+    nodes: [{
+      id: "work", agent: "Codex", prompt: "Work",
+      output: { name: "out", type: "note", format: "text" },
+    }],
+  }, agents).program!;
+  const attempts: number[] = [];
+  let reconciliations = 0;
+  const adapter: PipelineRuntimeAdapter & {
+    finalizePipelineChangeSet(input: PipelineChangeSetFinalizationInput): Promise<PipelineChangeSetFinalizationResult>;
+  } = {
+    async createSession({ runId, node }) {
+      return {
+        runId,
+        nodeId: node.id,
+        async send(input) {
+          attempts.push(input.attempt ?? 0);
+          await input.onSandboxRunState?.({
+            sandboxName: "sandbox-work", runId, nodeId: node.id, attempt: input.attempt ?? 1,
+            baseCommit: "base", integrationState: "checkpointed", resourceState: "active",
+            checkpoint: {
+              status: "checkpointed", commit: "checkpoint", remote: "sandbox-sandbox-work", ref: "refs/checkpoints/work",
+              preview: { baseCommit: "base", checkpointCommit: "checkpoint", fileCount: 1, files: ["work.ts"], diff: "diff" },
+            },
+          });
+          return { artifact: { name: "out", type: "note", format: "text", value: "done" } };
+        },
+        async cancel() {},
+        async close() {},
+      };
+    },
+    async finalizePipelineChangeSet(input) {
+      reconciliations += 1;
+      if (reconciliations === 1) {
+        throw new PipelineSandboxResumeDivergenceError({
+          runId: input.runId,
+          sandboxName: "sandbox-work",
+          nodeId: "work",
+          attempt: 1,
+          diagnostic: "Sandbox identity divergence: observed foreign, expected stable.",
+        });
+      }
+      return {
+        promotion: "no_changes",
+        preview: { baseCommit: "base", changeSetCommit: "base", fileCount: 0, files: [], diff: "" },
+        integratedNodeIds: ["work"],
+      };
+    },
+  };
+  const store = new InMemoryPipelineRunStore();
+  const firstRuntime = new PipelineRuntime(adapter, { runIdFactory: () => "run-resume-divergence", store });
+  const paused = await firstRuntime.start(program);
+
+  assert.equal(paused.status, "paused");
+  assert.equal(paused.snapshot.pendingPause?.sandboxResumeDivergence?.sandboxName, "sandbox-work");
+  assert.equal(paused.snapshot.sandboxRuns?.["sandbox-work"]?.integrationState, "resume_divergence");
+  assert.match(paused.status === "paused" ? paused.pause.content : "", /No agent was relaunched/);
+
+  const restoredRuntime = new PipelineRuntime(adapter, { programs: [program], store });
+  const completed = await restoredRuntime.resume(paused.runId, {
+    pauseId: paused.status === "paused" ? paused.pause.id : "unreachable",
+    kind: "approve",
+  });
+
+  assert.equal(completed.status, "completed");
+  assert.deepEqual(attempts, [1]);
+  assert.equal(reconciliations, 2);
 });
 
 test("an Integration Conflict remains retryable without a persistent run store", async () => {

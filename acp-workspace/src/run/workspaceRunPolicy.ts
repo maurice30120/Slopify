@@ -77,17 +77,20 @@ export type WorkspaceRunOutcome =
 
 export interface WorkspaceRun {
   start(pipelineName: string, prompt: string): Promise<WorkspaceRunOutcome>;
+  recover(runId: string): Promise<WorkspaceRunOutcome>;
   respond(runId: string, interaction: HostInteraction): Promise<WorkspaceRunOutcome>;
   cancel(runId: string): Promise<void>;
 }
 
 export interface WorkspaceRunBackend {
   start(pipelineName: string, prompt: string): Promise<PipelineRuntimeResult>;
+  recover?(runId: string): Promise<PipelineRuntimeResult>;
   resume(runId: string, decision: PipelineResumeDecision): Promise<PipelineRuntimeResult>;
   cancel?(runId: string): Promise<PipelineRuntimeResult>;
 }
 
 export interface CreateWorkspaceRunOptions extends WorkspaceRunPolicyOptions {
+  recover?: WorkspaceRunBackend['recover'];
   resume: WorkspaceRunBackend['resume'];
   cancel?: WorkspaceRunBackend['cancel'];
 }
@@ -151,6 +154,15 @@ export function createWorkspaceRun(options: CreateWorkspaceRunOptions): Workspac
   return {
     async start(pipelineName, prompt) {
       const result = await options.start(pipelineName, prompt);
+      prompts.set(result.runId, prompt);
+      return settle(result, prompt);
+    },
+    async recover(runId) {
+      if (!options.recover) throw new Error('This Workspace ACP host does not support crash recovery.');
+      const result = await options.recover(runId);
+      const prompt = typeof result.snapshot.inputVariables?.userPrompt === 'string'
+        ? result.snapshot.inputVariables.userPrompt
+        : '';
       prompts.set(result.runId, prompt);
       return settle(result, prompt);
     },

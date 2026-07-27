@@ -1,5 +1,5 @@
 import type { NormalizedPipelinePolicy } from "./PipelinePolicy";
-import type { PipelineIntegrationConflict } from "./PipelineAgentRunner";
+import type { PipelineIntegrationConflict, PipelineSandboxResumeDivergence } from "./PipelineAgentRunner";
 
 export type PipelineArtifactFormat = "text" | "markdown" | "json";
 
@@ -153,8 +153,50 @@ export interface PipelineRuntimeSnapshot {
   nodeInterviewHistories?: Record<string, PipelineInterviewSnapshot>;
   finalArtifact?: PipelineArtifact;
   diagnostics: PipelineRuntimeDiagnostic[];
+  /** Durable adapter state required to resume isolated workspace effects. */
+  sandboxRuns?: Record<string, PipelineSandboxRunSnapshot>;
   createdAt: string;
   updatedAt: string;
+}
+
+export type PipelineSandboxIntegrationState =
+  | "sandbox_created"
+  | "checkpointed"
+  | "integrating"
+  | "integration_conflict"
+  | "resume_divergence"
+  | "integrated";
+
+export interface PipelineSandboxCheckpointSnapshot {
+  status: "checkpointed" | "no_changes";
+  commit: string;
+  remote: string;
+  ref: string;
+  preview: {
+    baseCommit: string;
+    checkpointCommit: string;
+    fileCount: number;
+    files: string[];
+    diff: string;
+  };
+}
+
+export interface PipelineSandboxRunSnapshot {
+  sandboxName: string;
+  sandboxId?: string;
+  runId: string;
+  nodeId: string;
+  attempt: number;
+  baseCommit: string;
+  integrationState: PipelineSandboxIntegrationState;
+  resourceState: "active" | "retained" | "removed";
+  checkpoint?: PipelineSandboxCheckpointSnapshot;
+  output?: string;
+  diagnosticsPath?: string;
+  integrationDiagnostic?: {
+    files: string[];
+  };
+  resumeDiagnostic?: string;
 }
 
 export interface PipelineRuntimeNodeSnapshot {
@@ -174,6 +216,7 @@ export interface PipelinePauseSnapshot {
   handoff?: PipelineWorkspaceHandoffDefinition;
   workspaceGuard?: "documentation-only";
   integrationConflict?: PipelineIntegrationConflict;
+  sandboxResumeDivergence?: PipelineSandboxResumeDivergence;
 }
 
 export type PipelineInterviewState = "question";
@@ -229,6 +272,8 @@ export interface PipelineNodeExecutionInput {
   prompt: string;
   inputs: Record<string, PipelineArtifact>;
   signal: AbortSignal;
+  onSandboxRunState?: (state: PipelineSandboxRunSnapshot) => void | Promise<void>;
+  resumeSandboxRun?: PipelineSandboxRunSnapshot;
 }
 
 export interface AgentNodeSessionTurnInput extends PipelineNodeExecutionInput {

@@ -152,6 +152,13 @@ test('run with -y short option', () => {
   assert.equal((result as any).keepSandboxes, false);
 });
 
+test('parses crash recovery by persisted run id', () => {
+  assert.deepEqual(parseCliArgs(['resume', 'run-42', '--yes', '--json'], '/repo'), {
+    kind: 'resume', runId: 'run-42', cwd: '/repo', json: true, verbose: false,
+    yes: true, keepSandboxes: false,
+  });
+});
+
 test('parses --keep-sandboxes independently from --yes', () => {
   const result = parseCliArgs(['run', 'pipeline', 'prompt', '--keep-sandboxes'], '/repo');
   assert.equal(result.kind, 'run');

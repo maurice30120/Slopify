@@ -14,6 +14,7 @@ import {
   type DockerSandboxNetworkPolicyChoice,
   type DockerSandboxNetworkPolicyPreset,
   type RetainedSandbox,
+  type SandboxRunState,
   type SubprocessExecutor,
   type SubprocessRequest,
   type SubprocessResult,
@@ -40,6 +41,7 @@ function sandboxScenario(options: {
   checkpointFailure?: string;
   fetchFailure?: string;
 } = {}): { respond: (request: SubprocessRequest) => SubprocessResult } {
+  let createdSandboxName: string | undefined;
   return {
     respond(request) {
       if (request.command === 'git' && request.args.join(' ') === 'rev-parse --is-inside-work-tree') return result('true\n');
@@ -59,6 +61,15 @@ function sandboxScenario(options: {
       if (request.args.join(' ') === 'ls --help') return result('Usage: sbx ls --json');
       if (request.args.join(' ') === 'policy init --help') return result('Usage: sbx policy init');
       if (request.args.join(' ') === 'policy ls --json') return result('[{"name":"local-policy"}]\n');
+      if (request.args[0] === 'create') {
+        createdSandboxName = request.args[request.args.indexOf('--name') + 1];
+        return result();
+      }
+      if (request.args.join(' ') === 'ls --json') {
+        return result(createdSandboxName
+          ? JSON.stringify([{ id: `id-${createdSandboxName}`, name: createdSandboxName }])
+          : '[]');
+      }
 
       const sandboxGitArgs = request.command === 'sbx' && request.args[0] === 'exec'
         ? request.args.slice(2)
@@ -99,6 +110,7 @@ test('creates and previews an attributed Agent Checkpoint without mutating the h
   });
   const fake = fakeExecutor(scenario.respond);
   const runtime = new DockerSandboxRuntime(fake.execute);
+  const states: SandboxRunState[] = [];
 
   const output = await runtime.runCodex({
     workspaceCwd: '/repo',
@@ -109,6 +121,7 @@ test('creates and previews an attributed Agent Checkpoint without mutating the h
     model: 'gpt-5.6-codex',
     effort: 'high',
     workspaceEffects: true,
+    onStateChange: state => { states.push(state); },
   });
 
   const sandboxName = stableSandboxName('Run 42', 'Implement/API', 2);
@@ -154,6 +167,14 @@ test('creates and previews an attributed Agent Checkpoint without mutating the h
   ]);
   assert.deepEqual(hostMutatingGitCalls(fake.calls), []);
   assert.deepEqual(fake.calls.at(-1)?.args, ['rm', '--force', sandboxName]);
+  assert.deepEqual(states.map(state => [state.integrationState, state.resourceState]), [
+    ['sandbox_created', 'active'],
+    ['checkpointed', 'active'],
+    ['checkpointed', 'removed'],
+  ]);
+  assert.equal(states[0].baseCommit, 'base123');
+  assert.equal(states[0].sandboxId, `id-${sandboxName}`);
+  assert.equal(states[1].checkpoint?.checkpoint.commit, 'checkpoint456');
 });
 
 test('creates an empty technical checkpoint and returns no_changes when its preview is empty', async () => {
@@ -534,6 +555,183 @@ test('keepSandbox preserves resources and reports copyable commands after succes
       } finally {
         fs.rmSync(cwd, { recursive: true, force: true });
       }
+    });
+  }
+});
+
+test('reconciles a persisted sandbox only when its stable identity and checkpoint base match', async () => {
+  const fake = fakeExecutor(request => {
+    if (request.args.join(' ') === 'ls --json') {
+      return result(JSON.stringify([{ id: 'sandbox-id-42', name: 'slopify-run-node-1-deadbeef' }]));
+    }
+    if (request.args.join(' ') === 'exec slopify-run-node-1-deadbeef git rev-parse HEAD') {
+      return result('checkpoint456\n');
+    }
+    if (request.args.join(' ') === 'exec slopify-run-node-1-deadbeef git merge-base --is-ancestor base123 checkpoint456') {
+      return result();
+    }
+    if (request.args.join(' ') === 'exec slopify-run-node-1-deadbeef git status --porcelain=v1') return result();
+    return result('', `unexpected ${request.args.join(' ')}`, 1);
+  });
+
+  const reconciled = await new DockerSandboxRuntime(fake.execute).reconcileSandbox({
+    workspaceCwd: '/repo',
+    sandboxName: 'slopify-run-node-1-deadbeef',
+    sandboxId: 'sandbox-id-42',
+    baseCommit: 'base123',
+    checkpointCommit: 'checkpoint456',
+  });
+
+  assert.deepEqual(reconciled, {
+    status: 'reusable',
+    sandboxName: 'slopify-run-node-1-deadbeef',
+    sandboxId: 'sandbox-id-42',
+    observedCommit: 'checkpoint456',
+  });
+  assert.equal(fake.calls.some(call => call.args[0] === 'create' && !call.args.includes('--help')), false);
+  assert.equal(fake.calls.some(call => call.args[0] === 'rm'), false);
+});
+
+test('resumes a matching sandbox after creation without creating a second resource', async () => {
+  const sandboxName = stableSandboxName('run-resume', 'work', 1);
+  const scenario = sandboxScenario({ changedFiles: ['work.ts'], diff: 'diff' });
+  const fake = fakeExecutor(request => {
+    if (request.args.join(' ') === 'ls --json') return result(JSON.stringify([{ id: 'stable-id', name: sandboxName }]));
+    if (request.command === 'sbx' && request.args.join(' ') === `exec ${sandboxName} git rev-parse HEAD`) return result('base123\n');
+    return scenario.respond(request);
+  });
+
+  const output = await new DockerSandboxRuntime(fake.execute).runCodex({
+    workspaceCwd: '/repo', runId: 'run-resume', nodeId: 'work', attempt: 1,
+    prompt: 'Continue safely.', model: 'gpt',
+    resumeState: {
+      sandboxName, sandboxId: 'stable-id', runId: 'run-resume', nodeId: 'work', attempt: 1,
+      baseCommit: 'base123', integrationState: 'sandbox_created', resourceState: 'active',
+    },
+  });
+
+  assert.equal(output.checkpoint.commit, 'checkpoint456');
+  assert.equal(fake.calls.some(call => call.args[0] === 'create' && !call.args.includes('--help')), false);
+  assert.equal(fake.calls.some(call => call.args[0] === 'exec' && call.args.includes('codex')), true);
+});
+
+test('resumes after checkpoint persistence without relaunching Codex or requiring the removed resource', async () => {
+  const sandboxName = stableSandboxName('run-checkpointed', 'work', 1);
+  const scenario = sandboxScenario({ changedFiles: ['work.ts'], diff: 'diff' });
+  const fake = fakeExecutor(scenario.respond);
+
+  const output = await new DockerSandboxRuntime(fake.execute).runCodex({
+    workspaceCwd: '/repo', runId: 'run-checkpointed', nodeId: 'work', attempt: 1,
+    prompt: 'Do not run again.', model: 'gpt',
+    resumeState: {
+      sandboxName, sandboxId: 'stable-id', runId: 'run-checkpointed', nodeId: 'work', attempt: 1,
+      baseCommit: 'base123', integrationState: 'checkpointed', resourceState: 'removed',
+      stdout: 'persisted output', stderr: '',
+      checkpoint: {
+        checkpointStatus: 'checkpointed',
+        checkpoint: {
+          sandboxName, runId: 'run-checkpointed', nodeId: 'work', attempt: 1,
+          baseCommit: 'base123', commit: 'checkpoint456',
+          remote: `sandbox-${sandboxName}`, ref: `refs/slopify/checkpoints/${sandboxName}`,
+        },
+        preview: {
+          baseCommit: 'base123', checkpointCommit: 'checkpoint456', fileCount: 1,
+          files: ['work.ts'], diff: 'diff',
+        },
+      },
+    },
+  });
+
+  assert.equal(output.checkpoint.commit, 'checkpoint456');
+  assert.equal(output.stdout, 'persisted output');
+  assert.equal(fake.calls.some(call => call.args.join(' ') === 'ls --json'), false);
+  assert.equal(fake.calls.some(call => call.args[0] === 'exec' && call.args.includes('codex')), false);
+  assert.equal(fake.calls.some(call => call.args[0] === 'rm'), false);
+});
+
+test('repeats cleanup idempotently when a checkpointed sandbox disappeared before removed state persisted', async () => {
+  const sandboxName = stableSandboxName('run-cleanup-crash', 'work', 1);
+  const scenario = sandboxScenario();
+  const fake = fakeExecutor(request => {
+    if (request.args.join(' ') === 'ls --json') return result('[]');
+    return scenario.respond(request);
+  });
+
+  const output = await new DockerSandboxRuntime(fake.execute).runCodex({
+    workspaceCwd: '/repo', runId: 'run-cleanup-crash', nodeId: 'work', attempt: 1,
+    prompt: 'Do not run again.', model: 'gpt',
+    resumeState: {
+      sandboxName, sandboxId: 'stable-id', runId: 'run-cleanup-crash', nodeId: 'work', attempt: 1,
+      baseCommit: 'base123', integrationState: 'checkpointed', resourceState: 'active',
+      checkpoint: {
+        checkpointStatus: 'checkpointed',
+        checkpoint: {
+          sandboxName, runId: 'run-cleanup-crash', nodeId: 'work', attempt: 1,
+          baseCommit: 'base123', commit: 'checkpoint456', remote: `sandbox-${sandboxName}`,
+          ref: `refs/slopify/checkpoints/${sandboxName}`,
+        },
+        preview: { baseCommit: 'base123', checkpointCommit: 'checkpoint456', fileCount: 1, files: ['work.ts'], diff: 'diff' },
+      },
+    },
+  });
+
+  assert.equal(output.checkpoint.commit, 'checkpoint456');
+  assert.equal(fake.calls.some(call => call.args[0] === 'exec' && call.args.includes('codex')), false);
+  assert.equal(fake.calls.some(call => call.args[0] === 'rm'), false);
+});
+
+test('suspends an uncheckpointed sandbox with partial worktree changes', async () => {
+  const fake = fakeExecutor(request => {
+    if (request.args.join(' ') === 'ls --json') return result(JSON.stringify([{ id: 'stable-id', name: 'sandbox-work' }]));
+    if (request.args.join(' ') === 'exec sandbox-work git rev-parse HEAD') return result('base123\n');
+    if (request.args.join(' ') === 'exec sandbox-work git status --porcelain=v1') return result(' M src/work.ts\n');
+    return result();
+  });
+
+  const reconciled = await new DockerSandboxRuntime(fake.execute).reconcileSandbox({
+    workspaceCwd: '/repo', sandboxName: 'sandbox-work', sandboxId: 'stable-id', baseCommit: 'base123',
+  });
+
+  assert.equal(reconciled.status, 'diverged');
+  assert.match(reconciled.status === 'diverged' ? reconciled.diagnostic : '', /worktree.*uncheckpointed/i);
+});
+
+test('suspends reconciliation on identity or base divergence without relaunch, cleanup, or Promotion', async t => {
+  const cases = [
+    {
+      name: 'identity',
+      listing: [{ id: 'foreign-id', name: 'slopify-run-node-1-deadbeef' }],
+      head: 'base123',
+      expected: /identity.*foreign-id.*sandbox-id-42/i,
+    },
+    {
+      name: 'base',
+      listing: [{ id: 'sandbox-id-42', name: 'slopify-run-node-1-deadbeef' }],
+      head: 'foreign-head',
+      expected: /base.*base123.*foreign-head/i,
+    },
+  ] as const;
+
+  for (const current of cases) {
+    await t.test(current.name, async () => {
+      const fake = fakeExecutor(request => {
+        if (request.args.join(' ') === 'ls --json') return result(JSON.stringify(current.listing));
+        if (request.args[0] === 'exec' && request.args.includes('rev-parse')) return result(`${current.head}\n`);
+        if (request.args[0] === 'exec' && request.args.includes('merge-base')) return result('', 'not an ancestor', 1);
+        return result();
+      });
+
+      const reconciled = await new DockerSandboxRuntime(fake.execute).reconcileSandbox({
+        workspaceCwd: '/repo',
+        sandboxName: 'slopify-run-node-1-deadbeef',
+        sandboxId: 'sandbox-id-42',
+        baseCommit: 'base123',
+      });
+
+      assert.equal(reconciled.status, 'diverged');
+      assert.match(reconciled.diagnostic, current.expected);
+      assert.equal(fake.calls.some(call => ['create', 'rm', 'run'].includes(call.args[0] ?? '')), false);
+      assert.deepEqual(hostMutatingGitCalls(fake.calls), []);
     });
   }
 });

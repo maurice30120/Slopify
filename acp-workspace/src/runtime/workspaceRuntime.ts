@@ -1,6 +1,7 @@
 import * as path from 'node:path';
 
 import {
+  mapPolicyToLegacySideEffects,
   orderPipelineNodeIdsForIntegration,
   PipelineIntegrationConflictError,
   renderAcpPrompt,
@@ -10,6 +11,9 @@ import {
   type PipelineChangeSetFinalizationInput,
   type PipelineChangeSetFinalizationResult,
   type PipelinePromotionStatus,
+  PipelineSandboxResumeDivergenceError,
+  type PipelineRuntimeSnapshot,
+  type PipelineSandboxRunSnapshot,
 } from '@acp-client/pipeline';
 import {
   AcpRunner,
@@ -30,12 +34,14 @@ import {
   DockerSandboxRuntime,
   GitPromotion,
   IntegrationConflictError,
+  SandboxResumeDivergenceError,
   createNodeSubprocessExecutor,
   type AgentCheckpointResult,
   type DockerSandboxNetworkPolicyChoice,
   type PromotionDecision,
   type PromotionPolicy,
   type RetainedSandbox,
+  type SandboxRunState,
   type SubprocessExecutor,
 } from '@acp-client/sandbox';
 
@@ -101,21 +107,37 @@ export function createWorkspaceRuntime(options: CreateWorkspaceRuntimeOptions): 
       throw new Error(`Pipeline node declares skills but agent "${input.agentName}" has skills disabled.`);
     }
     if (sandbox) {
-      const result = await sandboxRuntime.runCodex({
-        workspaceCwd: input.workspaceCwd,
-        runId: input.runId ?? 'run',
-        nodeId: input.nodeId ?? input.agentName,
-        attempt: input.attempt ?? 1,
-        prompt: input.promptText,
-        model: config.model,
-        effort: config.effort,
-        signal: input.signal,
-        timeoutMs: resolveTimeouts(catalog.native.pipeline.timeouts).promptMs,
-        workspaceEffects: input.sideEffects === 'workspace',
-        keepSandbox: options.keepSandboxes,
-        diagnosticsDirectory: path.join(input.workspaceCwd, '.acp', 'logs', 'sandboxes'),
-        onSandboxRetained: options.onSandboxRetained,
-      });
+      let result;
+      try {
+        result = await sandboxRuntime.runCodex({
+          workspaceCwd: input.workspaceCwd,
+          runId: input.runId ?? 'run',
+          nodeId: input.nodeId ?? input.agentName,
+          attempt: input.attempt ?? 1,
+          prompt: input.promptText,
+          model: config.model,
+          effort: config.effort,
+          signal: input.signal,
+          timeoutMs: resolveTimeouts(catalog.native.pipeline.timeouts).promptMs,
+          workspaceEffects: input.sideEffects === 'workspace',
+          keepSandbox: options.keepSandboxes,
+          diagnosticsDirectory: path.join(input.workspaceCwd, '.acp', 'logs', 'sandboxes'),
+          onSandboxRetained: options.onSandboxRetained,
+          onStateChange: state => input.onSandboxRunState?.(toPipelineSandboxRunSnapshot(state)),
+          ...(input.resumeSandboxRun ? { resumeState: toSandboxRunState(input.resumeSandboxRun) } : {}),
+        });
+      } catch (error: unknown) {
+        if (error instanceof SandboxResumeDivergenceError && input.resumeSandboxRun) {
+          throw new PipelineSandboxResumeDivergenceError({
+            runId: input.runId ?? 'run',
+            sandboxName: input.resumeSandboxRun.sandboxName,
+            nodeId: input.nodeId ?? input.agentName,
+            attempt: input.attempt ?? 1,
+            diagnostic: error.diagnostic,
+          });
+        }
+        throw error;
+      }
       if (input.sideEffects === 'workspace') {
         const runId = input.runId ?? 'run';
         const nodeId = input.nodeId ?? input.agentName;
@@ -165,6 +187,7 @@ export function createWorkspaceRuntime(options: CreateWorkspaceRuntimeOptions): 
     workspaceCwd: options.workspaceCwd,
     host: options.host,
     execute: options.sandboxExecutor,
+    sandboxRuntime,
   });
 
   return {
@@ -180,13 +203,38 @@ interface FinalizePipelineChangeSetOptions {
   workspaceCwd: string;
   host: WorkspaceRuntimeHost;
   execute?: SubprocessExecutor;
+  sandboxRuntime: DockerSandboxRuntime;
 }
 
 async function finalizePipelineChangeSet(
   options: FinalizePipelineChangeSetOptions,
 ): Promise<PipelineChangeSetFinalizationResult> {
   const { input } = options;
-  const checkpoints = options.checkpointsByRunId.get(input.runId);
+  const durableRuns = Object.values(input.snapshot?.sandboxRuns ?? {})
+    .filter(run => run.runId === input.runId);
+  for (const run of durableRuns) {
+    if (run.resourceState === 'removed') continue;
+    const reconciled = await options.sandboxRuntime.reconcileSandbox({
+      workspaceCwd: options.workspaceCwd,
+      sandboxName: run.sandboxName,
+      sandboxId: run.sandboxId,
+      baseCommit: run.baseCommit,
+      checkpointCommit: run.checkpoint?.commit,
+    });
+    if (reconciled.status === 'diverged') {
+      throw new PipelineSandboxResumeDivergenceError({
+        runId: input.runId,
+        sandboxName: run.sandboxName,
+        nodeId: run.nodeId,
+        attempt: run.attempt,
+        diagnostic: reconciled.diagnostic,
+      });
+    }
+  }
+  const durableCheckpoints = checkpointsFromSnapshot(input.snapshot, input.runId, input.program);
+  const checkpoints = durableCheckpoints.size > 0
+    ? durableCheckpoints
+    : options.checkpointsByRunId.get(input.runId);
   if (!checkpoints || checkpoints.size === 0) {
     return {
       promotion: 'no_changes',
@@ -260,6 +308,94 @@ async function finalizePipelineChangeSet(
     }
     throw error;
   }
+}
+
+function toPipelineSandboxRunSnapshot(state: SandboxRunState): PipelineSandboxRunSnapshot {
+  return {
+    sandboxName: state.sandboxName,
+    ...(state.sandboxId ? { sandboxId: state.sandboxId } : {}),
+    runId: state.runId,
+    nodeId: state.nodeId,
+    attempt: state.attempt,
+    baseCommit: state.baseCommit,
+    integrationState: state.integrationState,
+    resourceState: state.resourceState,
+    ...(state.diagnosticsPath ? { diagnosticsPath: state.diagnosticsPath } : {}),
+    ...(state.stdout !== undefined ? { output: state.stdout } : {}),
+    ...(state.checkpoint ? {
+      checkpoint: {
+        status: state.checkpoint.checkpointStatus,
+        commit: state.checkpoint.checkpoint.commit,
+        remote: state.checkpoint.checkpoint.remote,
+        ref: state.checkpoint.checkpoint.ref,
+        preview: state.checkpoint.preview,
+      },
+    } : {}),
+  };
+}
+
+function toSandboxRunState(state: PipelineSandboxRunSnapshot): SandboxRunState {
+  return {
+    sandboxName: state.sandboxName,
+    ...(state.sandboxId ? { sandboxId: state.sandboxId } : {}),
+    runId: state.runId,
+    nodeId: state.nodeId,
+    attempt: state.attempt,
+    baseCommit: state.baseCommit,
+    integrationState: state.checkpoint ? 'checkpointed' : 'sandbox_created',
+    resourceState: state.resourceState,
+    ...(state.output !== undefined ? { stdout: state.output } : {}),
+    ...(state.diagnosticsPath ? { diagnosticsPath: state.diagnosticsPath } : {}),
+    ...(state.checkpoint ? {
+      checkpoint: {
+        checkpointStatus: state.checkpoint.status,
+        checkpoint: {
+          runId: state.runId,
+          nodeId: state.nodeId,
+          attempt: state.attempt,
+          sandboxName: state.sandboxName,
+          baseCommit: state.baseCommit,
+          commit: state.checkpoint.commit,
+          remote: state.checkpoint.remote,
+          ref: state.checkpoint.ref,
+        },
+        preview: state.checkpoint.preview,
+      },
+    } : {}),
+  };
+}
+
+function checkpointsFromSnapshot(
+  snapshot: PipelineRuntimeSnapshot | undefined,
+  runId: string,
+  program: CompiledPipelineProgram,
+): Map<string, Map<number, AgentCheckpointResult>> {
+  const checkpoints = new Map<string, Map<number, AgentCheckpointResult>>();
+  for (const run of Object.values(snapshot?.sandboxRuns ?? {})) {
+    if (
+      run.runId !== runId
+      || !run.checkpoint
+      || !program.nodesById.has(run.nodeId)
+      || mapPolicyToLegacySideEffects(program.nodesById.get(run.nodeId)!.policy) !== 'workspace'
+    ) continue;
+    const attempts = checkpoints.get(run.nodeId) ?? new Map<number, AgentCheckpointResult>();
+    attempts.set(run.attempt, {
+      checkpointStatus: run.checkpoint.status,
+      checkpoint: {
+        runId: run.runId,
+        nodeId: run.nodeId,
+        attempt: run.attempt,
+        sandboxName: run.sandboxName,
+        baseCommit: run.baseCommit,
+        commit: run.checkpoint.commit,
+        remote: run.checkpoint.remote,
+        ref: run.checkpoint.ref,
+      },
+      preview: run.checkpoint.preview,
+    });
+    checkpoints.set(run.nodeId, attempts);
+  }
+  return checkpoints;
 }
 
 function resolvePipelinePromotionPolicy(

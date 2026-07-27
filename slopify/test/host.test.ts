@@ -91,6 +91,31 @@ test('runs an injected backend and forwards agent metadata', async () => {
   assert.equal(completed.status === 'completed' ? completed.artifact?.value : '', 'Use PipelineRuntime');
 });
 
+test('resumes a persisted pipeline pause after the CLI host is reconstructed', async () => {
+  const cwd = workspace();
+  const runner: PipelineAgentRunner = async () => ({ text: 'Which API?' });
+  const firstHost = new CliPipelineHost(cwd, {
+    terminal: new FakeTerminal(),
+    backendFactory: backend(runner),
+    runIdFactory: () => 'run-after-crash',
+  });
+  const paused = await firstHost.start('question-flow', 'add a CLI');
+  assert.equal(paused.status, 'paused');
+
+  const restoredHost = new CliPipelineHost(cwd, {
+    terminal: new FakeTerminal(),
+    backendFactory: backend(runner),
+  });
+  const completed = await restoredHost.resume('run-after-crash', {
+    pauseId: paused.status === 'paused' ? paused.pause.id : 'unreachable',
+    kind: 'answer',
+    value: 'Use the persisted snapshot',
+  });
+
+  assert.equal(completed.status, 'completed');
+  assert.equal(completed.status === 'completed' ? completed.artifact?.value : '', 'Use the persisted snapshot');
+});
+
 test('surfaces an Integration Conflict and retries its node through the CLI host', async () => {
   const attempts: number[] = [];
   let finalizations = 0;
