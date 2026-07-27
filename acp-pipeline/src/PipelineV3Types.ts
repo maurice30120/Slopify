@@ -1,4 +1,4 @@
-import type { NormalizedPipelinePolicy } from "./PipelinePolicy";
+import type { NormalizedPipelinePolicy, NormalizedPromotionPolicy } from "./PipelinePolicy";
 import type { PipelineIntegrationConflict, PipelineSandboxResumeDivergence } from "./PipelineAgentRunner";
 
 export type PipelineArtifactFormat = "text" | "markdown" | "json";
@@ -97,6 +97,7 @@ export interface PipelineV3Definition {
   version: 3;
   id: string;
   title: string;
+  promotion?: NormalizedPromotionPolicy;
   agents?: Record<string, unknown>;
   policies?: Record<string, PipelinePolicyReference>;
   nodes: PipelineNodeDefinition[];
@@ -129,6 +130,7 @@ export interface CompiledPipelineProgram {
   version: 3;
   id: string;
   title: string;
+  promotion: NormalizedPromotionPolicy;
   nodes: readonly CompiledPipelineNode[];
   nodesById: ReadonlyMap<string, CompiledPipelineNode>;
   dependentsById: ReadonlyMap<string, readonly string[]>;

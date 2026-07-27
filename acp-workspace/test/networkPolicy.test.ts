@@ -35,7 +35,6 @@ test('workspace CLI presents the exact global Docker network choices and reports
           write: message => messages.push(message),
         },
       }),
-      requestPromotion: async () => 'cancelled',
       logger: { log: () => undefined, error: () => undefined },
     },
     sandboxExecutor: async request => {

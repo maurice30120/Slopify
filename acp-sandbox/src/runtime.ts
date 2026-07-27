@@ -186,11 +186,12 @@ export class SandboxRunTimeoutError extends Error {
  * Il transmet aussi les signaux d'arrêt à sbx, exporte les diagnostics, puis
  * conserve ou nettoie la ressource sans masquer le résultat du pipeline.
  *
- * Voir `docs/adr/0001-replace-sandcastle-with-docker-sandboxes.md` et
- * `docs/adr/0002-promote-one-multi-agent-change-set.md`.
+ * Voir les ADR 0001 et 0002 sous `docs/adr/`.
  */
 export class DockerSandboxRuntime {
   private networkPolicyReady?: Promise<void>;
+  private networkPolicyAbort?: AbortController;
+  private activePreflights = 0;
   private readonly cleanupTimeoutMs: number;
   private readonly options: DockerSandboxRuntimeOptions;
 
@@ -471,46 +472,58 @@ export class DockerSandboxRuntime {
   }
 
   async preflightWorkspace(cwd: string, workspaceEffects = true, signal?: AbortSignal): Promise<void> {
-    await this.requireSuccess({ command: 'git', args: ['rev-parse', '--is-inside-work-tree'], cwd, stdin: 'ignore', signal }, 'verify that the workspace is a Git repository');
-    if (workspaceEffects) {
-      // `sbx --clone` ne voit pas les changements non commités. Autoriser un
-      // workspace sale ferait donc calculer le Pipeline Change Set depuis une
-      // base différente de celle que la Promotion doit avancer atomiquement.
-      const status = await this.requireSuccess({ command: 'git', args: ['status', '--porcelain=v1'], cwd, stdin: 'ignore', signal }, 'inspect the Git workspace');
-      if (status.stdout.trim()) {
-        throw new Error('Docker Sandbox requires a clean Git workspace for workspace-writing pipelines: sbx --clone cannot see uncommitted changes, so safe Promotion is impossible. Commit or remove the local changes and retry.');
+    this.activePreflights += 1;
+    try {
+      await this.requireSuccess({ command: 'git', args: ['rev-parse', '--is-inside-work-tree'], cwd, stdin: 'ignore', signal }, 'verify that the workspace is a Git repository');
+      if (workspaceEffects) {
+        // `sbx --clone` ne voit pas les changements non commités. Autoriser un
+        // workspace sale ferait donc calculer le Pipeline Change Set depuis une
+        // base différente de celle que la Promotion doit avancer atomiquement.
+        const status = await this.requireSuccess({ command: 'git', args: ['status', '--porcelain=v1'], cwd, stdin: 'ignore', signal }, 'inspect the Git workspace');
+        if (status.stdout.trim()) {
+          throw new Error('Docker Sandbox requires a clean Git workspace for workspace-writing pipelines: sbx --clone cannot see uncommitted changes, so safe Promotion is impossible. Commit or remove the local changes and retry.');
+        }
+      }
+      const version = await this.requireSuccess({ command: 'sbx', args: ['version'], cwd, stdin: 'ignore', signal }, 'read the Docker Sandbox version');
+      const actual = extractVersion(`${version.stdout}\n${version.stderr}`);
+      if (!actual || compareVersions(actual, MINIMUM_SBX_VERSION) < 0) {
+        throw new Error(`Docker Sandbox sbx ${MINIMUM_SBX_VERSION} or newer is required (found ${actual ?? 'an unknown version'}). Upgrade Docker Desktop and retry.`);
+      }
+      await this.requireCapability(cwd, ['create', '--help'], '--clone', signal);
+      await this.requireCapability(cwd, ['ls', '--help'], '--json', signal);
+      await this.requireCapability(cwd, ['policy', 'init', '--help'], 'policy init', signal, false);
+      await this.ensureGlobalNetworkPolicy(cwd, signal);
+    } finally {
+      this.activePreflights -= 1;
+      if (signal?.aborted && this.activePreflights === 0) {
+        this.networkPolicyAbort?.abort(signal.reason);
       }
     }
-    const version = await this.requireSuccess({ command: 'sbx', args: ['version'], cwd, stdin: 'ignore', signal }, 'read the Docker Sandbox version');
-    const actual = extractVersion(`${version.stdout}\n${version.stderr}`);
-    if (!actual || compareVersions(actual, MINIMUM_SBX_VERSION) < 0) {
-      throw new Error(`Docker Sandbox sbx ${MINIMUM_SBX_VERSION} or newer is required (found ${actual ?? 'an unknown version'}). Upgrade Docker Desktop and retry.`);
-    }
-    await this.requireCapability(cwd, ['create', '--help'], '--clone', signal);
-    await this.requireCapability(cwd, ['ls', '--help'], '--json', signal);
-    await this.requireCapability(cwd, ['policy', 'init', '--help'], 'policy init', signal, false);
-    await this.ensureGlobalNetworkPolicy(cwd, signal);
   }
 
   private async ensureGlobalNetworkPolicy(cwd: string, signal?: AbortSignal): Promise<void> {
     if (!this.networkPolicyReady) {
-      const initialization = this.initializeGlobalNetworkPolicy(cwd);
+      const abort = new AbortController();
+      const initialization = this.initializeGlobalNetworkPolicy(cwd, abort.signal);
+      this.networkPolicyAbort = abort;
       this.networkPolicyReady = initialization;
       void initialization.catch(() => {
         if (this.networkPolicyReady === initialization) {
           this.networkPolicyReady = undefined;
+          this.networkPolicyAbort = undefined;
         }
       });
     }
     await waitForPromise(this.networkPolicyReady, signal);
   }
 
-  private async initializeGlobalNetworkPolicy(cwd: string): Promise<void> {
+  private async initializeGlobalNetworkPolicy(cwd: string, signal: AbortSignal): Promise<void> {
     const current = await this.execute({
       command: 'sbx',
       args: ['policy', 'ls', '--json'],
       cwd,
       stdin: 'ignore',
+      signal,
     });
     if (current.exitCode === 0) {
       return;
@@ -529,6 +542,7 @@ export class DockerSandboxRuntime {
       args: ['policy', 'init', preset],
       cwd,
       stdin: 'ignore',
+      signal,
     }, `initialize the Docker Sandbox global network policy as ${choice}`);
     this.options.reportNetworkPolicy?.(`Docker Sandbox global network policy initialized as ${choice}. Change it later with \`sbx policy\`.`);
   }

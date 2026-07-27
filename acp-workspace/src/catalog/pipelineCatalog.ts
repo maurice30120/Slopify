@@ -19,7 +19,7 @@ export function getPipelinePrograms(
 	logger?: Logger,
 ): CompiledPipelineProgram[] {
 	const catalog = loadAgentCatalog(workspaceCwd);
-	const config = catalog.native;
+	const config = catalog.config;
 	if (!config.pipeline.enabled) {
 		return [];
 	}

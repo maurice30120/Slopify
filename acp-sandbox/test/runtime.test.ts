@@ -7,6 +7,7 @@ import test from 'node:test';
 import {
   DOCKER_SANDBOX_NETWORK_POLICY_CHOICES,
   DockerSandboxRuntime,
+  SANDBOX_EXTENSION_METHODS,
   SandboxRunCancelledError,
   SandboxRunTimeoutError,
   retainedSandboxCommands,
@@ -19,6 +20,15 @@ import {
   type SubprocessRequest,
   type SubprocessResult,
 } from '../src/index.js';
+
+test('exports only the neutral ACP sandbox extension methods', () => {
+  assert.deepEqual(SANDBOX_EXTENSION_METHODS, [
+    'sandbox/status',
+    'sandbox/preview',
+    'sandbox/promote',
+    'sandbox/reject',
+  ]);
+});
 
 function result(stdout = '', stderr = '', exitCode = 0): SubprocessResult {
   return { exitCode, stdout, stderr };
@@ -345,7 +355,34 @@ test('cancelling one preflight does not abort global policy initialization share
   assert.equal(fake.calls.filter(call => call.args.join(' ') === 'policy ls --json').length, 1);
   const initCalls = fake.calls.filter(call => call.args.join(' ') === 'policy init balanced');
   assert.equal(initCalls.length, 1);
-  assert.equal(initCalls[0].signal, undefined);
+  assert.equal(initCalls[0].signal?.aborted, false);
+});
+
+test('cancelling the last preflight aborts its global policy subprocess', async () => {
+  const baseline = sandboxScenario();
+  let announceInitializationStarted: (() => void) | undefined;
+  const initializationStarted = new Promise<void>(resolve => { announceInitializationStarted = resolve; });
+  let initializationSignal: AbortSignal | undefined;
+  const fake = fakeExecutor(request => {
+    if (request.args.join(' ') === 'policy ls --json') return result('', 'policy is not initialized', 1);
+    if (request.args.join(' ') === 'policy init balanced') {
+      initializationSignal = request.signal;
+      announceInitializationStarted?.();
+      return abortedExecution(request);
+    }
+    return baseline.respond(request);
+  });
+  const runtime = new DockerSandboxRuntime(fake.execute, {
+    selectNetworkPolicy: () => 'Balanced',
+  });
+  const cancelled = new AbortController();
+
+  const preflight = runtime.preflightWorkspace('/repo', true, cancelled.signal);
+  await initializationStarted;
+  cancelled.abort();
+
+  await assert.rejects(preflight, error => error instanceof Error && error.name === 'AbortError');
+  assert.equal(initializationSignal?.aborted, true);
 });
 
 test('fails before sandbox creation when global network policy initialization fails', async () => {

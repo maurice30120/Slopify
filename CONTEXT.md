@@ -6,7 +6,7 @@ Slopify exécute des agents dans des environnements isolés et contrôle explici
 
 **Sandbox Run**:
 Exécution isolée d’un agent sur une copie privée du dépôt, sans mutation du workspace hôte.
-_Avoid_: Sandcastle run, container run
+_Avoid_: container run
 
 **Agent Checkpoint**:
 Résultat versionné produit par un agent et identifié par le pipeline, le nœud et la tentative qui l’ont créé.

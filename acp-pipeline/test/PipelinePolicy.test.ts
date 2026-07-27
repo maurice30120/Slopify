@@ -3,7 +3,7 @@ import { test } from "node:test";
 
 import {
   NATIVE_ACP_BASELINE_CAPABILITIES,
-  SANDCASTLE_BASELINE_CAPABILITIES,
+  SANDBOX_BASELINE_CAPABILITIES,
   evaluateToolPermissionForPolicy,
   mapPolicyToLegacyPermissions,
   mapPolicyToLegacySideEffects,
@@ -40,7 +40,9 @@ test("validateAdapterSupportsPolicy refuses policies an adapter cannot guarantee
       message: 'native ACP adapter cannot guarantee promotion policy "ask".',
     },
   ]);
-  assert.deepEqual(validateAdapterSupportsPolicy("Sandcastle", SANDCASTLE_BASELINE_CAPABILITIES, policy), []);
+  assert.equal(SANDBOX_BASELINE_CAPABILITIES.network, "inherited");
+  assert.equal(SANDBOX_BASELINE_CAPABILITIES.promotion, "pipeline");
+  assert.deepEqual(validateAdapterSupportsPolicy("Sandbox", SANDBOX_BASELINE_CAPABILITIES, policy), []);
 });
 
 test("evaluateToolPermissionForPolicy denies mutations under read-only policy", () => {

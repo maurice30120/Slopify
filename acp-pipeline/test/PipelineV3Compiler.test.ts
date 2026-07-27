@@ -49,6 +49,31 @@ test("compilePipelineV3Definition compiles an immutable DAG with parallel-ready 
   assert.equal(typeof (result.program.nodesById as unknown as { set?: unknown }).set, "undefined");
 });
 
+test("compilePipelineV3Definition owns Promotion once at pipeline level", () => {
+  const compiled = compilePipelineV3Definition({
+    version: 3,
+    id: "promotion",
+    title: "Promotion",
+    promotion: "auto-apply",
+    nodes: [{
+      id: "write",
+      agent: "Codex",
+      prompt: "Write",
+      policy: { filesystem: "workspace-write", terminal: "workspace-write", promotion: "auto-reject" },
+      output: { name: "out", type: "text", format: "text" },
+    }],
+  }, agents);
+
+  assert.equal(compiled.program?.promotion, "auto-apply");
+  assert.match(compilePipelineV3Definition({
+    version: 3,
+    id: "invalid-promotion",
+    title: "Invalid",
+    promotion: "per-node",
+    nodes: [],
+  }, agents).errors.join("\n"), /pipeline promotion must be/);
+});
+
 test("compilePipelineV3Definition rejects cycles, missing dependencies and unsupported versions deterministically", () => {
   const result = compilePipelineV3Definition({
     version: 2,

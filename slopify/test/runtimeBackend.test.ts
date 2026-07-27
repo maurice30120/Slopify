@@ -12,17 +12,12 @@ function workspace(): string {
 
 function writeWorkspaceConfig(cwd: string): void {
   const acpRoot = path.join(cwd, '.acp');
-  fs.mkdirSync(path.join(acpRoot, '.sandcastle'), { recursive: true });
   fs.mkdirSync(path.join(acpRoot, 'pipelines'), { recursive: true });
   fs.writeFileSync(path.join(acpRoot, 'acp-agents.json'), JSON.stringify({
     agents: {
       Planner: { command: process.execPath, args: ['--version'] },
     },
     pipeline: { enabled: true },
-  }));
-  fs.writeFileSync(path.join(acpRoot, '.sandcastle', 'config.json'), JSON.stringify({
-    promotion: 'autoReject',
-    agents: {},
   }));
   fs.writeFileSync(path.join(acpRoot, 'pipelines', 'plan.yaml'), `
 version: 3

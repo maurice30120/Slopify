@@ -26,7 +26,6 @@ test('collects parallel sandbox checkpoints, previews once, and promotes one det
     workspaceCwd: cwd,
     host: {
       permissionContext: () => undefined,
-      requestPromotion: async () => 'cancelled',
       requestPipelinePromotion: async request => {
         promotionPrompts += 1;
         assert.deepEqual(request.integratedNodeIds, ['a', 'b']);
@@ -69,6 +68,7 @@ test('collects parallel sandbox checkpoints, previews once, and promotes one det
     version: 3,
     id: 'multi-agent',
     title: 'Multi-agent',
+    promotion: 'ask',
     nodes: [
       {
         id: 'a', agent: 'Isolated', prompt: 'A',
@@ -117,23 +117,16 @@ test('integrates the highest checkpoint attempt and cleans up superseded attempt
     workspaceCwd: cwd,
     resolvedCatalog: {
       agents: { Isolated: { transport: 'sandbox', agent: 'codex', model: 'gpt-5.6-codex' } },
-      native: {
+      config: {
         filePath: path.join(cwd, '.acp', 'acp-agents.json'),
         agents: {},
         pipeline: { enabled: true, instructionsMaxBytes: 256 * 1024, timeouts: {} },
-        errors: [],
-      },
-      sandcastle: {
-        filePath: path.join(cwd, '.acp', '.sandcastle', 'config.json'),
-        promotion: 'ask',
-        agents: {},
         errors: [],
       },
       errors: [],
     },
     host: {
       permissionContext: () => undefined,
-      requestPromotion: async () => 'cancelled',
       logger: { log: () => undefined, error: () => undefined },
     },
     sandboxExecutor: async request => {
@@ -198,7 +191,6 @@ test('preserves valid checkpoints across an Integration Conflict and replaces on
     workspaceCwd: cwd,
     host: {
       permissionContext: () => undefined,
-      requestPromotion: async () => 'cancelled',
       logger: { log: () => undefined, error: () => undefined },
     },
     sandboxExecutor: async request => {
@@ -298,6 +290,66 @@ test('preserves valid checkpoints across an Integration Conflict and replaces on
   );
 });
 
+test('preserves volatile checkpoint state and durable refs for an immediate finalization retry', async () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'acp-workspace-finalization-failure-'));
+  fs.mkdirSync(path.join(cwd, '.acp'), { recursive: true });
+  fs.writeFileSync(path.join(cwd, '.acp', 'acp-agents.json'), JSON.stringify({ agents: {
+    Isolated: { transport: 'sandbox', agent: 'codex', model: 'gpt-5.6-codex' },
+  } }));
+  const calls: SubprocessRequest[] = [];
+  const runtime = createWorkspaceRuntime({
+    workspaceCwd: cwd,
+    host: {
+      permissionContext: () => undefined,
+      logger: { log: () => undefined, error: () => undefined },
+    },
+    sandboxExecutor: async request => {
+      calls.push(request);
+      const joined = request.args.join(' ');
+      if (request.command === 'git' && joined === 'rev-parse --is-inside-work-tree') return result('true\n');
+      if (request.command === 'git' && joined === 'status --porcelain=v1') return result();
+      if (request.command === 'git' && joined === 'rev-parse HEAD') return result('base123\n');
+      if (request.command === 'git' && request.args[0] === 'rev-parse') return result('checkpoint456\n');
+      if (request.command === 'git' && request.args[0] === 'diff' && request.args.includes('--name-only')) return result('work.ts\n');
+      if (request.command === 'git' && request.args[0] === 'diff') return result('work diff\n');
+      if (request.command === 'git' && joined === 'show -s --format=%cI base123') return result('', 'corrupt base commit', 1);
+      if (joined === 'version') return result('Docker Sandbox 0.35.0\n');
+      if (joined === 'create --help') return result('Usage: sbx create --clone');
+      if (joined === 'ls --help') return result('Usage: sbx ls --json');
+      if (joined === 'policy init --help') return result('Usage: sbx policy init');
+      return result();
+    },
+  });
+  const program = compilePipelineV3Definition({
+    version: 3,
+    id: 'finalization-failure',
+    title: 'Finalization failure',
+    nodes: [{
+      id: 'work', agent: 'Isolated', prompt: 'Work',
+      policy: { filesystem: 'workspace-write', terminal: 'workspace-write', promotion: 'discard' },
+      output: { name: 'out', type: 'note', format: 'text' },
+    }],
+  }, { Isolated: {} }).program!;
+
+  await runtime.runAgent({
+    workspaceCwd: cwd, agentName: 'Isolated', runId: 'reused-run', nodeId: 'work', attempt: 1,
+    promptText: 'Work', sideEffects: 'workspace', promotion: 'discard',
+  });
+  await assert.rejects(
+    runtime.runAgent.finalizePipelineChangeSet!({ runId: 'reused-run', program }),
+    /corrupt base commit/,
+  );
+
+  await assert.rejects(
+    runtime.runAgent.finalizePipelineChangeSet!({ runId: 'reused-run', program }),
+    /corrupt base commit/,
+  );
+  const deletedRefs = calls
+    .filter(call => call.command === 'git' && call.args.slice(0, 2).join(' ') === 'update-ref -d')
+    .map(call => call.args[2]);
+  assert.deepEqual(deletedRefs, []);
+});
+
 test('finalizes from persisted sandbox checkpoints after the workspace runtime is reconstructed', async () => {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'acp-workspace-durable-resume-'));
   const calls: SubprocessRequest[] = [];
@@ -322,13 +374,11 @@ test('finalizes from persisted sandbox checkpoints after the workspace runtime i
   };
   const catalog = {
     agents: { Isolated: { transport: 'sandbox' as const, agent: 'codex' as const, model: 'gpt-5.6-codex' } },
-    native: { filePath: '', agents: {}, pipeline: { enabled: true, instructionsMaxBytes: 1, timeouts: {} }, errors: [] },
-    sandcastle: { filePath: '', promotion: 'ask' as const, agents: {}, errors: [] },
+    config: { filePath: '', agents: {}, pipeline: { enabled: true, instructionsMaxBytes: 1, timeouts: {} }, errors: [] },
     errors: [],
   };
   const host = {
     permissionContext: () => undefined,
-    requestPromotion: async () => 'cancelled' as const,
     logger: { log: () => undefined, error: () => undefined },
   };
   const program = compilePipelineV3Definition({
@@ -380,12 +430,11 @@ test('does not integrate a durable checkpoint produced by a read-only node', asy
     workspaceCwd: '/repo',
     resolvedCatalog: {
       agents: {},
-      native: { filePath: '', agents: {}, pipeline: { enabled: true, instructionsMaxBytes: 1, timeouts: {} }, errors: [] },
-      sandcastle: { filePath: '', promotion: 'ask', agents: {}, errors: [] },
+      config: { filePath: '', agents: {}, pipeline: { enabled: true, instructionsMaxBytes: 1, timeouts: {} }, errors: [] },
       errors: [],
     },
     host: {
-      permissionContext: () => undefined, requestPromotion: async () => 'cancelled',
+      permissionContext: () => undefined,
       logger: { log: () => undefined, error: () => undefined },
     },
     sandboxExecutor: async request => { calls.push(request); return result(); },
@@ -423,12 +472,11 @@ test('recovers a durable checkpoint from a terminal-only workspace writer', asyn
     workspaceCwd: '/repo',
     resolvedCatalog: {
       agents: {},
-      native: { filePath: '', agents: {}, pipeline: { enabled: true, instructionsMaxBytes: 1, timeouts: {} }, errors: [] },
-      sandcastle: { filePath: '', promotion: 'ask', agents: {}, errors: [] },
+      config: { filePath: '', agents: {}, pipeline: { enabled: true, instructionsMaxBytes: 1, timeouts: {} }, errors: [] },
       errors: [],
     },
     host: {
-      permissionContext: () => undefined, requestPromotion: async () => 'cancelled',
+      permissionContext: () => undefined,
       logger: { log: () => undefined, error: () => undefined },
     },
     sandboxExecutor: async request => {
@@ -479,13 +527,11 @@ test('rejects a persisted active sandbox divergence without relaunching, deletin
     workspaceCwd: '/repo',
     resolvedCatalog: {
       agents: {},
-      native: { filePath: '', agents: {}, pipeline: { enabled: true, instructionsMaxBytes: 1, timeouts: {} }, errors: [] },
-      sandcastle: { filePath: '', promotion: 'ask', agents: {}, errors: [] },
+      config: { filePath: '', agents: {}, pipeline: { enabled: true, instructionsMaxBytes: 1, timeouts: {} }, errors: [] },
       errors: [],
     },
     host: {
       permissionContext: () => undefined,
-      requestPromotion: async () => 'cancelled',
       logger: { log: () => undefined, error: () => undefined },
     },
     sandboxExecutor: async request => {

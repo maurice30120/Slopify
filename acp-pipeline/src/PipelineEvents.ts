@@ -20,7 +20,7 @@ export interface PipelineStatusEvent {
   branchId?: string;
   role?: string;
   agentName?: string;
-  implementerUsesSandcastle?: boolean;
+  implementerUsesSandbox?: boolean;
 }
 
 export interface PipelinePauseEvent {
@@ -32,7 +32,7 @@ export interface PipelinePauseEvent {
   stepId: string;
   role?: string;
   agentName?: string;
-  implementerUsesSandcastle?: boolean;
+  implementerUsesSandbox?: boolean;
   revised?: boolean;
 }
 

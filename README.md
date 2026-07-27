@@ -31,6 +31,9 @@ npm run slopify -- run <pipeline> "<prompt>"
 - `acp-workspace` : chargement de la configuration du workspace ;
 - `acp-pipeline` : compilation et exécution des pipelines ;
 - `acp-runtime` : hôtes d'agents ACP ;
-- `acp-sandcastle` : intégration Sandcastle.
+- `acp-sandbox` : exécution Codex isolée avec Docker Sandbox et Promotion Git.
+
+`slopify run` accepte `--keep-sandboxes` pour conserver les environnements et
+afficher les commandes d’inspection après le run.
 
 Lancer toute la suite avec `npm test`.

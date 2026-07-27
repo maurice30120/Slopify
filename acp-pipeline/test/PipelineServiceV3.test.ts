@@ -17,7 +17,7 @@ test("PipelineService runs a v3 program through PipelineRuntime with two approva
     {
       getPipelinePrograms: () => [program],
       getPipelineProgramForAgent: name => name === program.title ? program : null,
-      getAgentConfigs: () => ({ Codex: {}, "Vibe Sandcastle": {} }),
+      getAgentConfigs: () => ({ Codex: {}, "Codex Sandbox": {} }),
       createSession: createFakeSessionFactory(async input => {
         calls.push(input);
         if (input.node.agent === "Codex") {
@@ -48,7 +48,7 @@ test("PipelineService runs a v3 program through PipelineRuntime with two approva
       "Write spec for approved plan",
       "Implement approved delivery",
     ]);
-    assert.deepEqual(calls.map(call => call.node.agent), ["Codex", "Vibe Sandcastle"]);
+    assert.deepEqual(calls.map(call => call.node.agent), ["Codex", "Codex Sandbox"]);
   } finally {
     await service.dispose();
   }
@@ -61,7 +61,7 @@ test("PipelineService v3 execution requires AgentNodeSession and exposes no runA
     {
       getPipelinePrograms: () => [program],
       getPipelineProgramForAgent: name => name === program.title ? program : null,
-      getAgentConfigs: () => ({ Codex: {}, "Vibe Sandcastle": {} }),
+      getAgentConfigs: () => ({ Codex: {}, "Codex Sandbox": {} }),
     },
   );
 
@@ -121,7 +121,7 @@ test("PipelineService cancel clears active v3 runtime sessions", async () => {
     {
       getPipelinePrograms: () => [program],
       getPipelineProgramForAgent: name => name === program.title ? program : null,
-      getAgentConfigs: () => ({ Codex: {}, "Vibe Sandcastle": {} }),
+      getAgentConfigs: () => ({ Codex: {}, "Codex Sandbox": {} }),
       createSession: createFakeSessionFactory(async () => "spec artifact"),
     },
   );
@@ -146,7 +146,7 @@ test("PipelineService calls onPipelineStart only for a new v3 pipeline run", asy
     {
       getPipelinePrograms: () => [program],
       getPipelineProgramForAgent: name => name === program.title ? program : null,
-      getAgentConfigs: () => ({ Codex: {}, "Vibe Sandcastle": {} }),
+      getAgentConfigs: () => ({ Codex: {}, "Codex Sandbox": {} }),
       onPipelineStart: input => starts.push(`${input.sessionId}:${input.program.id}:${input.workspaceCwd}`),
       createSession: createFakeSessionFactory(async input => {
         if (input.node.agent === "Codex") {
@@ -175,7 +175,7 @@ test("PipelineService projects v3 pause rejection as rejected", async () => {
     {
       getPipelinePrograms: () => [program],
       getPipelineProgramForAgent: name => name === program.title ? program : null,
-      getAgentConfigs: () => ({ Codex: {}, "Vibe Sandcastle": {} }),
+      getAgentConfigs: () => ({ Codex: {}, "Codex Sandbox": {} }),
       createSession: createFakeSessionFactory(async () => "spec artifact"),
     },
   );
@@ -281,7 +281,7 @@ function createTwoApprovalProgram(): CompiledPipelineProgram {
       },
       {
         id: "implementation",
-        agent: "Vibe Sandcastle",
+        agent: "Codex Sandbox",
         prompt: "Implement {{inputs.delivery}}",
         needs: ["delivery_approval"],
         inputs: [{ name: "delivery", from: "delivery_approval.approved", type: "acp.ticket-graph/v1", format: "markdown" }],
@@ -294,7 +294,7 @@ function createTwoApprovalProgram(): CompiledPipelineProgram {
         output: { name: "result", type: "acp.implementation-result/v1", format: "markdown" },
       },
     ],
-  }, { Codex: {}, "Vibe Sandcastle": {} }).program!;
+  }, { Codex: {}, "Codex Sandbox": {} }).program!;
 }
 
 function createSingleAgentProgram(): CompiledPipelineProgram {

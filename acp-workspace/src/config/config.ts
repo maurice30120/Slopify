@@ -7,21 +7,12 @@ import type {
   AgentCatalog,
   AgentConfigEntry,
   SandboxAgentConfig,
-  SandcastleAgentConfig,
-  SandcastleConfig,
-  SandcastleEffort,
-  SandcastlePromotion,
-  SandcastleProvider,
 } from '../types.js';
 
 const CONFIG_PATH = '.acp/acp-agents.json';
-const SANDCASTLE_CONFIG_PATH = '.acp/.sandcastle/config.json';
+const LEGACY_CONFIG_PATH = '.acp/.sandcastle/config.json';
 const DEFAULT_INSTRUCTIONS_MAX_BYTES = 256 * 1024;
-const SANDCASTLE_PROVIDERS = new Set<string>(['codex', 'cursor', 'pi', 'vibe']);
-const SANDCASTLE_EFFORTS = new Set<string>(['low', 'medium', 'high', 'xhigh']);
-const SANDCASTLE_PROMOTIONS = new Set<string>(['ask', 'autoApply', 'autoReject']);
-const MIN_SANDCASTLE_MAX_ITERATIONS = 1;
-const MAX_SANDCASTLE_MAX_ITERATIONS = 20;
+const SANDBOX_EFFORTS = new Set<string>(['low', 'medium', 'high', 'xhigh']);
 const TIMEOUT_KEYS = [
   'initializeMs',
   'newSessionMs',
@@ -98,74 +89,15 @@ export function parseAcpConfig(text: string, filePath = CONFIG_PATH): AcpRuntime
   };
 }
 
-export function loadSandcastleConfig(workspaceCwd: string, configRoot = workspaceCwd): SandcastleConfig {
-  const filePath = path.join(configRoot, SANDCASTLE_CONFIG_PATH);
-  if (!fs.existsSync(filePath)) {
-    return emptySandcastleConfig(filePath, []);
-  }
-
-  try {
-    return parseSandcastleConfig(fs.readFileSync(filePath, 'utf8'), filePath);
-  } catch (e: unknown) {
-    return emptySandcastleConfig(filePath, [`Failed to read Sandcastle config: ${formatError(e)}`]);
-  }
-}
-
-export function parseSandcastleConfig(text: string, filePath = SANDCASTLE_CONFIG_PATH): SandcastleConfig {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(text);
-  } catch (e: unknown) {
-    return emptySandcastleConfig(filePath, [`JSON parse error: ${formatError(e)}`]);
-  }
-
-  if (!isRecord(parsed)) {
-    return emptySandcastleConfig(filePath, ['Sandcastle config must be an object.']);
-  }
-
-  const errors: string[] = [];
-  const promotion = readSandcastlePromotion(parsed.promotion, errors);
-  const agents: Record<string, SandcastleAgentConfig> = {};
-  const agentsValue = parsed.agents;
-
-  if (!isRecord(agentsValue)) {
-    errors.push('agents must be an object.');
-  } else {
-    for (const [name, value] of Object.entries(agentsValue)) {
-      const agent = parseSandcastleAgent(name, value, errors);
-      if (agent) {
-        agents[name] = agent;
-      }
-    }
-  }
-
-  return {
-    filePath,
-    promotion,
-    agents,
-    errors,
-  };
-}
-
 export function loadAgentCatalog(workspaceCwd: string, configRoot = workspaceCwd): AgentCatalog {
-  const native = loadAcpConfig(workspaceCwd, configRoot);
-  const sandcastle = loadSandcastleConfig(workspaceCwd, configRoot);
-  const agents: Record<string, AgentConfigEntry> = { ...native.agents };
-  const errors = [...native.errors, ...sandcastle.errors];
-
-  for (const [name, config] of Object.entries(sandcastle.agents)) {
-    if (native.agents[name]) {
-      errors.push(`Agent "${name}" is declared in both ${CONFIG_PATH} and ${SANDCASTLE_CONFIG_PATH}; remove the duplicate before referencing it from a pipeline.`);
-      delete agents[name];
-      continue;
-    }
-    agents[name] = config;
-  }
+  const config = loadAcpConfig(workspaceCwd, configRoot);
+  const legacyPath = path.join(configRoot, LEGACY_CONFIG_PATH);
+  const errors = [...config.errors];
+  if (fs.existsSync(legacyPath)) errors.push(legacyConfigMigrationError());
 
   return {
-    native,
-    sandcastle,
-    agents,
+    config,
+    agents: { ...config.agents },
     errors,
   };
 }
@@ -174,25 +106,15 @@ export function writeAgentConfigs(
   agents: Record<string, AgentConfigEntry>,
   workspaceCwd: string,
 ): void {
-  const nativePath = path.join(workspaceCwd, CONFIG_PATH);
-  const sandcastlePath = path.join(workspaceCwd, SANDCASTLE_CONFIG_PATH);
-  const nativeAgents: Record<string, NativeAcpAgentConfig | SandboxAgentConfig> = {};
-  const sandcastleAgents: Record<string, SandcastleAgentConfig> = {};
-  for (const [name, config] of Object.entries(agents)) {
-    if (isSandcastleAgentConfig(config)) sandcastleAgents[name] = config;
-    else nativeAgents[name] = config;
-  }
-  const nativeEnvelope = readJsonObject(nativePath);
-  const sandcastleEnvelope = readJsonObject(sandcastlePath);
-  fs.mkdirSync(path.dirname(nativePath), { recursive: true });
-  fs.mkdirSync(path.dirname(sandcastlePath), { recursive: true });
-  fs.writeFileSync(nativePath, JSON.stringify({ ...nativeEnvelope, agents: nativeAgents }, null, 2) + '\n');
-  fs.writeFileSync(sandcastlePath, JSON.stringify({ ...sandcastleEnvelope, agents: sandcastleAgents }, null, 2) + '\n');
+  const filePath = path.join(workspaceCwd, CONFIG_PATH);
+  const envelope = readJsonObject(filePath);
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  fs.writeFileSync(filePath, JSON.stringify({ ...envelope, agents }, null, 2) + '\n');
 }
 
 export function upsertAgentConfig(
   agentName: string,
-  config: NativeAcpAgentConfig | SandboxAgentConfig | SandcastleAgentConfig,
+  config: NativeAcpAgentConfig | SandboxAgentConfig,
   workspaceCwd: string,
 ): void {
   const catalog = loadAgentCatalog(workspaceCwd);
@@ -228,15 +150,6 @@ function emptyConfig(filePath: string, errors: string[]): AcpRuntimeConfig {
   };
 }
 
-function emptySandcastleConfig(filePath: string, errors: string[]): SandcastleConfig {
-  return {
-    filePath,
-    promotion: 'autoApply',
-    agents: {},
-    errors,
-  };
-}
-
 function parseAgent(
   name: string,
   value: unknown,
@@ -255,7 +168,7 @@ function parseAgent(
     const model = readNonEmptyString(value.model, `agents.${name}.model`, errors);
     const effort = value.effort === undefined
       ? undefined
-      : readSandcastleEffort(value.effort, `agents.${name}.effort`, errors);
+      : readSandboxEffort(value.effort, `agents.${name}.effort`, errors);
     if (!model || effort === null) return null;
     return {
       transport: 'sandbox',
@@ -268,7 +181,7 @@ function parseAgent(
   }
 
   if (value.transport === 'sandcastle') {
-    errors.push(`agents.${name}.transport must not be "sandcastle" in ${CONFIG_PATH}; declare Sandcastle agents in ${SANDCASTLE_CONFIG_PATH}.`);
+    errors.push(`agents.${name}.transport "sandcastle" is no longer supported. Migrate manually to { "transport": "sandbox", "agent": "codex", "model": "..." } in ${CONFIG_PATH}.`);
     return null;
   }
 
@@ -301,93 +214,15 @@ function parseAgent(
   };
 }
 
-function parseSandcastleAgent(
-  name: string,
-  value: unknown,
-  errors: string[],
-): SandcastleAgentConfig | null {
-  if (!isRecord(value)) {
-    errors.push(`agents.${name} must be an object.`);
-    return null;
-  }
-
-  if (value.transport !== 'sandcastle') {
-    errors.push(`agents.${name}.transport must be "sandcastle".`);
-    return null;
-  }
-
-  const provider = readSandcastleProvider(value.provider, `agents.${name}.provider`, errors);
-  const model = readNonEmptyString(value.model, `agents.${name}.model`, errors);
-  const effort = value.effort === undefined
-    ? undefined
-    : readSandcastleEffort(value.effort, `agents.${name}.effort`, errors);
-  const env = value.env === undefined ? undefined : readStringRecord(value.env, `agents.${name}.env`, errors);
-  const maxIterations = value.maxIterations === undefined
-    ? undefined
-    : readSandcastleMaxIterations(value.maxIterations, `agents.${name}.maxIterations`, errors);
-
-  if (!provider || !model || effort === null || env === null || maxIterations === null) {
-    return null;
-  }
-
-  return {
-    transport: 'sandcastle',
-    provider,
-    model,
-    ...(effort === undefined ? {} : { effort }),
-    ...(maxIterations === undefined ? {} : { maxIterations }),
-    ...(typeof value.displayName === 'string' ? { displayName: value.displayName } : {}),
-    ...(env === undefined ? {} : { env }),
-    ...(typeof value.skills === 'boolean' ? { skills: value.skills } : {}),
-  };
-}
-
-function readSandcastlePromotion(value: unknown, errors: string[]): SandcastlePromotion {
-  if (typeof value === 'string' && SANDCASTLE_PROMOTIONS.has(value)) {
-    return value as SandcastlePromotion;
-  }
-  errors.push('promotion must be "ask", "autoApply", or "autoReject".');
-  return 'ask';
-}
-
-function readSandcastleProvider(
+function readSandboxEffort(
   value: unknown,
   scope: string,
   errors: string[],
-): SandcastleProvider | null {
-  if (typeof value === 'string' && SANDCASTLE_PROVIDERS.has(value)) {
-    return value as SandcastleProvider;
-  }
-  errors.push(`${scope} must be "codex", "cursor", "pi", or "vibe".`);
-  return null;
-}
-
-function readSandcastleEffort(
-  value: unknown,
-  scope: string,
-  errors: string[],
-): SandcastleEffort | null {
-  if (typeof value === 'string' && SANDCASTLE_EFFORTS.has(value)) {
-    return value as SandcastleEffort;
+): SandboxAgentConfig['effort'] | null {
+  if (typeof value === 'string' && SANDBOX_EFFORTS.has(value)) {
+    return value as SandboxAgentConfig['effort'];
   }
   errors.push(`${scope} must be "low", "medium", "high", or "xhigh".`);
-  return null;
-}
-
-function readSandcastleMaxIterations(
-  value: unknown,
-  scope: string,
-  errors: string[],
-): number | null {
-  if (
-    typeof value === 'number'
-    && Number.isInteger(value)
-    && value >= MIN_SANDCASTLE_MAX_ITERATIONS
-    && value <= MAX_SANDCASTLE_MAX_ITERATIONS
-  ) {
-    return value;
-  }
-  errors.push(`${scope} must be an integer between ${MIN_SANDCASTLE_MAX_ITERATIONS} and ${MAX_SANDCASTLE_MAX_ITERATIONS}.`);
   return null;
 }
 
@@ -500,16 +335,6 @@ function formatError(error: unknown): string {
   return error instanceof Error && error.message ? error.message : String(error);
 }
 
-function formatNativeConfig(config: AcpRuntimeConfig): object {
-  const { filePath, errors, ...rest } = config;
-  return rest;
-}
-
-function formatSandcastleConfig(config: SandcastleConfig): object {
-  const { filePath, errors, ...rest } = config;
-  return rest;
-}
-
-function isSandcastleAgentConfig(config: AgentConfigEntry): config is SandcastleAgentConfig {
-  return (config as SandcastleAgentConfig).transport === 'sandcastle';
+function legacyConfigMigrationError(): string {
+  return `${LEGACY_CONFIG_PATH} is no longer supported because the historical runtime and its providers were removed. Migrate manually in ${CONFIG_PATH} with an agent using transport: "sandbox", agent: "codex", and a model, then remove ${LEGACY_CONFIG_PATH}. No legacy configuration was parsed or applied.`;
 }
