@@ -290,7 +290,7 @@ class PipelineCompletionBuffer {
       message: diagnostic.message,
       at: snapshot.updatedAt,
     };
-    await this.persistTerminalTransition(runId, snapshot, event, true);
+    await this.persistAndEmitTransition(runId, snapshot, event);
   }
 
   async pause(
@@ -305,7 +305,7 @@ class PipelineCompletionBuffer {
       message: pause.content,
       at: snapshot.updatedAt,
     };
-    await this.persistTerminalTransition(runId, snapshot, event, false);
+    await this.persistAndEmitTransition(runId, snapshot, event);
   }
 
   async cancel(
@@ -319,20 +319,19 @@ class PipelineCompletionBuffer {
       message,
       at: snapshot.updatedAt,
     };
-    await this.persistTerminalTransition(runId, snapshot, event, true);
+    await this.persistAndEmitTransition(runId, snapshot, event);
   }
 
-  private async persistTerminalTransition(
+  private async persistAndEmitTransition(
     runId: string,
     snapshot: PipelineRuntimeSnapshot,
     event: PipelineRuntimeEvent,
-    releaseEphemeralRun: boolean,
   ): Promise<void> {
     await this.backingStore.save(snapshot);
     await this.backingStore.appendEvent(runId, event);
     await this.targetOnEvent?.(event);
     this.completions.delete(runId);
-    if (releaseEphemeralRun) {
+    if (event.type !== "paused") {
       await this.releaseEphemeralRun(runId);
     }
   }
