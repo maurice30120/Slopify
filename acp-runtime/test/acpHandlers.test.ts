@@ -103,7 +103,7 @@ test("PermissionHandler cancels when UI is unavailable", async () => {
 	assert.deepEqual(result, { outcome: { outcome: "cancelled" } });
 });
 
-test("PermissionHandler can auto-approve Sandcastle bridge permissions", async () => {
+test("PermissionHandler can auto-approve sandbox bridge permissions", async () => {
 	const handler = new PermissionHandler(() => undefined, { autoApproveAll: true });
 
 	const result = await handler.requestPermission(permissionParams());

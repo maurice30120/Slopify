@@ -4,7 +4,7 @@ Module npm local qui contient l'orchestration pipeline d'ACP Client.
 
 Ce package est volontairement indépendant de VS Code. Il ne lit pas les settings,
 ne parcourt pas le workspace, ne lance pas d'agent concret, ne fait pas de `git diff`
-et ne connait pas Sandcastle. Ces responsabilités restent dans les hôtes, qui les
+et ne connaît aucun runtime d’isolation concret. Ces responsabilités restent dans les hôtes, qui les
 injectent via des callbacks.
 
 ## Ce que le package fournit
@@ -60,8 +60,8 @@ Les hôtes VS Code et Pi jouent le rôle d'adapter. Ils fournissent notamment :
 - la lecture de `.acp/pipelines/*.yaml` ;
 - la lecture de la configuration des agents ;
 - la résolution du workspace courant ;
-- le runner ACP/Sandcastle concret ;
-- la détection d'un agent Sandcastle ;
+- le runner d’agent concret ;
+- la détection des capacités du transport ;
 - la projection des événements vers leur UI.
 
 ## Utilisation

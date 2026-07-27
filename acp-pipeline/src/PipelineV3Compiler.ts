@@ -1,4 +1,4 @@
-import { normalizePipelinePolicy } from "./PipelinePolicy";
+import { normalizePipelinePolicy, type NormalizedPromotionPolicy } from "./PipelinePolicy";
 import { getPipelineInterviewProtocol } from "./PipelineInterviewProtocol";
 import type {
   CompiledPipelineNode,
@@ -36,6 +36,7 @@ export function compilePipelineV3Definition(
 
   const id = readRequiredId(value, "id", "pipeline", errors);
   const title = readRequiredString(value, "title", "pipeline", errors);
+  const promotion = readPipelinePromotion(value.promotion, errors);
   const rawPolicies = readPolicies(value.policies, errors);
   const nodes = readNodes(value.nodes, rawPolicies, agentConfigs, errors);
 
@@ -64,6 +65,7 @@ export function compilePipelineV3Definition(
     version: 3 as const,
     id,
     title,
+    promotion,
     nodes,
     nodesById: new ImmutableMap(nodesById),
     dependentsById: new ImmutableMap(dependents),
@@ -71,6 +73,15 @@ export function compilePipelineV3Definition(
     terminalNodeIds: nodes.filter(node => (dependents.get(node.id) ?? []).length === 0).map(node => node.id).sort(),
   });
   return { program, errors: [] };
+}
+
+function readPipelinePromotion(value: unknown, errors: string[]): NormalizedPromotionPolicy {
+  if (value === undefined) return "discard";
+  if (value === "discard" || value === "ask" || value === "auto-apply" || value === "auto-reject") {
+    return value;
+  }
+  errors.push('pipeline promotion must be "discard", "ask", "auto-apply", or "auto-reject".');
+  return "discard";
 }
 
 function readNodes(

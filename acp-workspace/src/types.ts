@@ -1,20 +1,8 @@
 import type {
-  SandcastleAgentConfig,
-  SandcastleEffort,
-  SandcastlePromotion,
-  SandcastleProvider,
-} from '@acp-client/sandcastle';
-import type {
   PipelineChangeSetPreview,
   SandboxAgentConfig,
 } from '@acp-client/sandbox';
 
-export type {
-  SandcastleAgentConfig,
-  SandcastleEffort,
-  SandcastlePromotion,
-  SandcastleProvider,
-} from '@acp-client/sandcastle';
 export type { SandboxAgentConfig } from '@acp-client/sandbox';
 
 export interface NativeAcpAgentConfig {
@@ -29,7 +17,7 @@ export interface NativeAcpAgentConfig {
   skills?: boolean;
 }
 
-export type AgentConfigEntry = NativeAcpAgentConfig | SandboxAgentConfig | SandcastleAgentConfig;
+export type AgentConfigEntry = NativeAcpAgentConfig | SandboxAgentConfig;
 
 export interface RuntimeTimeoutConfig {
   initializeMs?: number;
@@ -54,16 +42,8 @@ export interface AcpRuntimeConfig {
   errors: string[];
 }
 
-export interface SandcastleConfig {
-  filePath: string;
-  promotion: SandcastlePromotion;
-  agents: Record<string, SandcastleAgentConfig>;
-  errors: string[];
-}
-
 export interface AgentCatalog {
-  native: AcpRuntimeConfig;
-  sandcastle: SandcastleConfig;
+  config: AcpRuntimeConfig;
   agents: Record<string, AgentConfigEntry>;
   errors: string[];
 }
@@ -85,28 +65,13 @@ export interface RuntimePermissionContext {
  */
 export interface WorkspaceRuntimeHost {
   permissionContext(): RuntimePermissionContext | undefined;
-  requestPromotion(request: SandcastlePromotionRequest): Promise<SandcastlePromotionDecision>;
   requestPipelinePromotion?(
     request: PipelineChangeSetPromotionRequest,
-  ): Promise<SandcastlePromotionDecision>;
+  ): Promise<SandboxPromotionDecision>;
   logger: Logger;
 }
 
-export type SandcastlePromotionDecision = 'approve' | 'reject' | 'cancelled';
-
-export interface SandcastlePromotionRequest {
-  agentName: string;
-  sessionId: string;
-  preview: SandcastlePreview;
-}
-
-export interface SandcastlePreview {
-  diff: string;
-  filesChanged: number;
-  branch: string;
-  baseRef: string;
-  worktreePath: string;
-}
+export type SandboxPromotionDecision = 'approve' | 'reject' | 'cancelled';
 
 export interface PipelineChangeSetPromotionRequest {
   runId: string;

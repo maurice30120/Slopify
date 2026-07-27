@@ -1,6 +1,23 @@
 import type { PromotionPolicy } from './gitPromotion.js';
 
 export {
+  DockerSandboxAcpBridgeAgent,
+  SandboxAcpExtensionAgent,
+  type DockerSandboxAcpBridgeOptions,
+  type SandboxBridgeFailure,
+  type SandboxBridgePreviewResponse,
+} from './acpBridge.js';
+
+export {
+  SANDBOX_EXTENSION_METHODS,
+  SandboxAcpExtensionHandler,
+  isSandboxExtensionMethod,
+  type SandboxExtensionHandler,
+  type SandboxExtensionHandlers,
+  type SandboxExtensionMethod,
+} from './extensions.js';
+
+export {
   GitPromotion,
   IntegrationConflictError,
   PROMOTION_POLICIES,

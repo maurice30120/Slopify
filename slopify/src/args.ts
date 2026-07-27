@@ -135,7 +135,7 @@ export function formatHelp(): string {
     '  slopify run <pipeline-name> <prompt> [--cwd <path>] [--yes] [--keep-sandboxes] [--json] [--verbose]',
     '  slopify resume <run-id> [--cwd <path>] [--yes] [--keep-sandboxes] [--json] [--verbose]',
     '',
-    'The pipeline selects every ACP or Sandcastle agent used by its nodes.',
+    'The pipeline selects every native ACP or Docker Sandbox Codex agent used by its nodes.',
     'There is intentionally no --agent option.',
     '--keep-sandboxes preserves every Docker Sandbox created by the run for local diagnostics.',
   ].join('\n');
