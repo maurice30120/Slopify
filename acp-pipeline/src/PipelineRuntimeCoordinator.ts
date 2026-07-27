@@ -5,6 +5,7 @@ import {
   type PipelineRuntimeOptions,
   type PipelineRuntimeStartOptions,
 } from "./PipelineRuntime";
+import { InMemoryPipelineRunStore } from "./PipelineRunStore";
 import type {
   PipelineChangeSetFinalizationInput,
   PipelineChangeSetFinalizationResult,
@@ -110,7 +111,9 @@ export class PipelineRuntime extends CorePipelineRuntime {
 
   override async cancel(runId: string): Promise<PipelineRuntimeResult> {
     try {
-      return await super.cancel(runId);
+      const result = await super.cancel(runId);
+      await this.completionBuffer.releaseEphemeralRun(runId);
+      return result;
     } finally {
       this.cleanupRun(runId);
     }
@@ -122,6 +125,7 @@ export class PipelineRuntime extends CorePipelineRuntime {
   ): Promise<PipelineRuntimeResult> {
     if (result.status !== "completed") {
       if (result.status !== "paused") {
+        await this.completionBuffer.releaseEphemeralRun(result.runId);
         this.cleanupRun(result.runId);
       }
       return result;
@@ -204,39 +208,43 @@ export class PipelineRuntime extends CorePipelineRuntime {
   }
 }
 
+type CompletionDeliveryPhase = "buffered" | "snapshot_persisted" | "event_persisted" | "event_emitted";
+
 interface BufferedCompletion {
   snapshot?: PipelineRuntimeSnapshot;
   event?: PipelineRuntimeEvent;
+  phase: CompletionDeliveryPhase;
 }
 
 class PipelineCompletionBuffer {
   private readonly completions = new Map<string, BufferedCompletion>();
-  readonly store?: PipelineRunStore;
+  private readonly backingStore: PipelineRunStore;
+  private readonly fallbackStore?: InMemoryPipelineRunStore;
+  readonly store: PipelineRunStore;
 
   constructor(
-    private readonly targetStore: PipelineRunStore | undefined,
+    targetStore: PipelineRunStore | undefined,
     private readonly targetOnEvent: PipelineRuntimeOptions["onEvent"],
   ) {
-    if (!targetStore) {
-      return;
-    }
+    this.fallbackStore = targetStore ? undefined : new InMemoryPipelineRunStore();
+    this.backingStore = targetStore ?? this.fallbackStore!;
     this.store = {
-      create: snapshot => targetStore.create(snapshot),
-      load: runId => targetStore.load(runId),
-      listResumable: () => targetStore.listResumable(),
+      create: snapshot => this.backingStore.create(snapshot),
+      load: runId => this.backingStore.load(runId),
+      listResumable: () => this.backingStore.listResumable(),
       save: async snapshot => {
         if (snapshot.status === "completed") {
           this.completion(snapshot.runId).snapshot = structuredClone(snapshot);
           return;
         }
-        await targetStore.save(snapshot);
+        await this.backingStore.save(snapshot);
       },
       appendEvent: async (runId, event) => {
         if (event.type === "completed") {
           this.completion(runId).event = { ...event };
           return;
         }
-        await targetStore.appendEvent(runId, event);
+        await this.backingStore.appendEvent(runId, event);
       },
     };
   }
@@ -254,14 +262,20 @@ class PipelineCompletionBuffer {
     if (!completion) {
       return;
     }
-    this.completions.delete(runId);
-    if (completion.snapshot) {
-      await this.targetStore?.save(completion.snapshot);
+    if (completion.snapshot && completion.phase === "buffered") {
+      await this.backingStore.save(completion.snapshot);
+      completion.phase = "snapshot_persisted";
     }
-    if (completion.event) {
+    if (completion.event && (completion.phase === "buffered" || completion.phase === "snapshot_persisted")) {
+      await this.backingStore.appendEvent(runId, completion.event);
+      completion.phase = "event_persisted";
+    }
+    if (completion.event && completion.phase === "event_persisted") {
       await this.targetOnEvent?.(completion.event);
-      await this.targetStore?.appendEvent(runId, completion.event);
+      completion.phase = "event_emitted";
     }
+    this.completions.delete(runId);
+    await this.releaseEphemeralRun(runId);
   }
 
   async fail(
@@ -269,8 +283,6 @@ class PipelineCompletionBuffer {
     snapshot: PipelineRuntimeSnapshot,
     diagnostic: PipelineRuntimeDiagnostic,
   ): Promise<void> {
-    this.completions.delete(runId);
-    await this.targetStore?.save(snapshot);
     const event: PipelineRuntimeEvent = {
       runId,
       type: "failed",
@@ -278,8 +290,7 @@ class PipelineCompletionBuffer {
       message: diagnostic.message,
       at: snapshot.updatedAt,
     };
-    await this.targetOnEvent?.(event);
-    await this.targetStore?.appendEvent(runId, event);
+    await this.persistAndEmitTransition(runId, snapshot, event);
   }
 
   async pause(
@@ -287,8 +298,6 @@ class PipelineCompletionBuffer {
     snapshot: PipelineRuntimeSnapshot,
     pause: NonNullable<PipelineRuntimeSnapshot["pendingPause"]>,
   ): Promise<void> {
-    this.completions.delete(runId);
-    await this.targetStore?.save(snapshot);
     const event: PipelineRuntimeEvent = {
       runId,
       type: "paused",
@@ -296,8 +305,7 @@ class PipelineCompletionBuffer {
       message: pause.content,
       at: snapshot.updatedAt,
     };
-    await this.targetOnEvent?.(event);
-    await this.targetStore?.appendEvent(runId, event);
+    await this.persistAndEmitTransition(runId, snapshot, event);
   }
 
   async cancel(
@@ -305,16 +313,27 @@ class PipelineCompletionBuffer {
     snapshot: PipelineRuntimeSnapshot,
     message: string,
   ): Promise<void> {
-    this.completions.delete(runId);
-    await this.targetStore?.save(snapshot);
     const event: PipelineRuntimeEvent = {
       runId,
       type: "cancelled",
       message,
       at: snapshot.updatedAt,
     };
+    await this.persistAndEmitTransition(runId, snapshot, event);
+  }
+
+  private async persistAndEmitTransition(
+    runId: string,
+    snapshot: PipelineRuntimeSnapshot,
+    event: PipelineRuntimeEvent,
+  ): Promise<void> {
+    await this.backingStore.save(snapshot);
+    await this.backingStore.appendEvent(runId, event);
     await this.targetOnEvent?.(event);
-    await this.targetStore?.appendEvent(runId, event);
+    this.completions.delete(runId);
+    if (event.type !== "paused") {
+      await this.releaseEphemeralRun(runId);
+    }
   }
 
   private completion(runId: string): BufferedCompletion {
@@ -322,9 +341,13 @@ class PipelineCompletionBuffer {
     if (existing) {
       return existing;
     }
-    const created: BufferedCompletion = {};
+    const created: BufferedCompletion = { phase: "buffered" };
     this.completions.set(runId, created);
     return created;
+  }
+
+  async releaseEphemeralRun(runId: string): Promise<void> {
+    await this.fallbackStore?.delete(runId);
   }
 }
 
@@ -354,7 +377,7 @@ function integrationConflictPause(error: PipelineIntegrationConflictError): NonN
       "Fichiers en conflit:",
       fileLines,
       "",
-      "Aucun changement n'a été appliqué au workspace hôte.",
+      "Aucun changement n'a été transféré vers le workspace hôte.",
       "Aucune résolution automatique ni Promotion n'a eu lieu.",
       "",
       `Approuver pour relancer uniquement le nœud ${conflict.retryNodeId}.`,

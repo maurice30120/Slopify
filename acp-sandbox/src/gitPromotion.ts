@@ -58,7 +58,7 @@ export class IntegrationConflictError extends Error {
       .join(', ');
     const files = conflict.files.length > 0 ? conflict.files.join(', ') : 'unknown files';
     super(
-      `Integration Conflict while applying Agent Checkpoint "${conflict.incomingCheckpoint.nodeId}" `
+      `Integration Conflict while integrating Agent Checkpoint "${conflict.incomingCheckpoint.nodeId}" `
       + `attempt ${conflict.incomingCheckpoint.attempt}. Checkpoints: ${checkpoints}. Files: ${files}.`,
     );
     this.name = 'IntegrationConflictError';

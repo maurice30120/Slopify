@@ -42,6 +42,12 @@ export class InMemoryPipelineRunStore implements PipelineRunStore {
   async readEvents(runId: string): Promise<PipelineRuntimeEvent[]> {
     return [...(this.events.get(runId) ?? [])];
   }
+
+  /** Releases the snapshot and event history for an ephemeral terminal run. */
+  async delete(runId: string): Promise<void> {
+    this.snapshots.delete(runId);
+    this.events.delete(runId);
+  }
 }
 
 export class FilePipelineRunStore implements PipelineRunStore {

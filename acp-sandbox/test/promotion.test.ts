@@ -3,7 +3,6 @@ import test from 'node:test';
 
 import {
   GitPromotion,
-  IntegrationConflictError,
   PROMOTION_POLICIES,
   type AgentCheckpointResult,
   type PipelineChangeSet,
@@ -163,12 +162,13 @@ test('reports an Integration Conflict without publishing or mutating the host wo
       checkpoints: [checkpoint('a'), checkpoint('b')],
     }),
     (error: unknown) => {
-      assert.ok(error instanceof IntegrationConflictError);
+      assert.equal((error as { code?: string }).code, 'integration_conflict');
       assert.deepEqual(
-        error.conflict.checkpoints.map(item => `${item.nodeId}#${item.attempt}`),
+        (error as { conflict: { checkpoints: AgentCheckpointResult['checkpoint'][] } })
+          .conflict.checkpoints.map(item => `${item.nodeId}#${item.attempt}`),
         ['a#1', 'b#1'],
       );
-      assert.deepEqual(error.conflict.files, ['src/shared.ts']);
+      assert.deepEqual((error as { conflict: { files: string[] } }).conflict.files, ['src/shared.ts']);
       return true;
     },
   );

@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-import { PipelineIntegrationConflictError, compilePipelineV3Definition } from '@acp-client/pipeline';
+import { compilePipelineV3Definition } from '@acp-client/pipeline';
 import type { SubprocessRequest, SubprocessResult } from '@acp-client/sandbox';
 import { createWorkspaceRuntime } from '../src/index.js';
 
@@ -188,26 +188,14 @@ test('integrates the highest checkpoint attempt and cleans up superseded attempt
 
 test('preserves valid checkpoints across an Integration Conflict and replaces only the retried node attempt', async () => {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'acp-workspace-conflict-retry-'));
+  fs.mkdirSync(path.join(cwd, '.acp'), { recursive: true });
+  fs.writeFileSync(path.join(cwd, '.acp', 'acp-agents.json'), JSON.stringify({ agents: {
+    Isolated: { transport: 'sandbox', agent: 'codex', model: 'gpt-5.6-codex' },
+  } }));
   const calls: SubprocessRequest[] = [];
   let integrationRound = 0;
   const runtime = createWorkspaceRuntime({
     workspaceCwd: cwd,
-    resolvedCatalog: {
-      agents: { Isolated: { transport: 'sandbox', agent: 'codex', model: 'gpt-5.6-codex' } },
-      native: {
-        filePath: path.join(cwd, '.acp', 'acp-agents.json'),
-        agents: {},
-        pipeline: { enabled: true, instructionsMaxBytes: 256 * 1024, timeouts: {} },
-        errors: [],
-      },
-      sandcastle: {
-        filePath: path.join(cwd, '.acp', '.sandcastle', 'config.json'),
-        promotion: 'ask',
-        agents: {},
-        errors: [],
-      },
-      errors: [],
-    },
     host: {
       permissionContext: () => undefined,
       requestPromotion: async () => 'cancelled',
@@ -287,8 +275,8 @@ test('preserves valid checkpoints across an Integration Conflict and replaces on
   await assert.rejects(
     runtime.runAgent.finalizePipelineChangeSet!({ runId: 'run-conflict-retry', program }),
     (error: unknown) => {
-      assert.ok(error instanceof PipelineIntegrationConflictError);
-      assert.equal(error.conflict.retryNodeId, 'b');
+      assert.equal((error as { code?: string }).code, 'integration_conflict');
+      assert.equal((error as { conflict: { retryNodeId: string } }).conflict.retryNodeId, 'b');
       return true;
     },
   );

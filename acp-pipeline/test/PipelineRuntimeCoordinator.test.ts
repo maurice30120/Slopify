@@ -233,7 +233,7 @@ test("an Integration Conflict pauses finalization and approval retries only the 
   assert.match(paused.snapshot.pendingPause?.content ?? "", /a, tentative 1/);
   assert.match(paused.snapshot.pendingPause?.content ?? "", /b, tentative 1/);
   assert.match(paused.snapshot.pendingPause?.content ?? "", /src\/shared\.ts/);
-  assert.match(paused.snapshot.pendingPause?.content ?? "", /Aucun changement n'a été appliqué au workspace hôte/);
+  assert.match(paused.snapshot.pendingPause?.content ?? "", /Aucun changement n'a été transféré vers le workspace hôte/);
   assert.deepEqual(terminalEvents, ["paused"]);
   assert.equal((await store.load(paused.runId))?.status, "paused");
 
@@ -253,6 +253,138 @@ test("an Integration Conflict pauses finalization and approval retries only the 
     ["a", "b", "c"],
   );
   assert.deepEqual(terminalEvents, ["paused", "completed"]);
+});
+
+test("an Integration Conflict remains retryable without a persistent run store", async () => {
+  const program = multiAgentProgram();
+  let finalization = 0;
+  const adapter = successfulAdapter(async input => {
+    finalization += 1;
+    if (finalization === 1) {
+      throw new PipelineIntegrationConflictError({
+        runId: input.runId,
+        retryNodeId: "b",
+        checkpoints: [
+          { nodeId: "a", attempt: 1, commit: "a-1", ref: "refs/checkpoints/a-1" },
+          { nodeId: "b", attempt: 1, commit: "b-1", ref: "refs/checkpoints/b-1" },
+        ],
+        files: ["src/shared.ts"],
+      });
+    }
+    return noChangesResult(input);
+  });
+  const runtime = new PipelineRuntime(adapter, {
+    runIdFactory: () => "run-in-memory-integration-conflict",
+  });
+
+  const paused = await runtime.start(program);
+  assert.equal(paused.status, "paused");
+
+  const completed = await runtime.resume(paused.runId, {
+    pauseId: paused.status === "paused" ? paused.pause.id : "unreachable",
+    kind: "approve",
+  });
+
+  assert.equal(completed.status, "completed");
+  assert.equal(finalization, 2);
+});
+
+test("completed runs do not remain retained by the fallback store", async () => {
+  const program = multiAgentProgram();
+  const adapterWithFinalizer = successfulAdapter(async input => noChangesResult(input));
+  const adapter: PipelineRuntimeAdapter = {
+    createSession: adapterWithFinalizer.createSession,
+  };
+  const runtime = new PipelineRuntime(adapter, {
+    runIdFactory: () => "run-ephemeral-completion",
+  });
+
+  const completed = await runtime.start(program);
+
+  assert.equal(completed.status, "completed");
+  assert.equal(await runtime.inspect(completed.runId), null);
+});
+
+test("failed runs do not remain retained by the fallback store", async () => {
+  const program = multiAgentProgram();
+  const adapter: PipelineRuntimeAdapter = {
+    async createSession({ runId, node }) {
+      return {
+        runId,
+        nodeId: node.id,
+        async send(): Promise<PipelineNodeExecutionResult> {
+          return { code: "node_failed", message: "node failed", retryable: false };
+        },
+        async cancel() {},
+        async close() {},
+      };
+    },
+  };
+  const runtime = new PipelineRuntime(adapter, {
+    runIdFactory: () => "run-ephemeral-failure",
+  });
+
+  const failed = await runtime.start(program);
+
+  assert.equal(failed.status, "failed");
+  assert.equal(await runtime.inspect(failed.runId), null);
+});
+
+test("cancelled runs do not remain retained by the fallback store", async () => {
+  const program = multiAgentProgram();
+  const adapter = successfulAdapter(async input => {
+    throw new PipelineIntegrationConflictError({
+      runId: input.runId,
+      retryNodeId: "b",
+      checkpoints: [
+        { nodeId: "a", attempt: 1, commit: "a-1", ref: "refs/checkpoints/a-1" },
+        { nodeId: "b", attempt: 1, commit: "b-1", ref: "refs/checkpoints/b-1" },
+      ],
+      files: ["src/shared.ts"],
+    });
+  });
+  const runtime = new PipelineRuntime(adapter, {
+    runIdFactory: () => "run-ephemeral-cancellation",
+  });
+
+  const paused = await runtime.start(program);
+  assert.equal(paused.status, "paused");
+
+  const cancelled = await runtime.cancel(paused.runId);
+
+  assert.equal(cancelled.status, "cancelled");
+  assert.equal(await runtime.inspect(cancelled.runId), null);
+});
+
+test("persists a completed run before notifying a failing observer", async () => {
+  const program = multiAgentProgram();
+  const store = new InMemoryPipelineRunStore();
+  const adapterWithFinalizer = successfulAdapter(async input => noChangesResult(input));
+  const adapter: PipelineRuntimeAdapter = {
+    createSession: adapterWithFinalizer.createSession,
+  };
+  const runtime = new PipelineRuntime(adapter, {
+    runIdFactory: () => "run-failing-completed-observer",
+    store,
+    onEvent: event => {
+      if (event.type === "completed") {
+        throw new Error("completed observer unavailable");
+      }
+    },
+  });
+
+  await assert.rejects(
+    runtime.start(program),
+    /completed observer unavailable/,
+  );
+
+  assert.equal((await store.load("run-failing-completed-observer"))?.status, "completed");
+  assert.deepEqual(
+    (await store.readEvents("run-failing-completed-observer"))
+      .map(event => event.type)
+      .filter(type => type === "completed"),
+    ["completed"],
+  );
 });
 
 test("a rejected Promotion cancels the run without emitting completed", async () => {
