@@ -18,11 +18,18 @@ export interface CliRunCommand extends CliCommonOptions {
   keepSandboxes?: boolean;
 }
 
+export interface CliResumeCommand extends CliCommonOptions {
+  kind: 'resume';
+  runId: string;
+  yes: boolean;
+  keepSandboxes?: boolean;
+}
+
 export interface CliHelpCommand {
   kind: 'help';
 }
 
-export type CliCommand = CliListCommand | CliRunCommand | CliHelpCommand;
+export type CliCommand = CliListCommand | CliRunCommand | CliResumeCommand | CliHelpCommand;
 
 export function parseCliArgs(argv: string[], baseCwd = process.cwd()): CliCommand {
   if (argv.length === 0 || argv.includes('--help') || argv.includes('-h')) {
@@ -30,7 +37,7 @@ export function parseCliArgs(argv: string[], baseCwd = process.cwd()): CliComman
   }
 
   const kind = argv[0];
-  if (kind !== 'list' && kind !== 'run') {
+  if (kind !== 'list' && kind !== 'run' && kind !== 'resume') {
     throw new Error(`Unknown command "${kind}".\n\n${formatHelp()}`);
   }
 
@@ -90,6 +97,15 @@ export function parseCliArgs(argv: string[], baseCwd = process.cwd()): CliComman
     return { kind, cwd, json, verbose };
   }
 
+
+  if (kind === 'resume') {
+    const runId = positional[0]?.trim();
+    if (!runId || positional.length !== 1) {
+      throw new Error('Usage: slopify resume <run-id> [--cwd <path>] [--yes] [--keep-sandboxes] [--json] [--verbose]');
+    }
+    return { kind, runId, cwd, json, verbose, yes, keepSandboxes };
+  }
+
   const pipelineName = positional[0]?.trim();
   const prompt = positional.slice(1).join(' ').trim();
   if (!pipelineName || !prompt) {
@@ -117,6 +133,7 @@ export function formatHelp(): string {
     'Usage:',
     '  slopify list [--cwd <path>] [--json] [--verbose]',
     '  slopify run <pipeline-name> <prompt> [--cwd <path>] [--yes] [--keep-sandboxes] [--json] [--verbose]',
+    '  slopify resume <run-id> [--cwd <path>] [--yes] [--keep-sandboxes] [--json] [--verbose]',
     '',
     'The pipeline selects every ACP or Sandcastle agent used by its nodes.',
     'There is intentionally no --agent option.',

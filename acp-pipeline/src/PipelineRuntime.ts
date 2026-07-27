@@ -13,6 +13,7 @@ import type {
   PipelineArtifact,
   PipelineNodeExecutionFailure,
   PipelineNodeExecutionResult,
+  PipelinePauseSnapshot,
   PipelineResumeDecision,
   PipelineRuntimeAdapter,
   PipelineRuntimeDiagnostic,
@@ -294,6 +295,67 @@ export class PipelineRuntime {
     return { status: "cancelled", runId, snapshot: cloneSnapshot(active.snapshot) };
   }
 
+  async recover(runId: string): Promise<PipelineRuntimeResult> {
+    const active = await this.requireActiveRun(runId);
+    if (active.snapshot.pendingPause) {
+      return {
+        status: "paused",
+        runId,
+        pause: active.snapshot.pendingPause,
+        snapshot: cloneSnapshot(active.snapshot),
+      };
+    }
+    if (active.snapshot.status !== "running") {
+      throw new Error(`Pipeline run "${runId}" is not recoverable from status "${active.snapshot.status}".`);
+    }
+    for (const [nodeId, state] of Object.entries(active.snapshot.nodeStates)) {
+      if (state.status === "running") {
+        active.snapshot.nodeStates[nodeId] = {
+          ...state,
+          status: "pending",
+          attempts: Math.max(0, state.attempts - 1),
+        };
+      }
+    }
+    active.snapshot.updatedAt = this.isoNow();
+    await this.persist(active.snapshot);
+    return this.advance(active);
+  }
+
+  protected async suspendRecoveredRun(
+    runId: string,
+    pause: PipelinePauseSnapshot,
+    update?: (snapshot: PipelineRuntimeSnapshot) => void,
+  ): Promise<PipelineRuntimeResult> {
+    const active = await this.requireActiveRun(runId);
+    active.snapshot.status = "paused";
+    active.snapshot.pendingPause = pause;
+    update?.(active.snapshot);
+    active.snapshot.updatedAt = this.isoNow();
+    await this.persist(active.snapshot);
+    await this.emitRuntimeEvent({ runId, type: "paused", nodeId: pause.nodeId, at: active.snapshot.updatedAt });
+    return { status: "paused", runId, pause, snapshot: cloneSnapshot(active.snapshot) };
+  }
+
+  protected async retryRecoveredRun(runId: string): Promise<PipelineRuntimeResult> {
+    const active = await this.requireActiveRun(runId);
+    active.controller = new AbortController();
+    active.snapshot.status = "running";
+    active.snapshot.pendingPause = undefined;
+    for (const [nodeId, state] of Object.entries(active.snapshot.nodeStates)) {
+      if (state.status === "running") {
+        active.snapshot.nodeStates[nodeId] = {
+          ...state,
+          status: "pending",
+          attempts: Math.max(0, state.attempts - 1),
+        };
+      }
+    }
+    active.snapshot.updatedAt = this.isoNow();
+    await this.persist(active.snapshot);
+    return this.advance(active);
+  }
+
   async inspect(runId: string): Promise<PipelineRuntimeSnapshot | null> {
     const active = this.runs.get(runId);
     if (active) {
@@ -333,6 +395,11 @@ export class PipelineRuntime {
       const completed = await Promise.race(active.nodeTasks.values());
       active.nodeTasks.delete(completed.nodeId);
       if ("thrown" in completed) {
+        active.controller.abort();
+        await this.cancelActiveSessions(active);
+        const peers = [...active.nodeTasks.values()];
+        active.nodeTasks.clear();
+        await Promise.allSettled(peers);
         throw completed.thrown;
       }
       const result = completed.result;
@@ -447,6 +514,8 @@ export class PipelineRuntime {
           prompt,
           inputs,
           signal: active.controller.signal,
+          onSandboxRunState: state => this.persistSandboxRunState(active, state),
+          resumeSandboxRun: this.resumeSandboxRun(active, node.id, attempt),
         });
         if (active.controller.signal.aborted) {
           return { ok: true };
@@ -569,6 +638,8 @@ export class PipelineRuntime {
           prompt,
           inputs,
           signal: active.controller.signal,
+          onSandboxRunState: state => this.persistSandboxRunState(active, state),
+          resumeSandboxRun: this.resumeSandboxRun(active, node.id, attempt),
           replay: isReplay,
         });
         if (!("artifact" in result)) {
@@ -802,6 +873,31 @@ export class PipelineRuntime {
 
   private async persist(snapshot: PipelineRuntimeSnapshot): Promise<void> {
     await this.store?.save(cloneSnapshot(snapshot));
+  }
+
+  private async persistSandboxRunState(
+    active: ActiveRun,
+    state: NonNullable<PipelineRuntimeSnapshot["sandboxRuns"]>[string],
+  ): Promise<void> {
+    if (state.runId !== active.snapshot.runId) {
+      throw new Error(`Sandbox Run "${state.sandboxName}" belongs to run "${state.runId}", not "${active.snapshot.runId}".`);
+    }
+    active.snapshot.sandboxRuns = {
+      ...active.snapshot.sandboxRuns,
+      [state.sandboxName]: cloneJson(state),
+    };
+    active.snapshot.updatedAt = this.isoNow();
+    await this.persist(active.snapshot);
+  }
+
+  private resumeSandboxRun(
+    active: ActiveRun,
+    nodeId: string,
+    attempt: number,
+  ): NonNullable<PipelineRuntimeSnapshot["sandboxRuns"]>[string] | undefined {
+    return Object.values(active.snapshot.sandboxRuns ?? {}).find(state =>
+      state.nodeId === nodeId && state.attempt === attempt
+    );
   }
 
   private recordInterviewHistory(active: ActiveRun, interview: NonNullable<PipelineRuntimeSnapshot["activeInterview"]>): void {

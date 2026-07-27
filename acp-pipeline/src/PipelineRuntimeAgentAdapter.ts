@@ -4,6 +4,7 @@ import {
   mapPolicyToLegacyPermissions,
   mapPolicyToLegacySideEffects,
 } from "./PipelinePolicy";
+import { PipelineSandboxResumeDivergenceError } from "./PipelineAgentRunner";
 import type {
   PipelineAgentRunner,
   PipelineChangeSetFinalizationInput,
@@ -135,6 +136,8 @@ class PipelineRuntimeAgentNodeSession implements AgentNodeSession {
         permissions: mapPolicyToLegacyPermissions(node.policy),
         promotion: node.policy.promotion,
         skills: [...node.skills],
+        onSandboxRunState: input.onSandboxRunState,
+        resumeSandboxRun: input.resumeSandboxRun,
       });
       return {
         artifact: {
@@ -145,6 +148,7 @@ class PipelineRuntimeAgentNodeSession implements AgentNodeSession {
         },
       };
     } catch (e: unknown) {
+      if (e instanceof PipelineSandboxResumeDivergenceError) throw e;
       return {
         code: "agent_failed",
         message: e instanceof Error && e.message ? e.message : String(e),

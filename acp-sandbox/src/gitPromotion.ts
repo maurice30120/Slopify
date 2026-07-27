@@ -410,6 +410,31 @@ export class GitPromotion {
       return { ...request, status: 'no_changes' };
     }
 
+    if (input.policy === 'ask' || input.policy === 'auto-apply') {
+      // Une reprise après le fast-forward ne doit jamais redemander une décision
+      // susceptible de contredire l'état déjà appliqué du workspace.
+      const initialStatus = await this.requireSuccess({
+        command: 'git',
+        args: ['status', '--porcelain=v1'],
+        cwd: input.workspaceCwd,
+        stdin: 'ignore',
+        signal: input.signal,
+      }, 'revalidate the host workspace before Promotion');
+      if (initialStatus.stdout.trim()) {
+        throw new Error('Unable to promote the Pipeline Change Set: the host workspace changed after the sandbox runs. No changes were applied.');
+      }
+      const initialHead = (await this.requireSuccess({
+        command: 'git',
+        args: ['rev-parse', 'HEAD'],
+        cwd: input.workspaceCwd,
+        stdin: 'ignore',
+        signal: input.signal,
+      }, 'revalidate the host Git base before Promotion')).stdout.trim();
+      if (initialHead === input.changeSet.commit) {
+        return { ...request, status: 'applied' };
+      }
+    }
+
     const decision = await this.resolveDecision(input, request);
     if (decision === 'reject') {
       return { ...request, status: 'rejected' };
@@ -447,6 +472,9 @@ export class GitPromotion {
       stdin: 'ignore',
       signal: input.signal,
     }, 'revalidate the host Git base before Promotion')).stdout.trim();
+    if (currentHead === input.changeSet.commit) {
+      return { ...request, status: 'applied' };
+    }
     if (currentHead !== input.changeSet.baseCommit) {
       throw new Error(`Unable to promote the Pipeline Change Set: the host Git base diverged from ${input.changeSet.baseCommit} to ${currentHead || 'an unknown commit'}. No changes were applied.`);
     }

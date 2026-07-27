@@ -10,7 +10,8 @@ import type {
   PipelineChangeSetFinalizationInput,
   PipelineChangeSetFinalizationResult,
 } from "./PipelineAgentRunner";
-import { PipelineIntegrationConflictError } from "./PipelineAgentRunner";
+import { PipelineIntegrationConflictError, PipelineSandboxResumeDivergenceError } from "./PipelineAgentRunner";
+import { mapPolicyToLegacySideEffects } from "./PipelinePolicy";
 import type {
   CompiledPipelineNode,
   CompiledPipelineProgram,
@@ -88,6 +89,27 @@ export class PipelineRuntime extends CorePipelineRuntime {
     decision: PipelineResumeDecision,
   ): Promise<PipelineRuntimeResult> {
     const snapshot = await this.inspect(runId);
+    const resumeDivergence = snapshot?.pendingPause?.sandboxResumeDivergence;
+    if (
+      resumeDivergence
+      && snapshot?.pendingPause?.id === decision.pauseId
+      && decision.kind === "approve"
+    ) {
+      const program = this.programsByRunId.get(runId)
+        ?? this.coordinatedProgramsById.get(snapshot.pipelineId);
+      if (!program) {
+        return super.resume(runId, decision);
+      }
+      if (snapshot.nodeStates[resumeDivergence.nodeId]?.status !== "completed") {
+        return this.runRecoveryAttempt(runId, program, () => this.retryRecoveredRun(runId));
+      }
+      const retrySnapshot = structuredClone(snapshot);
+      retrySnapshot.status = "completed";
+      retrySnapshot.pendingPause = undefined;
+      retrySnapshot.updatedAt = new Date().toISOString();
+      this.completionBuffer.bufferCompletion(retrySnapshot);
+      return this.finalizeTerminalResult({ status: "completed", runId, snapshot: retrySnapshot }, program);
+    }
     const conflict = snapshot?.pendingPause?.integrationConflict;
     if (
       conflict
@@ -119,10 +141,41 @@ export class PipelineRuntime extends CorePipelineRuntime {
     }
   }
 
+  override async recover(runId: string): Promise<PipelineRuntimeResult> {
+    const before = await this.inspect(runId);
+    const program = before
+      ? this.programsByRunId.get(runId) ?? this.coordinatedProgramsById.get(before.pipelineId)
+      : undefined;
+    if (!before) return super.recover(runId);
+    return this.runRecoveryAttempt(runId, program, () => super.recover(runId));
+  }
+
+  private async runRecoveryAttempt(
+    runId: string,
+    program: CompiledPipelineProgram | undefined,
+    attempt: () => Promise<PipelineRuntimeResult>,
+  ): Promise<PipelineRuntimeResult> {
+    try {
+      const result = await attempt();
+      return program ? this.finalizeTerminalResult(result, program) : result;
+    } catch (error: unknown) {
+      if (!(error instanceof PipelineSandboxResumeDivergenceError)) throw error;
+      const pause = sandboxResumeDivergencePause(error);
+      return this.suspendRecoveredRun(runId, pause, snapshot => {
+        const sandboxRun = snapshot.sandboxRuns?.[error.divergence.sandboxName];
+        if (sandboxRun) {
+          sandboxRun.integrationState = "resume_divergence";
+          sandboxRun.resumeDiagnostic = error.divergence.diagnostic;
+        }
+      });
+    }
+  }
+
   private async finalizeTerminalResult(
-    result: PipelineRuntimeResult,
+    initialResult: PipelineRuntimeResult,
     program: CompiledPipelineProgram,
   ): Promise<PipelineRuntimeResult> {
+    let result = initialResult;
     if (result.status !== "completed") {
       if (result.status !== "paused") {
         await this.completionBuffer.releaseEphemeralRun(result.runId);
@@ -138,12 +191,20 @@ export class PipelineRuntime extends CorePipelineRuntime {
     }
 
     try {
-      const changeSet = await this.finalizer({ runId: result.runId, program });
+      const finalizingSnapshot = structuredClone(result.snapshot);
+      for (const sandboxRun of selectedSandboxRuns(finalizingSnapshot, program)) sandboxRun.integrationState = "integrating";
+      result = { ...result, snapshot: finalizingSnapshot };
+      await this.completionBuffer.persistFinalizingSnapshot(finalizingSnapshot);
+      const changeSet = await this.finalizer({ runId: result.runId, program, snapshot: result.snapshot });
       if (!changeSet) {
         await this.completionBuffer.flush(result.runId);
         this.cleanupRun(result.runId);
         return result;
       }
+      const integratedSnapshot = structuredClone(result.snapshot);
+      for (const sandboxRun of selectedSandboxRuns(integratedSnapshot, program)) sandboxRun.integrationState = "integrated";
+      result = { ...result, snapshot: integratedSnapshot };
+      this.completionBuffer.updateCompletionSnapshot(integratedSnapshot);
       if (changeSet.promotion === "rejected" || changeSet.promotion === "cancelled") {
         const snapshot = structuredClone(result.snapshot);
         snapshot.status = "cancelled";
@@ -170,12 +231,35 @@ export class PipelineRuntime extends CorePipelineRuntime {
         changeSet,
       }) as CoordinatedPipelineRuntimeResult;
     } catch (error: unknown) {
+      if (error instanceof PipelineSandboxResumeDivergenceError) {
+        const snapshot = structuredClone(result.snapshot);
+        const pause = sandboxResumeDivergencePause(error);
+        snapshot.status = "paused";
+        snapshot.pendingPause = pause;
+        snapshot.updatedAt = new Date().toISOString();
+        const sandboxRun = snapshot.sandboxRuns?.[error.divergence.sandboxName];
+        if (sandboxRun) {
+          sandboxRun.integrationState = "resume_divergence";
+          sandboxRun.resumeDiagnostic = error.divergence.diagnostic;
+        }
+        await this.completionBuffer.pause(result.runId, snapshot, pause);
+        return { status: "paused", runId: result.runId, pause, snapshot };
+      }
       if (error instanceof PipelineIntegrationConflictError) {
         const snapshot = structuredClone(result.snapshot);
         const pause = integrationConflictPause(error);
         snapshot.status = "paused";
         snapshot.pendingPause = pause;
         snapshot.updatedAt = new Date().toISOString();
+        for (const checkpoint of error.conflict.checkpoints) {
+          const sandboxRun = Object.values(snapshot.sandboxRuns ?? {}).find(run =>
+            run.nodeId === checkpoint.nodeId && run.attempt === checkpoint.attempt
+          );
+          if (sandboxRun) {
+            sandboxRun.integrationState = "integration_conflict";
+            sandboxRun.integrationDiagnostic = { files: [...error.conflict.files] };
+          }
+        }
         await this.completionBuffer.pause(result.runId, snapshot, pause);
         return {
           status: "paused",
@@ -255,6 +339,23 @@ class PipelineCompletionBuffer {
       return;
     }
     await this.targetOnEvent?.(event);
+  }
+
+  bufferCompletion(snapshot: PipelineRuntimeSnapshot): void {
+    const completion = this.completion(snapshot.runId);
+    completion.snapshot = structuredClone(snapshot);
+    completion.event = { runId: snapshot.runId, type: "completed", at: snapshot.updatedAt };
+  }
+
+  updateCompletionSnapshot(snapshot: PipelineRuntimeSnapshot): void {
+    this.completion(snapshot.runId).snapshot = structuredClone(snapshot);
+  }
+
+  async persistFinalizingSnapshot(snapshot: PipelineRuntimeSnapshot): Promise<void> {
+    const durable = structuredClone(snapshot);
+    durable.status = "running";
+    await this.backingStore.save(durable);
+    this.updateCompletionSnapshot(snapshot);
   }
 
   async flush(runId: string): Promise<void> {
@@ -383,6 +484,42 @@ function integrationConflictPause(error: PipelineIntegrationConflictError): NonN
       `Approuver pour relancer uniquement le nœud ${conflict.retryNodeId}.`,
     ].join("\n"),
   };
+}
+
+function sandboxResumeDivergencePause(
+  error: PipelineSandboxResumeDivergenceError,
+): NonNullable<PipelineRuntimeSnapshot["pendingPause"]> {
+  const divergence = error.divergence;
+  return {
+    id: `${divergence.runId}:${divergence.nodeId}:sandbox-resume-divergence:${divergence.attempt}`,
+    nodeId: divergence.nodeId,
+    type: "approval",
+    format: "markdown",
+    sandboxResumeDivergence: divergence,
+    content: [
+      "## Sandbox Run resume suspended",
+      "",
+      divergence.diagnostic,
+      "",
+      "No agent was relaunched, no sandbox was removed, and no Promotion occurred.",
+      "Restore the expected resource, then approve to reconcile again.",
+    ].join("\n"),
+  };
+}
+
+function selectedSandboxRuns(
+  snapshot: PipelineRuntimeSnapshot,
+  program: CompiledPipelineProgram,
+): NonNullable<PipelineRuntimeSnapshot["sandboxRuns"]>[string][] {
+  const latestByNode = new Map<string, NonNullable<PipelineRuntimeSnapshot["sandboxRuns"]>[string]>();
+  for (const sandboxRun of Object.values(snapshot.sandboxRuns ?? {})) {
+    if (!sandboxRun.checkpoint) continue;
+    const node = program.nodesById.get(sandboxRun.nodeId);
+    if (!node || mapPolicyToLegacySideEffects(node.policy) !== "workspace") continue;
+    const current = latestByNode.get(sandboxRun.nodeId);
+    if (!current || sandboxRun.attempt > current.attempt) latestByNode.set(sandboxRun.nodeId, sandboxRun);
+  }
+  return [...latestByNode.values()];
 }
 
 /**

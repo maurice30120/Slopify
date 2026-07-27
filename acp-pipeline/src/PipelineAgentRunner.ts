@@ -9,6 +9,8 @@ import type {
 import type {
 	CompiledPipelineProgram,
 	PipelineArtifact,
+	PipelineRuntimeSnapshot,
+	PipelineSandboxRunSnapshot,
 } from "./PipelineV3Types";
 
 export type PipelineSideEffects = "none" | "workspace";
@@ -93,6 +95,8 @@ export interface PipelineAgentRunInput {
 	permissions?: PipelinePermissions;
 	promotion?: NormalizedPromotionPolicy;
 	skills?: string[];
+	onSandboxRunState?: (state: PipelineSandboxRunSnapshot) => void | Promise<void>;
+	resumeSandboxRun?: PipelineSandboxRunSnapshot;
 }
 
 export interface PipelineChangeSetPreview {
@@ -106,6 +110,7 @@ export interface PipelineChangeSetPreview {
 export interface PipelineChangeSetFinalizationInput {
 	runId: string;
 	program: CompiledPipelineProgram;
+	snapshot?: PipelineRuntimeSnapshot;
 }
 
 export interface PipelineChangeSetFinalizationResult {
@@ -128,6 +133,23 @@ export interface PipelineIntegrationConflict {
 	retryNodeId: string;
 	checkpoints: PipelineIntegrationConflictCheckpoint[];
 	files: string[];
+}
+
+export interface PipelineSandboxResumeDivergence {
+	runId: string;
+	sandboxName: string;
+	nodeId: string;
+	attempt: number;
+	diagnostic: string;
+}
+
+export class PipelineSandboxResumeDivergenceError extends Error {
+	readonly code = "sandbox_resume_divergence";
+
+	constructor(readonly divergence: PipelineSandboxResumeDivergence) {
+		super(divergence.diagnostic);
+		this.name = "PipelineSandboxResumeDivergenceError";
+	}
 }
 
 export class PipelineIntegrationConflictError extends Error {

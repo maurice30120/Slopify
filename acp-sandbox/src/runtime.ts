@@ -7,6 +7,7 @@ import {
   GitPromotion,
   type AgentCheckpoint,
   type AgentCheckpointPreview,
+  type AgentCheckpointResult,
 } from './gitPromotion.js';
 
 export const MINIMUM_SBX_VERSION = '0.35.0';
@@ -55,6 +56,23 @@ export interface SandboxRunInput {
   keepSandbox?: boolean;
   diagnosticsDirectory?: string;
   onSandboxRetained?: (sandbox: RetainedSandbox) => void | Promise<void>;
+  onStateChange?: (state: SandboxRunState) => void | Promise<void>;
+  resumeState?: SandboxRunState;
+}
+
+export interface SandboxRunState {
+  sandboxName: string;
+  sandboxId?: string;
+  runId: string;
+  nodeId: string;
+  attempt: number;
+  baseCommit: string;
+  integrationState: 'sandbox_created' | 'checkpointed';
+  resourceState: 'active' | 'retained' | 'removed';
+  checkpoint?: AgentCheckpointResult;
+  stdout?: string;
+  stderr?: string;
+  diagnosticsPath?: string;
 }
 
 export interface SandboxRunResult {
@@ -65,6 +83,40 @@ export interface SandboxRunResult {
   stderr: string;
   checkpoint: AgentCheckpoint;
   preview: AgentCheckpointPreview;
+}
+
+export interface SandboxResumeSnapshot {
+  workspaceCwd: string;
+  sandboxName: string;
+  sandboxId?: string;
+  baseCommit: string;
+  checkpointCommit?: string;
+}
+
+export type SandboxReconciliationResult =
+  | {
+      status: 'reusable';
+      sandboxName: string;
+      sandboxId?: string;
+      observedCommit: string;
+    }
+  | {
+      status: 'diverged';
+      sandboxName: string;
+      diagnostic: string;
+    }
+  | {
+      status: 'removed';
+      sandboxName: string;
+    };
+
+export class SandboxResumeDivergenceError extends Error {
+  readonly code = 'sandbox_resume_divergence';
+
+  constructor(readonly diagnostic: string) {
+    super(diagnostic);
+    this.name = 'SandboxResumeDivergenceError';
+  }
 }
 
 export interface RetainedSandboxCommands {
@@ -156,7 +208,7 @@ export class DockerSandboxRuntime {
   }
 
   async runCodex(input: SandboxRunInput): Promise<SandboxRunResult> {
-    const sandboxName = stableSandboxName(input.runId, input.nodeId, input.attempt);
+    const sandboxName = input.resumeState?.sandboxName ?? stableSandboxName(input.runId, input.nodeId, input.attempt);
     const execution = createExecutionSignal(input.signal, input.timeoutMs);
     const startedAt = new Date().toISOString();
     let created = false;
@@ -164,27 +216,76 @@ export class DockerSandboxRuntime {
     let stderr = '';
     let terminalStatus: SandboxRunTerminalStatus = 'failed';
     let failure: unknown;
+    let durableState: SandboxRunState | undefined;
 
     try {
       await this.preflightWorkspace(input.workspaceCwd, input.workspaceEffects !== false, execution.signal);
-      await this.requireSuccess({
-        command: 'sbx',
-        args: ['create', '--clone', '--name', sandboxName, 'codex', '.'],
-        cwd: input.workspaceCwd,
-        stdin: 'ignore',
-        signal: execution.signal,
-      }, 'create the Docker Sandbox');
-      created = true;
+      let baseCommit: string;
+      if (input.resumeState) {
+        baseCommit = input.resumeState.baseCommit;
+        if (input.resumeState.resourceState === 'removed' && input.resumeState.checkpoint) {
+          durableState = { ...input.resumeState };
+        } else {
+          const reconciled = await this.reconcileSandbox({
+            workspaceCwd: input.workspaceCwd,
+            sandboxName: input.resumeState.sandboxName,
+            sandboxId: input.resumeState.sandboxId,
+            baseCommit: input.resumeState.baseCommit,
+            checkpointCommit: input.resumeState.checkpoint?.checkpoint.commit,
+          });
+          if (reconciled.status === 'diverged') throw new SandboxResumeDivergenceError(reconciled.diagnostic);
+          created = reconciled.status === 'reusable';
+          durableState = {
+            ...input.resumeState,
+            resourceState: reconciled.status === 'removed' ? 'removed' : input.resumeState.resourceState,
+            ...(reconciled.status === 'reusable' && reconciled.sandboxId ? { sandboxId: reconciled.sandboxId } : {}),
+          };
+        }
+        stdout = durableState.stdout ?? '';
+        stderr = durableState.stderr ?? '';
+      } else {
+        baseCommit = (await this.requireSuccess({
+          command: 'git',
+          args: ['rev-parse', 'HEAD'],
+          cwd: input.workspaceCwd,
+          stdin: 'ignore',
+          signal: execution.signal,
+        }, 'read the host base commit')).stdout.trim();
+        if (!baseCommit) throw new Error('Unable to read the host base commit: git returned an empty commit id.');
+        await this.requireSuccess({
+          command: 'sbx',
+          args: ['create', '--clone', '--name', sandboxName, 'codex', '.'],
+          cwd: input.workspaceCwd,
+          stdin: 'ignore',
+          signal: execution.signal,
+        }, 'create the Docker Sandbox');
+        created = true;
+        const sandboxId = await this.readSandboxId(input.workspaceCwd, sandboxName, execution.signal);
+        durableState = {
+          sandboxName,
+          ...(sandboxId ? { sandboxId } : {}),
+          runId: input.runId,
+          nodeId: input.nodeId,
+          attempt: input.attempt,
+          baseCommit,
+          integrationState: 'sandbox_created',
+          resourceState: 'active',
+          ...(input.diagnosticsDirectory
+            ? { diagnosticsPath: path.join(input.diagnosticsDirectory, `${sandboxName}.json`) }
+            : {}),
+        };
+      }
+      await input.onStateChange?.(durableState);
 
-      const baseCommit = (await this.requireSuccess({
-        command: 'git',
-        args: ['rev-parse', 'HEAD'],
-        cwd: input.workspaceCwd,
-        stdin: 'ignore',
-        signal: execution.signal,
-      }, 'read the host base commit')).stdout.trim();
-      if (!baseCommit) {
-        throw new Error('Unable to read the host base commit: git returned an empty commit id.');
+      if (durableState.checkpoint) {
+        terminalStatus = 'completed';
+        return {
+          ...durableState.checkpoint,
+          ...(durableState.checkpoint.checkpointStatus === 'no_changes' ? { status: 'no_changes' as const } : {}),
+          sandboxName,
+          stdout,
+          stderr,
+        };
       }
 
       const codexArgs = ['exec', sandboxName, 'codex', 'exec', '--dangerously-bypass-approvals-and-sandbox', '--ephemeral', '--json'];
@@ -212,6 +313,14 @@ export class DockerSandboxRuntime {
         attempt: input.attempt,
         signal: execution.signal,
       });
+      durableState = {
+        ...durableState,
+        integrationState: 'checkpointed',
+        checkpoint,
+        stdout,
+        stderr,
+      };
+      await input.onStateChange?.(durableState);
       terminalStatus = 'completed';
       return {
         ...checkpoint,
@@ -267,8 +376,98 @@ export class DockerSandboxRuntime {
           diagnostic.cleanup = await this.cleanupSandbox(input.workspaceCwd, sandboxName);
           await writeSandboxDiagnostic(input.diagnosticsDirectory, diagnostic);
         }
+        if (durableState) {
+          durableState = {
+            ...durableState,
+            resourceState: retained ? 'retained' : 'removed',
+            ...(diagnosticsPath ? { diagnosticsPath } : {}),
+          };
+          await input.onStateChange?.(durableState);
+        }
       }
     }
+  }
+
+  /**
+   * Compare un état durable avec la ressource réellement exposée par Docker.
+   * Cette opération est volontairement en lecture seule : un doute suspend la
+   * reprise et ne crée, ne supprime ni ne promeut jamais implicitement.
+   */
+  async reconcileSandbox(input: SandboxResumeSnapshot): Promise<SandboxReconciliationResult> {
+    const listed = await this.requireSuccess({
+      command: 'sbx',
+      args: ['ls', '--json'],
+      cwd: input.workspaceCwd,
+      stdin: 'ignore',
+    }, 'list Docker Sandboxes for pipeline resume');
+    const resources = parseSandboxList(listed.stdout);
+    const observed = resources.find(resource => resource.name === input.sandboxName);
+    if (!observed) {
+      if (input.checkpointCommit) {
+        return { status: 'removed', sandboxName: input.sandboxName };
+      }
+      return {
+        status: 'diverged',
+        sandboxName: input.sandboxName,
+        diagnostic: `Sandbox resume divergence: ${input.sandboxName} is absent from sbx ls --json.`,
+      };
+    }
+    if (input.sandboxId && observed.id !== input.sandboxId) {
+      return {
+        status: 'diverged',
+        sandboxName: input.sandboxName,
+        diagnostic: `Sandbox identity divergence: observed ${observed.id ?? 'no stable id'}, expected ${input.sandboxId}.`,
+      };
+    }
+
+    const head = (await this.requireSuccess({
+      command: 'sbx',
+      args: ['exec', input.sandboxName, 'git', 'rev-parse', 'HEAD'],
+      cwd: input.workspaceCwd,
+      stdin: 'ignore',
+    }, `read resumed Docker Sandbox ${input.sandboxName} commit`)).stdout.trim();
+    const expectedHead = input.checkpointCommit ?? input.baseCommit;
+    if (head !== expectedHead) {
+      return {
+        status: 'diverged',
+        sandboxName: input.sandboxName,
+        diagnostic: `Sandbox base divergence: expected persisted base ${input.baseCommit} with head ${expectedHead}, observed ${head || 'an empty commit'}.`,
+      };
+    }
+    if (input.checkpointCommit) {
+      const ancestry = await this.execute({
+        command: 'sbx',
+        args: ['exec', input.sandboxName, 'git', 'merge-base', '--is-ancestor', input.baseCommit, input.checkpointCommit],
+        cwd: input.workspaceCwd,
+        stdin: 'ignore',
+      });
+      if (ancestry.exitCode !== 0) {
+        return {
+          status: 'diverged',
+          sandboxName: input.sandboxName,
+          diagnostic: `Sandbox base divergence: persisted base ${input.baseCommit} is not an ancestor of checkpoint ${input.checkpointCommit}.`,
+        };
+      }
+    }
+    const worktree = await this.requireSuccess({
+      command: 'sbx',
+      args: ['exec', input.sandboxName, 'git', 'status', '--porcelain=v1'],
+      cwd: input.workspaceCwd,
+      stdin: 'ignore',
+    }, `inspect resumed Docker Sandbox ${input.sandboxName} worktree`);
+    if (worktree.stdout.trim()) {
+      return {
+        status: 'diverged',
+        sandboxName: input.sandboxName,
+        diagnostic: `Sandbox worktree divergence: ${input.sandboxName} contains uncheckpointed changes and cannot be resumed deterministically.`,
+      };
+    }
+    return {
+      status: 'reusable',
+      sandboxName: input.sandboxName,
+      ...(observed.id ? { sandboxId: observed.id } : {}),
+      observedCommit: head,
+    };
   }
 
   async preflightWorkspace(cwd: string, workspaceEffects = true, signal?: AbortSignal): Promise<void> {
@@ -388,6 +587,56 @@ export class DockerSandboxRuntime {
       throw new Error(`Unable to ${action}: ${detail}`);
     }
   }
+
+  private async readSandboxId(cwd: string, sandboxName: string, signal?: AbortSignal): Promise<string | undefined> {
+    const listed = await this.execute({ command: 'sbx', args: ['ls', '--json'], cwd, stdin: 'ignore', signal });
+    if (listed.exitCode !== 0 || !listed.stdout.trim()) return undefined;
+    try {
+      return parseSandboxList(listed.stdout).find(resource => resource.name === sandboxName)?.id;
+    } catch {
+      // Older or vendor-patched sbx builds may expose a non-standard payload.
+      // The deterministic name remains the minimum identity until reconciliation.
+      return undefined;
+    }
+  }
+}
+
+interface ListedSandbox {
+  name: string;
+  id?: string;
+}
+
+function parseSandboxList(output: string): ListedSandbox[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(output);
+  } catch (error: unknown) {
+    throw new Error(`Unable to parse sbx ls --json while resuming a pipeline: ${formatUnknownError(error)}`);
+  }
+
+  const entries = Array.isArray(parsed)
+    ? parsed
+    : isRecord(parsed) && Array.isArray(parsed.sandboxes)
+      ? parsed.sandboxes
+      : [];
+  return entries.flatMap(entry => {
+    if (!isRecord(entry)) return [];
+    const name = stringProperty(entry, 'name', 'Name');
+    if (!name) return [];
+    const id = stringProperty(entry, 'id', 'ID', 'Id');
+    return [{ name, ...(id ? { id } : {}) }];
+  });
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+function stringProperty(value: Record<string, unknown>, ...keys: string[]): string | undefined {
+  for (const key of keys) {
+    if (typeof value[key] === 'string' && value[key]) return value[key];
+  }
+  return undefined;
 }
 
 export function stableSandboxName(runId: string, nodeId: string, attempt: number): string {

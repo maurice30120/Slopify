@@ -266,6 +266,27 @@ test('a divergent Git base blocks Promotion before any workspace mutation', asyn
   assert.deepEqual(mutatingWorkspaceCalls(fake.calls), []);
 });
 
+test('replaying an already completed Promotion is idempotent', async () => {
+  const fake = integrationGit({ head: 'integrated-2' });
+  let prompts = 0;
+  const output = await new GitPromotion(fake.execute).promotePipelineChangeSet({
+    workspaceCwd: '/repo',
+    policy: 'ask',
+    changeSet: {
+      runId: 'run-1', baseCommit: 'base123', commit: 'integrated-2', ref: 'refs/slopify/runs/run-1/change-set', integratedNodeIds: ['a', 'b'],
+    },
+    preview: { baseCommit: 'base123', changeSetCommit: 'integrated-2', fileCount: 2, files: ['a', 'b'], diff: 'x' },
+    decide: () => {
+      prompts += 1;
+      return 'reject';
+    },
+  });
+
+  assert.equal(output.status, 'applied');
+  assert.equal(prompts, 0);
+  assert.deepEqual(mutatingWorkspaceCalls(fake.calls), []);
+});
+
 test('late workspace changes block Promotion before any workspace mutation', async () => {
   const fake = integrationGit({ dirty: true });
   await assert.rejects(
