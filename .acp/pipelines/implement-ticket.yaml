@@ -4,7 +4,7 @@ title: Implement One Approved Ticket
 
 nodes:
   - id: implementation
-    agent: Codex CLI
+    agent: Codex Sandbox
     skills: [implement]
     instructionsFile: ../agents/matt-implementer.md
     prompt: |
@@ -13,7 +13,6 @@ nodes:
     policy:
       filesystem: workspace-write
       terminal: workspace-write
-      network: enabled
       promotion: auto-apply
     output:
       name: result
