@@ -1,0 +1,17 @@
+{
+  "agents": {
+    "Codex CLI": {
+      "command": "npx",
+      "args": ["-y", "@agentclientprotocol/codex-acp@1.1.7"],
+      "env": {}
+    }
+  },
+  "pipeline": {
+    "enabled": true,
+    "instructionsMaxBytes": 262144,
+    "timeouts": {
+      "initializeMs": 120000,
+      "promptMs": 1800000
+    }
+  }
+}

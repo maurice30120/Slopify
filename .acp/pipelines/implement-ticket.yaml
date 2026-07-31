@@ -1,0 +1,21 @@
+version: 3
+id: implement-ticket
+title: Implement One Approved Ticket
+
+nodes:
+  - id: implementation
+    agent: Codex CLI
+    skills: [implement]
+    instructionsFile: ../agents/matt-implementer.md
+    prompt: |
+      Approved single-ticket delivery:
+      {{userPrompt}}
+    policy:
+      filesystem: workspace-write
+      terminal: workspace-write
+      network: enabled
+      promotion: auto-apply
+    output:
+      name: result
+      type: acp.implementation-result/v1
+      format: markdown

@@ -1,0 +1,7 @@
+{"runId":"126276d1-16fd-4c66-b96c-fe200ff1811e","type":"run_started","at":"2026-07-31T13:20:56.811Z"}
+{"runId":"126276d1-16fd-4c66-b96c-fe200ff1811e","type":"node_started","nodeId":"plan","at":"2026-07-31T13:20:56.813Z"}
+{"runId":"126276d1-16fd-4c66-b96c-fe200ff1811e","type":"paused","nodeId":"plan","at":"2026-07-31T13:21:08.357Z"}
+{"runId":"126276d1-16fd-4c66-b96c-fe200ff1811e","type":"resumed","nodeId":"plan","at":"2026-07-31T13:22:20.219Z"}
+{"runId":"126276d1-16fd-4c66-b96c-fe200ff1811e","type":"node_completed","nodeId":"plan","at":"2026-07-31T13:22:28.830Z"}
+{"runId":"126276d1-16fd-4c66-b96c-fe200ff1811e","type":"paused","nodeId":"plan_approval","at":"2026-07-31T13:22:28.832Z"}
+{"runId":"126276d1-16fd-4c66-b96c-fe200ff1811e","type":"cancelled","at":"2026-07-31T13:22:28.890Z"}

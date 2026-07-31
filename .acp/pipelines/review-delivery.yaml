@@ -1,0 +1,21 @@
+version: 3
+id: review-delivery
+title: Review Approved Delivery
+
+nodes:
+  - id: review
+    agent: Codex CLI
+    skills: [code-review]
+    instructionsFile: ../agents/matt-plan-reviewer.md
+    prompt: |
+      Approved delivery request:
+      {{userPrompt}}
+    policy:
+      filesystem: read-only
+      terminal: workspace-write
+      network: disabled
+      promotion: discard
+    output:
+      name: report
+      type: acp.verification-report/v1
+      format: markdown
