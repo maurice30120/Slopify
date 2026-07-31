@@ -379,11 +379,16 @@ function toWorkspacePath(workspaceCwd: string, file: string): string {
 function captureWorkspaceState(workspaceCwd: string): WorkspaceState | undefined {
   try {
     if (runGit(workspaceCwd, ['rev-parse', '--is-inside-work-tree']).trim() !== 'true') return undefined;
-    const exclusions = [':(exclude).scratch/**', ':(exclude)CONTEXT.md', ':(exclude)docs/architecture/adr/**'];
+    const exclusions = [
+      ':(exclude).scratch/**',
+      ':(exclude).acp/runs-v3/**',
+      ':(exclude)CONTEXT.md',
+      ':(exclude)docs/architecture/adr/**',
+    ];
     const trackedPatch = runGit(workspaceCwd, ['diff', '--binary', 'HEAD', '--', '.', ...exclusions]);
     const trackedPaths = splitLines(runGit(workspaceCwd, ['diff', '--name-only', 'HEAD', '--', '.', ...exclusions]));
     const untrackedFiles = Object.fromEntries(runGit(workspaceCwd, ['ls-files', '--others', '--exclude-standard', '-z'])
-      .split('\0').filter(Boolean).map(value => value.split(path.sep).join('/')).filter(file => !isDocumentationPath(file)).sort()
+      .split('\0').filter(Boolean).map(value => value.split(path.sep).join('/')).filter(file => !isWorkspaceGuardAllowedPath(file)).sort()
       .map(file => [file, fingerprintPath(path.join(workspaceCwd, file))]));
     return { trackedPatch, trackedPaths, untrackedFiles };
   } catch { return undefined; }
@@ -402,8 +407,9 @@ function runGit(cwd: string, args: string[]): string {
 }
 
 function splitLines(value: string): string[] { return value.split(/\r?\n/).map(line => line.trim()).filter(Boolean); }
-function isDocumentationPath(file: string): boolean {
+function isWorkspaceGuardAllowedPath(file: string): boolean {
   return file === 'CONTEXT.md' || file === '.scratch' || file.startsWith('.scratch/')
+    || file === '.acp/runs-v3' || file.startsWith('.acp/runs-v3/')
     || file === 'docs/architecture/adr' || file.startsWith('docs/architecture/adr/');
 }
 function fingerprintPath(file: string): string {

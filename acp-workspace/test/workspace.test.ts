@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -242,6 +243,40 @@ test('WorkspaceRun rejects an invalid typed handoff before a host can approve it
   assert.equal(outcome.status, 'failed');
   assert.equal(outcome.status === 'failed' ? outcome.error.code : '', 'invalid_workspace_handoff');
   assert.match(outcome.status === 'failed' ? outcome.error.message : '', /does not exist/);
+});
+
+test('WorkspaceRun ignores its persisted run state for documentation-only pauses', async () => {
+  const cwd = workspace();
+  execFileSync('git', ['init'], { cwd, stdio: 'ignore' });
+  fs.writeFileSync(path.join(cwd, 'README.md'), '# Workspace\n');
+  execFileSync('git', ['add', 'README.md'], { cwd, stdio: 'ignore' });
+  execFileSync('git', [
+    '-c', 'user.name=ACP Test', '-c', 'user.email=acp@example.test',
+    'commit', '-m', 'initial',
+  ], { cwd, stdio: 'ignore' });
+  const run = createWorkspaceRun({
+    workspaceCwd: cwd,
+    start: async () => {
+      const runDirectory = path.join(cwd, '.acp', 'runs-v3', 'workspace', 'runs', 'run-plan');
+      fs.mkdirSync(runDirectory, { recursive: true });
+      fs.writeFileSync(path.join(runDirectory, 'events.ndjson'), '{}\n');
+      fs.writeFileSync(path.join(runDirectory, 'snapshot.json'), '{}\n');
+      return {
+        status: 'paused', runId: 'run-plan',
+        pause: {
+          id: 'approval', nodeId: 'plan_approval', type: 'approval',
+          content: 'Approve this plan?', format: 'proposed-plan',
+          workspaceGuard: 'documentation-only',
+        },
+        snapshot: runtimeSnapshot('paused'),
+      };
+    },
+    resume: async () => { throw new Error('not resumed'); },
+  });
+
+  const outcome = await run.start('planning', 'make a plan');
+
+  assert.equal(outcome.status, 'interaction-required');
 });
 
 test('Pipeline definitions and CLI contain no hidden slopify handoff protocol', () => {
