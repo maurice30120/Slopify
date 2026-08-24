@@ -197,26 +197,33 @@ export function createWorkspaceRuntime(options: CreateWorkspaceRuntimeOptions): 
       : { text: result.text };
   }) as PipelineAgentRunner;
 
-  runAgent.preparePipelineChangeSet = async input => await finalizePipelineChangeSet({
+  runAgent.preparePipelineChangeSet = input => finalizePipelineChangeSet({
     input,
     checkpointsByRunId,
     preparedChangeSetsByRunId,
-    prepareOnly: true,
+    phase: 'prepare',
     workspaceCwd: options.workspaceCwd,
     host: options.host,
     execute: options.sandboxExecutor,
     sandboxRuntime,
-  }) as PipelineChangeSetPreparationResult;
-  runAgent.finalizePipelineChangeSet = async input => await finalizePipelineChangeSet({
+  });
+  runAgent.finalizePipelineChangeSet = input => finalizePipelineChangeSet({
     input,
     checkpointsByRunId,
     preparedChangeSetsByRunId,
+    phase: 'promote',
     workspaceCwd: options.workspaceCwd,
     host: options.host,
     execute: options.sandboxExecutor,
     sandboxRuntime,
-  }) as PipelineChangeSetFinalizationResult;
+  });
   runAgent.invalidatePipelineChangeSet = async input => {
+    const prepared = preparedChangeSetsByRunId.get(input.runId);
+    const changeSetRef = prepared?.changeSet.ref ?? input.snapshot?.pipelineChangeSet?.changeSetRef;
+    if (changeSetRef) {
+      const gitPromotion = new GitPromotion(options.sandboxExecutor ?? createNodeSubprocessExecutor());
+      await gitPromotion.invalidatePipelineChangeSet(options.workspaceCwd, changeSetRef);
+    }
     preparedChangeSetsByRunId.delete(input.runId);
     checkpointsByRunId.delete(input.runId);
   };
@@ -264,19 +271,23 @@ function toAgentCheckpointResult(dependency: NonNullable<PipelineAgentRunInput['
   };
 }
 
-interface FinalizePipelineChangeSetOptions {
+interface PipelineChangeSetOptions {
   input: PipelineChangeSetFinalizationInput;
   checkpointsByRunId: Map<string, Map<string, Map<number, AgentCheckpointResult>>>;
   preparedChangeSetsByRunId: Map<string, PipelineChangeSetResult>;
-  prepareOnly?: boolean;
   workspaceCwd: string;
   host: WorkspaceRuntimeHost;
   execute?: SubprocessExecutor;
   sandboxRuntime: DockerSandboxRuntime;
 }
 
+type PreparePipelineChangeSetOptions = PipelineChangeSetOptions & { phase: 'prepare' };
+type PromotePipelineChangeSetOptions = PipelineChangeSetOptions & { phase: 'promote' };
+
+function finalizePipelineChangeSet(options: PreparePipelineChangeSetOptions): Promise<PipelineChangeSetPreparationResult>;
+function finalizePipelineChangeSet(options: PromotePipelineChangeSetOptions): Promise<PipelineChangeSetFinalizationResult>;
 async function finalizePipelineChangeSet(
-  options: FinalizePipelineChangeSetOptions,
+  options: PreparePipelineChangeSetOptions | PromotePipelineChangeSetOptions,
 ): Promise<PipelineChangeSetFinalizationResult | PipelineChangeSetPreparationResult> {
   const { input } = options;
   const gitPromotion = new GitPromotion(options.execute ?? createNodeSubprocessExecutor());
@@ -323,7 +334,7 @@ async function finalizePipelineChangeSet(
       },
       integratedNodeIds: [],
     };
-    return options.prepareOnly ? empty : { ...empty, promotion: 'no_changes' };
+    return options.phase === 'prepare' ? empty : { ...empty, promotion: 'no_changes' };
   }
 
   const orderedNodeIds = orderPipelineNodeIdsForIntegration(input.program, checkpoints.keys());
@@ -357,7 +368,7 @@ async function finalizePipelineChangeSet(
       changeSetCommit: changeSet.changeSet.commit,
       integratedNodeIds: changeSet.changeSet.integratedNodeIds,
     };
-    if (options.prepareOnly) return prepared;
+    if (options.phase === 'prepare') return prepared;
     const promotionRequest: PromotePipelineChangeSetInput = {
       workspaceCwd: options.workspaceCwd,
       policy,

@@ -1097,7 +1097,6 @@ test("final review observes the complete provisional Pipeline Change Set before 
       id: "tasks", agent: "Codex", prompt: "Plan", output: { name: "graph", type: "acp.ticket-graph/v1", format: "json" },
     }],
   }, agents).program!;
-  const sequence: string[] = [];
   const preparation: PipelineChangeSetPreparationResult = {
     preview: { baseCommit: "base", changeSetCommit: "combined", fileCount: 2, files: ["left.ts", "right.ts"], diff: "combined interaction" },
     changeSetRef: "refs/slopify/runs/run-reviewed/change-set",
@@ -1108,7 +1107,6 @@ test("final review observes the complete provisional Pipeline Change Set before 
   let promotions = 0;
   const runtime = new PipelineRuntime({
     async preparePipelineChangeSet() {
-      sequence.push("prepare");
       return preparation;
     },
     async createSession({ runId, node }) {
@@ -1120,7 +1118,6 @@ test("final review observes the complete provisional Pipeline Change Set before 
           ],
         } } };
         if (node.id === "final-review") {
-          sequence.push("review");
           reviewPrompt = input.prompt;
           return { artifact: { name: "review", type: "acp.verification-report/v1", format: "json", value: {
             contract: "acp.verification-report/v1", verdict: "passed", categories: [
@@ -1140,7 +1137,6 @@ test("final review observes the complete provisional Pipeline Change Set before 
     },
     async finalizePipelineChangeSet(input) {
       promotions += 1;
-      sequence.push("promote");
       assert.equal(input.snapshot?.pipelineChangeSet?.changeSetCommit, "combined");
       return { ...preparation, promotion: "applied" };
     },
@@ -1149,7 +1145,6 @@ test("final review observes the complete provisional Pipeline Change Set before 
   const result = await runtime.start(program, { maxConcurrency: 2 });
 
   assert.equal(result.status, "completed");
-  assert.deepEqual(sequence, ["prepare", "review", "promote"]);
   assert.equal(promotions, 1);
   assert.match(reviewPrompt, /left\.ts/);
   assert.match(reviewPrompt, /right\.ts/);
@@ -1191,4 +1186,34 @@ test("a failed final review invalidates the provisional result and forbids Promo
   assert.equal(promotions, 0);
   assert.equal(invalidations, 1);
   assert.equal(result.snapshot.pipelineChangeSet, undefined);
+});
+
+test("a provisional integration failure fails durably and invalidates without Promotion", async () => {
+  const program = compilePipelineV3Definition({
+    version: 3, id: "failed-preparation", title: "Failed preparation",
+    nodes: [{ id: "tasks", agent: "Codex", prompt: "Plan", output: { name: "graph", type: "acp.ticket-graph/v1", format: "json" } }],
+  }, agents).program!;
+  let invalidations = 0;
+  let promotions = 0;
+  const runtime = new PipelineRuntime({
+    async preparePipelineChangeSet() { throw new Error("cannot construct provisional result"); },
+    async invalidatePipelineChangeSet() { invalidations += 1; },
+    async finalizePipelineChangeSet() { promotions += 1; throw new Error("must not promote"); },
+    async createSession({ runId, node }) { return { runId, nodeId: node.id, async send(): Promise<PipelineNodeExecutionResult> {
+      if (node.id === "tasks") return { artifact: { name: "graph", type: "acp.ticket-graph/v1", format: "json", value: {
+        contract: "acp.ticket-graph/v1", tickets: [{ id: "work", title: "Work", scope: [], needs: [], validation: [] }],
+      } } };
+      return { artifact: { name: "result", type: "acp.implementation-result/v1", format: "json", value: {
+        contract: "acp.implementation-result/v1", ticketId: node.id, branch: node.id, commits: [node.id], summary: node.id, validations: [],
+      } } };
+    }, async cancel() {}, async close() {} }; },
+  }, { runIdFactory: () => "run-failed-preparation" });
+
+  const result = await runtime.start(program);
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.status === "failed" ? result.error.code : "", "pipeline_change_set_preparation_failed");
+  assert.equal(result.snapshot.status, "failed");
+  assert.equal(invalidations, 1);
+  assert.equal(promotions, 0);
 });

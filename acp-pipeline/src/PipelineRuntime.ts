@@ -6,6 +6,7 @@ import {
   validateAdapterSupportsPolicy,
 } from "./PipelinePolicy";
 import { getPipelineInterviewProtocol } from "./PipelineInterviewProtocol";
+import { PipelineIntegrationConflictError } from "./PipelineAgentRunner";
 import {
   compileExecutionPlan,
   FINAL_REVIEW_NODE_ID,
@@ -538,11 +539,30 @@ export class PipelineRuntime {
     const inputs = resolveInputs(node, active.snapshot.artifacts);
     let prompt = renderRuntimeTemplate(node.prompt ?? "", active.snapshot.inputVariables ?? {}, inputs);
     if (node.id === FINAL_REVIEW_NODE_ID && this.adapter.preparePipelineChangeSet) {
-      const prepared = active.snapshot.pipelineChangeSet ?? await this.adapter.preparePipelineChangeSet({
-        runId: active.snapshot.runId,
-        program: active.program,
-        snapshot: structuredClone(active.snapshot),
-      });
+      let prepared = active.snapshot.pipelineChangeSet;
+      try {
+        prepared ??= await this.adapter.preparePipelineChangeSet({
+          runId: active.snapshot.runId,
+          program: active.program,
+          snapshot: structuredClone(active.snapshot),
+        });
+      } catch (error: unknown) {
+        if (error instanceof PipelineIntegrationConflictError) throw error;
+        const attempt = state.attempts + 1;
+        const diagnostic = {
+          nodeId: node.id,
+          attempt,
+          code: "pipeline_change_set_preparation_failed",
+          message: error instanceof Error && error.message ? error.message : String(error),
+        };
+        this.startAttempt(active, node.id, attempt);
+        active.snapshot.nodeStates[node.id] = { ...state, status: "failed", completedAt: this.isoNow() };
+        this.finishAttempt(active, node.id, attempt, "failed", diagnostic);
+        active.snapshot.diagnostics.push(diagnostic);
+        active.snapshot.updatedAt = this.isoNow();
+        await this.persist(active.snapshot);
+        return diagnostic;
+      }
       if (prepared) {
         active.snapshot.pipelineChangeSet = structuredClone(prepared);
         active.snapshot.updatedAt = this.isoNow();

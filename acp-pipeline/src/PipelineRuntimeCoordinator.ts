@@ -197,6 +197,7 @@ export class PipelineRuntime extends CorePipelineRuntime {
     let result = initialResult;
     if (result.status !== "completed") {
       if (result.status !== "paused") {
+        await this.invalidator?.({ runId: result.runId, program, snapshot: result.snapshot });
         await this.completionBuffer.releaseEphemeralRun(result.runId);
         this.cleanupRun(result.runId);
       }

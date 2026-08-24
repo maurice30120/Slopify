@@ -4,7 +4,14 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-import { compilePipelineV3Definition, type PipelineRuntimeSnapshot, type PipelineSandboxRunSnapshot } from '@acp-client/pipeline';
+import {
+  PipelineRuntime,
+  compilePipelineV3Definition,
+  type PipelineNodeExecutionResult,
+  type PipelineRuntimeAdapter,
+  type PipelineRuntimeSnapshot,
+  type PipelineSandboxRunSnapshot,
+} from '@acp-client/pipeline';
 import type { SubprocessRequest, SubprocessResult } from '@acp-client/sandbox';
 import { createWorkspaceRuntime } from '../src/index.js';
 
@@ -81,31 +88,53 @@ test('collects parallel sandbox checkpoints, previews once, and promotes one det
         policy: { filesystem: 'workspace-write', terminal: 'workspace-write', promotion: 'ask' },
         output: { name: 'out', type: 'note', format: 'text' },
       },
+      {
+        id: 'final-review', agent: 'Isolated', prompt: 'Review', needs: ['a', 'b'],
+        output: { name: 'review', type: 'acp.verification-report/v1', format: 'json' },
+      },
     ],
   }, { Isolated: {} }).program!;
 
   await Promise.all([
     runtime.runAgent({
-      workspaceCwd: cwd, agentName: 'Isolated', runId: 'run-1', nodeId: 'b', attempt: 1,
+      workspaceCwd: cwd, agentName: 'Isolated', runId: 'run-e2e-accept', nodeId: 'b', attempt: 1,
       promptText: 'B', sideEffects: 'workspace', promotion: 'ask',
     }),
     runtime.runAgent({
-      workspaceCwd: cwd, agentName: 'Isolated', runId: 'run-1', nodeId: 'a', attempt: 1,
+      workspaceCwd: cwd, agentName: 'Isolated', runId: 'run-e2e-accept', nodeId: 'a', attempt: 1,
       promptText: 'A', sideEffects: 'workspace', promotion: 'ask',
     }),
   ]);
 
-  assert.equal(calls.some(call => call.command === 'git' && call.args[0] === 'merge'), false);
-  const prepared = await runtime.runAgent.preparePipelineChangeSet!({ runId: 'run-1', program });
+  const coordinatedAdapter = (verdict: 'passed' | 'failed', reviewedPrompts: string[]): PipelineRuntimeAdapter => ({
+    preparePipelineChangeSet: input => runtime.runAgent.preparePipelineChangeSet!(input),
+    finalizePipelineChangeSet: input => runtime.runAgent.finalizePipelineChangeSet!(input),
+    invalidatePipelineChangeSet: input => runtime.runAgent.invalidatePipelineChangeSet!(input),
+    async createSession({ runId, node }) {
+      return { runId, nodeId: node.id, async send(input): Promise<PipelineNodeExecutionResult> {
+        if (node.id === 'final-review') {
+          reviewedPrompts.push(input.prompt);
+          return { artifact: { name: 'review', type: 'acp.verification-report/v1', format: 'json', value: {
+            contract: 'acp.verification-report/v1', verdict, categories: [{
+              name: 'complete-change-set', required: true, status: verdict, details: verdict,
+            }],
+          } } };
+        }
+        return { artifact: { name: 'out', type: 'note', format: 'text', value: node.id } };
+      }, async cancel() {}, async close() {} };
+    },
+  });
+  const reviewedPrompts: string[] = [];
+  const accepted = await new PipelineRuntime(coordinatedAdapter('passed', reviewedPrompts), {
+    runIdFactory: () => 'run-e2e-accept',
+  }).start(program, { maxConcurrency: 2 });
 
-  assert.deepEqual(prepared.integratedNodeIds, ['a', 'b']);
-  assert.deepEqual(prepared.preview.files, ['src/a.ts', 'src/b.ts']);
-  assert.equal(promotionPrompts, 0);
-  assert.equal(calls.some(call => call.command === 'git' && call.args[0] === 'merge'), false);
-  const finalized = await runtime.runAgent.finalizePipelineChangeSet!({ runId: 'run-1', program });
-
-  assert.equal(finalized.promotion, 'applied');
-  assert.deepEqual(finalized.integratedNodeIds, ['a', 'b']);
+  assert.equal(accepted.status, 'completed');
+  const acceptedChangeSet = (accepted as typeof accepted & { changeSet?: { integratedNodeIds: string[]; changeSetRef?: string } }).changeSet;
+  assert.deepEqual(acceptedChangeSet?.integratedNodeIds, ['a', 'b']);
+  assert.match(reviewedPrompts[0], /global diff/);
+  assert.match(reviewedPrompts[0], /src\/a\.ts/);
+  assert.match(reviewedPrompts[0], /src\/b\.ts/);
   assert.equal(promotionPrompts, 1);
   assert.deepEqual(
     calls.filter(call => call.command === 'git' && call.args[0] === 'merge-tree').map(call => call.args.at(-1)?.includes('-a-') ? 'a' : 'b'),
@@ -113,8 +142,25 @@ test('collects parallel sandbox checkpoints, previews once, and promotes one det
   );
   assert.deepEqual(
     calls.filter(call => call.command === 'git' && call.args[0] === 'merge').map(call => call.args),
-    [['merge', '--ff-only', '--no-edit', finalized.changeSetRef]],
+    [['merge', '--ff-only', '--no-edit', acceptedChangeSet?.changeSetRef]],
   );
+
+  await Promise.all(['a', 'b'].map(nodeId => runtime.runAgent({
+    workspaceCwd: cwd, agentName: 'Isolated', runId: 'run-e2e-reject', nodeId, attempt: 1,
+    promptText: nodeId, sideEffects: 'workspace', promotion: 'ask',
+  })));
+  const rejectCallsStart = calls.length;
+  const rejected = await new PipelineRuntime(coordinatedAdapter('failed', []), {
+    runIdFactory: () => 'run-e2e-reject',
+  }).start(program, { maxConcurrency: 2 });
+  const rejectCalls = calls.slice(rejectCallsStart);
+
+  assert.equal(rejected.status, 'cancelled');
+  assert.equal(promotionPrompts, 1, 'rejected review never asks to promote');
+  assert.equal(rejectCalls.some(call => call.command === 'git' && call.args[0] === 'merge'), false);
+  const publishedRejectRef = rejectCalls.find(call => call.command === 'git' && call.args[0] === 'update-ref' && call.args[1] !== '-d')?.args[1];
+  assert.ok(publishedRejectRef);
+  assert.equal(rejectCalls.some(call => call.command === 'git' && call.args.join(' ') === `update-ref -d ${publishedRejectRef}`), true);
 });
 
 test('integrates the highest checkpoint attempt and cleans up superseded attempt refs', async () => {
@@ -422,8 +468,14 @@ test('finalizes from persisted sandbox checkpoints after the workspace runtime i
     artifacts: {}, diagnostics: [], sandboxRuns,
     createdAt: '2026-07-24T10:00:00.000Z', updatedAt: '2026-07-24T10:00:01.000Z',
   };
+  snapshot.pipelineChangeSet = await first.runAgent.preparePipelineChangeSet!({
+    runId: 'run-durable',
+    program,
+    snapshot,
+  });
 
   const reconstructed = createWorkspaceRuntime({ workspaceCwd: cwd, resolvedCatalog: catalog, host, sandboxExecutor: execute });
+  calls.length = 0;
   const finalized = await reconstructed.runAgent.finalizePipelineChangeSet!({
     runId: 'run-durable',
     program,
@@ -432,6 +484,7 @@ test('finalizes from persisted sandbox checkpoints after the workspace runtime i
 
   assert.equal(finalized.promotion, 'rejected');
   assert.deepEqual(finalized.integratedNodeIds, ['work']);
+  assert.equal(calls.some(call => call.command === 'git' && call.args[0] === 'merge-tree'), false, 'the persisted provisional Change Set is not integrated twice');
   assert.equal(calls.some(call => call.args.join(' ') === 'ls --json'), false, 'a removed sandbox is not required once its checkpoint was fetched');
 });
 
