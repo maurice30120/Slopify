@@ -39,6 +39,18 @@ function sessionAdapter(
   };
 }
 
+function executionPlanArtifact(nodeId: string): PipelineNodeExecutionResult {
+  return { artifact: nodeId === "final-review"
+    ? { name: "review", type: "acp.verification-report/v1", format: "json", value: {
+      contract: "acp.verification-report/v1", verdict: "passed", categories: [],
+    } }
+    : { name: "result", type: "acp.implementation-result/v1", format: "json", value: {
+      contract: "acp.implementation-result/v1", ticketId: nodeId, branch: nodeId,
+      commits: [nodeId], summary: nodeId, validations: [],
+    } },
+  };
+}
+
 test("PipelineRuntime completes a linear pipeline with strict inputs and final artifact", async () => {
   const program = compilePipelineV3Definition({
     version: 3,
@@ -158,15 +170,7 @@ test("PipelineRuntime persists one immutable Execution Plan and restores its exp
     && !Number.isNaN(Date.parse(paused.snapshot.executionPlan.expansion.expandedAt)));
 
   const restoredRuntime = new PipelineRuntime(sessionAdapter(async ({ node }) => {
-    return { artifact: node.id === "final-review"
-      ? { name: "review", type: "acp.verification-report/v1", format: "json", value: {
-        contract: "acp.verification-report/v1", verdict: "passed", categories: [],
-      } }
-      : { name: "result", type: "acp.implementation-result/v1", format: "json", value: {
-        contract: "acp.implementation-result/v1", ticketId: node.id, branch: node.id,
-        commits: [node.id], summary: node.id, validations: [],
-      } },
-    };
+    return executionPlanArtifact(node.id);
   }), { store, programs: [program] });
   const completed = await restoredRuntime.resume("run-plan", {
     pauseId: paused.pause.id,
@@ -202,15 +206,7 @@ test("PipelineRuntime compiles and persists a Ticket Graph before the first impl
     assert.equal(durable?.executionPlan?.plan.nodes[0].id, "T01");
     assert.equal(durable?.executionPlan?.expansion.status, "expanded");
     assert.deepEqual(durable?.executionPlan?.expansion.expandedNodeIds, ["T01", "final-review"]);
-    return { artifact: node.id === "final-review"
-      ? { name: "review", type: "acp.verification-report/v1", format: "json", value: {
-        contract: "acp.verification-report/v1", verdict: "passed", categories: [],
-      } }
-      : { name: "result", type: "acp.implementation-result/v1", format: "json", value: {
-        contract: "acp.implementation-result/v1", ticketId: node.id, branch: node.id,
-        commits: [node.id], summary: node.id, validations: [],
-      } },
-    };
+    return executionPlanArtifact(node.id);
   }), { runIdFactory: () => "run-auto-plan", store });
 
   const result = await runtime.start(program);
@@ -510,15 +506,7 @@ test("PipelineRuntime expands one plan in the main run and respects dependency a
     peak = Math.max(peak, active.size);
     if (node.id === "left" || node.id === "right") await waitForRelease(node.id);
     active.delete(node.id);
-    return { artifact: node.id === "final-review"
-      ? { name: "review", type: "acp.verification-report/v1", format: "json", value: {
-        contract: "acp.verification-report/v1", verdict: "passed", categories: [],
-      } }
-      : { name: "result", type: "acp.implementation-result/v1", format: "json", value: {
-        contract: "acp.implementation-result/v1", ticketId: node.id, branch: node.id,
-        commits: [node.id], summary: node.id, validations: [],
-      } },
-    };
+    return executionPlanArtifact(node.id);
   }), { runIdFactory: () => "run-dynamic-plan" });
 
   const completion = runtime.start(program, { maxConcurrency: 2 });
@@ -579,15 +567,7 @@ test("PipelineRuntime resumes an expanded plan without injecting duplicate nodes
   const starts: string[] = [];
   const restoredRuntime = new PipelineRuntime(sessionAdapter(async ({ node }) => {
     starts.push(node.id);
-    return { artifact: node.id === "final-review"
-      ? { name: "review", type: "acp.verification-report/v1", format: "json", value: {
-        contract: "acp.verification-report/v1", verdict: "passed", categories: [],
-      } }
-      : { name: "result", type: "acp.implementation-result/v1", format: "json", value: {
-        contract: "acp.implementation-result/v1", ticketId: node.id, branch: node.id,
-        commits: [node.id], summary: node.id, validations: [],
-      } },
-    };
+    return executionPlanArtifact(node.id);
   }), { store, programs: [program] });
   const completed = await restoredRuntime.resume("run-resume-dynamic", {
     pauseId: paused.pause.id,
@@ -598,6 +578,57 @@ test("PipelineRuntime resumes an expanded plan without injecting duplicate nodes
   assert.deepEqual(starts, ["ticket", "final-review"]);
   assert.deepEqual(Object.keys(completed.snapshot.nodeStates).sort(), ["approval", "final-review", "tasks", "ticket"]);
   assert.equal(completed.snapshot.maxConcurrency, 1);
+});
+
+test("PipelineRuntime recovers a partially executed dynamic plan without restarting completed work", async () => {
+  const program = compilePipelineV3Definition({
+    version: 3,
+    id: "recover-dynamic-plan",
+    title: "Recover dynamic plan",
+    nodes: [{
+      id: "tasks",
+      agent: "Codex",
+      prompt: "Create tasks",
+      output: { name: "graph", type: "acp.ticket-graph/v1", format: "json" },
+    }],
+  }, agents).program!;
+  const store = new InMemoryPipelineRunStore();
+  const never = new Promise<PipelineNodeExecutionResult>(() => {});
+  void new PipelineRuntime(sessionAdapter(async ({ node }) => {
+    if (node.id === "tasks") {
+      return { artifact: { name: "graph", type: "acp.ticket-graph/v1", format: "json", value: {
+        contract: "acp.ticket-graph/v1",
+        tickets: [
+          { id: "left", title: "Left", scope: [], needs: [], validation: [] },
+          { id: "right", title: "Right", scope: [], needs: [], validation: [] },
+          { id: "join", title: "Join", scope: [], needs: ["left", "right"], validation: [] },
+        ],
+      } } };
+    }
+    if (node.id === "right") return never;
+    return executionPlanArtifact(node.id);
+  }), { runIdFactory: () => "run-recover-dynamic", store }).start(program, { maxConcurrency: 2 });
+
+  let crashedSnapshot: PipelineRuntimeSnapshot | null = null;
+  while (crashedSnapshot?.nodeStates.left.status !== "completed"
+    || crashedSnapshot.nodeStates.right.status !== "running") {
+    await new Promise(resolve => setImmediate(resolve));
+    crashedSnapshot = await store.load("run-recover-dynamic");
+  }
+  const recoveryStore = new InMemoryPipelineRunStore();
+  await recoveryStore.create(crashedSnapshot);
+  const restarted: string[] = [];
+  const restoredRuntime = new PipelineRuntime(sessionAdapter(async ({ node }) => {
+    restarted.push(node.id);
+    return executionPlanArtifact(node.id);
+  }), { store: recoveryStore, programs: [program] });
+
+  const completed = await restoredRuntime.recover("run-recover-dynamic");
+
+  assert.equal(completed.status, "completed");
+  assert.deepEqual(restarted, ["right", "join", "final-review"]);
+  assert.equal(completed.snapshot.nodeStates.left.attempts, 1);
+  assert.deepEqual(Object.keys(completed.snapshot.nodeStates).sort(), ["final-review", "join", "left", "right", "tasks"]);
 });
 
 test("PipelineRuntime fail-fast result preserves diagnostics and cancels pending nodes", async () => {

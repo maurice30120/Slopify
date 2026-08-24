@@ -1,4 +1,4 @@
-import { parseArtifactProducer } from "./PipelineV3Compiler";
+import { appendCompiledPipelineNodes, parseArtifactProducer } from "./PipelineV3Compiler";
 import {
   READ_ONLY_PIPELINE_POLICY,
   WORKSPACE_WRITE_PIPELINE_POLICY,
@@ -489,7 +489,7 @@ export class PipelineRuntime {
     const dynamicNodes = executionPlanNodes(snapshot.plan);
     if (snapshot.expansion.status === "expanded") {
       if (!dynamicNodes.every(node => active.program.nodesById.has(node.id))) {
-        active.program = appendProgramNodes(active.program, dynamicNodes);
+        active.program = appendCompiledPipelineNodes(active.program, dynamicNodes);
       }
       for (const node of dynamicNodes) {
         active.snapshot.nodeStates[node.id] ??= { status: "pending", attempts: 0 };
@@ -503,7 +503,7 @@ export class PipelineRuntime {
         message: `Execution Plan node identities collide with pipeline nodes: ${collisions.map(node => node.id).sort().join(", ")}.`,
       };
     }
-    active.program = appendProgramNodes(active.program, dynamicNodes);
+    active.program = appendCompiledPipelineNodes(active.program, dynamicNodes);
     for (const node of dynamicNodes) {
       active.snapshot.nodeStates[node.id] = { status: "pending", attempts: 0 };
     }
@@ -1160,29 +1160,6 @@ function executionPlanNodes(plan: ExecutionPlan): CompiledPipelineNode[] {
     retry: { maxAttempts: 1, backoffMs: 0 },
     policy: READ_ONLY_PIPELINE_POLICY,
   }];
-}
-
-function appendProgramNodes(
-  program: CompiledPipelineProgram,
-  candidates: readonly CompiledPipelineNode[],
-): CompiledPipelineProgram {
-  const appended = candidates.filter(node => !program.nodesById.has(node.id));
-  if (appended.length === 0) return program;
-  const nodes = [...program.nodes, ...appended];
-  const nodesById = new Map(nodes.map(node => [node.id, node]));
-  const dependentsById = new Map<string, string[]>(nodes.map(node => [node.id, []]));
-  for (const node of nodes) {
-    for (const dependency of node.needs) dependentsById.get(dependency)?.push(node.id);
-  }
-  for (const dependents of dependentsById.values()) dependents.sort();
-  return {
-    ...program,
-    nodes,
-    nodesById,
-    dependentsById,
-    rootNodeIds: nodes.filter(node => node.needs.length === 0).map(node => node.id).sort(),
-    terminalNodeIds: nodes.filter(node => dependentsById.get(node.id)?.length === 0).map(node => node.id).sort(),
-  };
 }
 
 function resolveInputs(node: CompiledPipelineNode, artifacts: Record<string, PipelineArtifact>): Record<string, PipelineArtifact> {
