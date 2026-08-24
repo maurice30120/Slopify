@@ -1,7 +1,12 @@
 import { parseArtifactProducer } from "./PipelineV3Compiler";
 import { validateAdapterSupportsPolicy } from "./PipelinePolicy";
 import { getPipelineInterviewProtocol } from "./PipelineInterviewProtocol";
-import { compileExecutionPlan, validateExecutionPlan, type ExecutionPlan } from "./ExecutionPlan";
+import {
+  compileExecutionPlan,
+  validateExecutionPlan,
+  validateExecutionPlanSnapshot,
+  type ExecutionPlan,
+} from "./ExecutionPlan";
 import {
   PIPELINE_NODE_ACP_HISTORY_ARTIFACT_NAME,
   PIPELINE_NODE_ACP_HISTORY_ARTIFACT_TYPE,
@@ -221,9 +226,8 @@ export class PipelineRuntime {
         value,
         producerNodeId: node.id,
       };
-      const planError = this.captureExecutionPlan(active, artifact);
+      const planError = this.acceptArtifact(active, artifact);
       if (planError) return this.fail(active, planError);
-      active.snapshot.artifacts[artifactKey(node.id, node.output.name)] = artifact;
     }
     active.snapshot.nodeStates[pause.nodeId] = {
       ...active.snapshot.nodeStates[pause.nodeId],
@@ -537,9 +541,8 @@ export class PipelineRuntime {
         }
         if ("artifact" in result) {
           const artifact = assertArtifact(node, result);
-          const planError = this.captureExecutionPlan(active, artifact);
+          const planError = this.acceptArtifact(active, artifact);
           if (planError) return planError;
-          active.snapshot.artifacts[artifactKey(node.id, artifact.name)] = artifact;
           active.snapshot.nodeStates[node.id] = {
             ...active.snapshot.nodeStates[node.id],
             status: "completed",
@@ -706,9 +709,8 @@ export class PipelineRuntime {
             },
           };
           const artifact = assertArtifact(node, finalResult);
-          const planError = this.captureExecutionPlan(active, artifact);
+          const planError = this.acceptArtifact(active, artifact);
           if (planError) return planError;
-          active.snapshot.artifacts[artifactKey(node.id, artifact.name)] = artifact;
           this.recordInterviewHistory(active, interview);
           active.snapshot.activeInterview = undefined;
           active.snapshot.nodeStates[node.id] = {
@@ -875,11 +877,11 @@ export class PipelineRuntime {
         throw new Error(`Unknown active pipeline run "${runId}".`);
       }
       if (snapshot.executionPlan) {
-        const validation = validateExecutionPlan(snapshot.executionPlan.plan);
-        if (!validation.plan || validation.errors.length > 0) {
+        const validation = validateExecutionPlanSnapshot(snapshot.executionPlan);
+        if (!validation.snapshot || validation.errors.length > 0) {
           throw new Error(`Invalid persisted Execution Plan for run "${runId}": ${validation.errors.join(" ")}`);
         }
-        snapshot.executionPlan.plan = validation.plan;
+        snapshot.executionPlan = validation.snapshot;
       }
       const restored = {
         program,
@@ -903,7 +905,14 @@ export class PipelineRuntime {
   ): PipelineRuntimeDiagnostic | undefined {
     // Markdown keeps the human adapter contract; only the structured JSON
     // artifact is authoritative enough to freeze into an Execution Plan.
-    if (artifact.type !== "acp.ticket-graph/v1" || artifact.format !== "json") return undefined;
+    if (!artifact.type.startsWith("acp.ticket-graph/") || artifact.format !== "json") return undefined;
+    if (artifact.type !== "acp.ticket-graph/v1") {
+      return {
+        nodeId: artifact.producerNodeId,
+        code: "unsupported_ticket_graph_version",
+        message: `Unsupported Ticket Graph contract "${artifact.type}".`,
+      };
+    }
     const compiled = compileExecutionPlan(artifact.value);
     if (!compiled.plan) {
       return {
@@ -924,6 +933,13 @@ export class PipelineRuntime {
       plan: compiled.plan,
       expansion: { status: "pending", expandedNodeIds: [] },
     };
+    return undefined;
+  }
+
+  private acceptArtifact(active: ActiveRun, artifact: PipelineArtifact): PipelineRuntimeDiagnostic | undefined {
+    const planError = this.captureExecutionPlan(active, artifact);
+    if (planError) return planError;
+    active.snapshot.artifacts[artifactKey(artifact.producerNodeId, artifact.name)] = artifact;
     return undefined;
   }
 

@@ -208,6 +208,31 @@ test("PipelineRuntime compiles and persists a Ticket Graph before the first impl
   assert.equal(result.snapshot.executionPlan?.plan.contract, "acp.execution-plan/v1");
 });
 
+test("PipelineRuntime rejects an unsupported structured Ticket Graph version", async () => {
+  const program = compilePipelineV3Definition({
+    version: 3,
+    id: "unsupported-ticket-graph",
+    title: "Unsupported ticket graph",
+    nodes: [{
+      id: "tasks",
+      agent: "Codex",
+      prompt: "Create tasks",
+      output: { name: "graph", type: "acp.ticket-graph/v2", format: "json" },
+    }],
+  }, agents).program!;
+  const runtime = new PipelineRuntime(sessionAdapter(async () => ({
+    artifact: { name: "graph", type: "acp.ticket-graph/v2", format: "json", value: {
+      contract: "acp.ticket-graph/v2",
+      tickets: [],
+    } },
+  })));
+
+  const result = await runtime.start(program);
+  assert.equal(result.status, "failed");
+  assert.equal(result.error.code, "unsupported_ticket_graph_version");
+  assert.match(result.error.message, /acp\.ticket-graph\/v2/);
+});
+
 test("PipelineRuntime renders pause content from typed inputs", async () => {
   const program = compilePipelineV3Definition({
     version: 3,

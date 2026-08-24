@@ -12,6 +12,8 @@ export interface ExecutionPlanNode {
 
 export interface ExecutionPlan {
   readonly contract: typeof EXECUTION_PLAN_CONTRACT;
+  /** Revision of the plan instance, independent from its schema contract version. */
+  readonly revision: number;
   readonly nodes: readonly ExecutionPlanNode[];
   readonly terminalNodeIds: readonly string[];
   readonly finalReview: {
@@ -26,6 +28,11 @@ export interface ExecutionPlanCompileResult {
   readonly errors: string[];
 }
 
+export interface ExecutionPlanSnapshotValidationResult {
+  readonly snapshot?: ExecutionPlanSnapshot;
+  readonly errors: string[];
+}
+
 export interface ExecutionPlanSnapshot {
   plan: ExecutionPlan;
   expansion:
@@ -33,13 +40,20 @@ export interface ExecutionPlanSnapshot {
     | { status: "expanded"; expandedNodeIds: readonly string[]; expandedAt: string };
 }
 
-export function compileExecutionPlan(ticketGraph: unknown): ExecutionPlanCompileResult {
+export function compileExecutionPlan(
+  ticketGraph: unknown,
+  options: { revision?: number } = {},
+): ExecutionPlanCompileResult {
   const validation = validateMultiAgentArtifact("acp.ticket-graph/v1", ticketGraph);
   if (!validation.ok || validation.value?.contract !== "acp.ticket-graph/v1") {
     return { errors: validation.errors };
   }
   const tickets = validation.value.tickets;
   const errors = validateTicketDependencies(tickets);
+  const revision = options.revision ?? 1;
+  if (!Number.isInteger(revision) || revision < 1) {
+    errors.push("Execution Plan revision must be an integer greater than or equal to 1.");
+  }
   if (errors.length > 0) return { errors };
 
   const dependents = new Map(tickets.map(ticket => [ticket.id, 0]));
@@ -54,6 +68,7 @@ export function compileExecutionPlan(ticketGraph: unknown): ExecutionPlanCompile
     .sort();
   const plan: ExecutionPlan = {
     contract: EXECUTION_PLAN_CONTRACT,
+    revision,
     nodes: tickets.map(ticket => ({
       id: ticket.id,
       kind: "implementation",
@@ -76,6 +91,9 @@ export function validateExecutionPlan(value: unknown): ExecutionPlanCompileResul
     return { errors: [`Unsupported Execution Plan contract "${String(value.contract)}".`] };
   }
   const errors: string[] = [];
+  if (!Number.isInteger(value.revision) || (value.revision as number) < 1) {
+    errors.push("acp.execution-plan/v1.revision must be an integer greater than or equal to 1.");
+  }
   if (!Array.isArray(value.nodes) || value.nodes.length === 0) {
     errors.push("acp.execution-plan/v1.nodes must be a non-empty array.");
   }
@@ -99,6 +117,21 @@ export function validateExecutionPlan(value: unknown): ExecutionPlanCompileResul
   for (const [id, needs] of dependencies) {
     for (const need of needs) if (!ids.has(need)) errors.push(`Execution Plan node "${id}" depends on unknown node "${need}".`);
   }
+  const embeddedTickets = nodes
+    .filter(isRecord)
+    .map(node => node.ticket)
+    .filter(isRecord);
+  const embeddedValidation = validateMultiAgentArtifact("acp.ticket-graph/v1", {
+    contract: "acp.ticket-graph/v1",
+    tickets: embeddedTickets,
+  });
+  errors.push(...embeddedValidation.errors.map(error => `Embedded ticket: ${error}`));
+  for (const node of nodes.filter(isRecord)) {
+    if (isRecord(node.ticket) && isStringArray(node.needs) && isStringArray(node.ticket.needs)
+      && !sameIds(node.needs, node.ticket.needs)) {
+      errors.push(`Execution Plan node "${String(node.id)}" ticket.needs must equal node.needs.`);
+    }
+  }
   errors.push(...detectCycles(dependencies));
 
   const expectedTerminals = [...ids].filter(id =>
@@ -117,6 +150,40 @@ export function validateExecutionPlan(value: unknown): ExecutionPlanCompileResul
   return errors.length > 0
     ? { errors }
     : { plan: deepFreeze(cloneJson(value) as unknown as ExecutionPlan), errors: [] };
+}
+
+export function validateExecutionPlanSnapshot(value: unknown): ExecutionPlanSnapshotValidationResult {
+  if (!isRecord(value)) return { errors: ["Execution Plan snapshot must be an object."] };
+  const planValidation = validateExecutionPlan(value.plan);
+  const errors = [...planValidation.errors];
+  if (!isRecord(value.expansion)) {
+    errors.push("Execution Plan expansion must be an object.");
+    return { errors };
+  }
+  const expansion = value.expansion;
+  if (!isStringArray(expansion.expandedNodeIds)) {
+    errors.push("Execution Plan expansion.expandedNodeIds must be an array of non-empty strings.");
+  }
+  if (expansion.status === "pending") {
+    if (Array.isArray(expansion.expandedNodeIds) && expansion.expandedNodeIds.length > 0) {
+      errors.push("A pending Execution Plan expansion must have an empty expandedNodeIds array.");
+    }
+  } else if (expansion.status === "expanded") {
+    const expected = planValidation.plan
+      ? [...planValidation.plan.nodes.map(node => node.id), planValidation.plan.finalReview.id]
+      : [];
+    if (!isStringArray(expansion.expandedNodeIds) || !sameIds(expansion.expandedNodeIds, expected)) {
+      errors.push("An expanded Execution Plan expansion.expandedNodeIds must contain every plan node exactly once.");
+    }
+    if (typeof expansion.expandedAt !== "string" || Number.isNaN(Date.parse(expansion.expandedAt))) {
+      errors.push("An expanded Execution Plan expansion.expandedAt must be an ISO timestamp.");
+    }
+  } else {
+    errors.push('Execution Plan expansion.status must be "pending" or "expanded".');
+  }
+  return errors.length > 0
+    ? { errors }
+    : { snapshot: deepFreeze(cloneJson(value) as unknown as ExecutionPlanSnapshot), errors: [] };
 }
 
 export function markExecutionPlanExpanded(

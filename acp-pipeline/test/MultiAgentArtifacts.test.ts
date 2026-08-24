@@ -6,6 +6,7 @@ import {
   markExecutionPlanExpanded,
   publishMultiAgentArtifact,
   validateExecutionPlan,
+  validateExecutionPlanSnapshot,
   validateMultiAgentArtifact,
 } from "../dist/index.js";
 
@@ -66,6 +67,7 @@ test("compileExecutionPlan derives stable implementation identities, terminals, 
   });
 
   assert.equal(result.errors.length, 0);
+  assert.equal(result.plan?.revision, 1);
   assert.deepEqual(result.plan?.nodes.map(node => node.id), ["T01", "T02", "T03"]);
   assert.deepEqual(result.plan?.terminalNodeIds, ["T02", "T03"]);
   assert.deepEqual(result.plan?.finalReview, {
@@ -75,6 +77,18 @@ test("compileExecutionPlan derives stable implementation identities, terminals, 
   });
   assert.equal(Object.isFrozen(result.plan), true);
   assert.equal(Object.isFrozen(result.plan?.nodes[0]), true);
+});
+
+test("compileExecutionPlan represents a new plan revision without mutating the frozen plan", () => {
+  const graph = {
+    contract: "acp.ticket-graph/v1",
+    tickets: [{ id: "T01", title: "One", scope: [], needs: [], validation: [] }],
+  };
+  const first = compileExecutionPlan(graph).plan!;
+  const second = compileExecutionPlan(graph, { revision: 2 }).plan!;
+  assert.equal(first.revision, 1);
+  assert.equal(second.revision, 2);
+  assert.notEqual(first, second);
 });
 
 test("compileExecutionPlan rejects duplicate identities, missing dependencies, and cycles", () => {
@@ -112,11 +126,36 @@ test("validateExecutionPlan rejects unsupported versions and invalid final revie
   });
   assert.match(invalid.errors.join("\n"), /finalReview\.needs.*terminal/i);
 
+  const contradictory = validateExecutionPlan({
+    ...compiled,
+    nodes: [{ ...compiled.nodes[0], needs: ["ghost"] }],
+  });
+  assert.match(contradictory.errors.join("\n"), /ticket\.needs.*node\.needs/i);
+
   const collision = compileExecutionPlan({
     contract: "acp.ticket-graph/v1",
     tickets: [{ id: "final-review", title: "Collision", scope: [], needs: [], validation: [] }],
   });
   assert.match(collision.errors.join("\n"), /final-review.*reserved/i);
+});
+
+test("validateExecutionPlanSnapshot rejects expansion state that cannot prove one complete expansion", () => {
+  const plan = compileExecutionPlan({
+    contract: "acp.ticket-graph/v1",
+    tickets: [{ id: "T01", title: "One", scope: [], needs: [], validation: [] }],
+  }).plan!;
+  const invalidPending = validateExecutionPlanSnapshot({
+    plan,
+    expansion: { status: "pending", expandedNodeIds: ["T01"] },
+  });
+  assert.match(invalidPending.errors.join("\n"), /pending.*empty/i);
+
+  const invalidExpanded = validateExecutionPlanSnapshot({
+    plan,
+    expansion: { status: "expanded", expandedNodeIds: ["T01"], expandedAt: "never" },
+  });
+  assert.match(invalidExpanded.errors.join("\n"), /expandedNodeIds.*exactly/i);
+  assert.match(invalidExpanded.errors.join("\n"), /expandedAt.*ISO/i);
 });
 
 test("markExecutionPlanExpanded records one complete expansion and rejects a second copy", () => {
