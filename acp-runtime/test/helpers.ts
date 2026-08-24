@@ -118,7 +118,7 @@ export function writePlanExecuteVerifyPipeline(workspace: string): void {
 			"      type: acp.approval/v1",
 			"      format: markdown",
 			"  - id: implement",
-			"    agent: Vibe Sandcastle",
+			"    agent: Codex Sandbox",
 			"    needs: [approval]",
 			"    inputs:",
 			"      - name: plan",

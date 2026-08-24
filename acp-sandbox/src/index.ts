@@ -1,0 +1,84 @@
+import type { PromotionPolicy } from './gitPromotion.js';
+
+export {
+  DockerSandboxAcpBridgeAgent,
+  SandboxAcpExtensionAgent,
+  type DockerSandboxAcpBridgeOptions,
+  type SandboxBridgeFailure,
+  type SandboxBridgePreviewResponse,
+} from './acpBridge.js';
+
+export {
+  SANDBOX_EXTENSION_METHODS,
+  SandboxAcpExtensionHandler,
+  isSandboxExtensionMethod,
+  type SandboxExtensionHandler,
+  type SandboxExtensionHandlers,
+  type SandboxExtensionMethod,
+} from './extensions.js';
+
+export {
+  GitPromotion,
+  IntegrationConflictError,
+  PROMOTION_POLICIES,
+  SLOPIFY_GIT_EMAIL,
+  SLOPIFY_GIT_NAME,
+  type AgentCheckpoint,
+  type AgentCheckpointPreview,
+  type AgentCheckpointResult,
+  type CreateAgentCheckpointInput,
+  type IntegrateAgentCheckpointsInput,
+  type IntegrationConflict,
+  type PipelineChangeSet,
+  type PipelineChangeSetPreview,
+  type PipelineChangeSetResult,
+  type PromotePipelineChangeSetInput,
+  type PromotionDecider,
+  type PromotionDecision,
+  type PromotionPolicy,
+  type PromotionRequest,
+  type PromotionResult,
+  type PromotionStatus,
+} from './gitPromotion.js';
+
+export {
+  DOCKER_SANDBOX_NETWORK_POLICY_CHOICES,
+  DockerSandboxRuntime,
+  DEFAULT_SANDBOX_CLEANUP_TIMEOUT_MS,
+  MINIMUM_SBX_VERSION,
+  SandboxRunCancelledError,
+  SandboxRunTimeoutError,
+  SandboxResumeDivergenceError,
+  createNodeSubprocessExecutor,
+  retainedSandboxCommands,
+  stableSandboxName,
+  type DockerSandboxNetworkPolicyChoice,
+  type DockerSandboxNetworkPolicyPreset,
+  type DockerSandboxRuntimeOptions,
+  type RetainedSandbox,
+  type RetainedSandboxCommands,
+  type SandboxCleanupDiagnostic,
+  type SandboxRunDiagnostic,
+  type SandboxRunInput,
+  type SandboxRunResult,
+  type SandboxRunState,
+  type SandboxRunTerminalStatus,
+  type SandboxReconciliationResult,
+  type SandboxResumeSnapshot,
+  type SubprocessExecutor,
+  type SubprocessRequest,
+  type SubprocessResult,
+} from './runtime.js';
+
+export interface SandboxAgentConfig {
+  transport: 'sandbox';
+  agent: 'codex';
+  model: string;
+  effort?: 'low' | 'medium' | 'high' | 'xhigh';
+  displayName?: string;
+  skills?: boolean;
+}
+
+export interface SandboxPipelineConfig {
+  promotion: PromotionPolicy;
+}

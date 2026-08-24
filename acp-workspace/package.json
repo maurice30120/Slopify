@@ -23,7 +23,7 @@
   "dependencies": {
     "@acp-client/pipeline": "file:../acp-pipeline",
     "@acp-client/runtime": "file:../acp-runtime",
-    "@acp-client/sandcastle": "file:../acp-sandcastle",
+    "@acp-client/sandbox": "file:../acp-sandbox",
     "js-yaml": "^4.1.1"
   },
   "devDependencies": {

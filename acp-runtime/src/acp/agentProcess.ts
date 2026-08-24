@@ -26,6 +26,11 @@ export interface AgentProcessExit {
   error?: Error;
 }
 
+/**
+ * Possède les processus ACP locaux et impose une terminaison bornée. Le manager
+ * est la seule couche autorisée à lancer ou arrêter ces processus, afin que les
+ * connexions ne survivent pas au run qui les a créées.
+ */
 export class AgentProcessManager extends EventEmitter {
   private readonly agents = new Map<string, AgentInstance>();
   private nextId = 1;
@@ -82,6 +87,9 @@ export class AgentProcessManager extends EventEmitter {
 
     try {
       instance.process.kill('SIGTERM');
+      // Certains agents ne traitent pas SIGTERM lorsqu'ils sont bloqués dans un
+      // appel d'outil. La limite évite qu'une annulation conserve indéfiniment le
+      // processus et ses descripteurs de fichiers.
       const forceKillTimer = setTimeout(() => {
         if (instance.process.exitCode === null) {
           instance.process.kill('SIGKILL');

@@ -4,7 +4,13 @@ import {
   mapPolicyToLegacyPermissions,
   mapPolicyToLegacySideEffects,
 } from "./PipelinePolicy";
-import type { PipelineAgentRunner, PipelineStepStatusUpdate } from "./PipelineAgentRunner";
+import { PipelineSandboxResumeDivergenceError } from "./PipelineAgentRunner";
+import type {
+  PipelineAgentRunner,
+  PipelineChangeSetFinalizationInput,
+  PipelineChangeSetFinalizationResult,
+  PipelineStepStatusUpdate,
+} from "./PipelineAgentRunner";
 import type {
   AgentNodeSession,
   AgentNodeSessionFactory,
@@ -23,6 +29,11 @@ export interface PipelineRuntimeAgentAdapterOptions {
   onStatus?: (runId: string, node: CompiledPipelineNode, update: PipelineStepStatusUpdate) => void;
 }
 
+/**
+ * Isole le runtime de DAG du contrat historique PipelineAgentRunner. Cette
+ * couche est le seul endroit où un prompt structuré et une politique normalisée
+ * sont rabattus vers les champs de compatibilité attendus par les runners tiers.
+ */
 export class PipelineRuntimeAgentAdapter implements PipelineRuntimeAdapter {
   constructor(private readonly options: PipelineRuntimeAgentAdapterOptions) {}
 
@@ -43,8 +54,21 @@ export class PipelineRuntimeAgentAdapter implements PipelineRuntimeAdapter {
     }
   }
 
+  async finalizePipelineChangeSet(
+    input: PipelineChangeSetFinalizationInput,
+  ): Promise<PipelineChangeSetFinalizationResult | undefined> {
+    return this.options.runAgent.finalizePipelineChangeSet?.(input);
+  }
+
   asSessionFactory(): AgentNodeSessionFactory {
-    return input => this.createSession(input);
+    // La factory est une fonction enrichie d'un hook de finalisation. Conserver
+    // ce hook sur l'objet callable permet aux hôtes historiques de participer à
+    // la Promotion globale sans modifier la signature AgentNodeSessionFactory.
+    const factory = (input => this.createSession(input)) as AgentNodeSessionFactory & {
+      finalizePipelineChangeSet?: PipelineRuntimeAgentAdapter["finalizePipelineChangeSet"];
+    };
+    factory.finalizePipelineChangeSet = input => this.finalizePipelineChangeSet(input);
+    return factory;
   }
 }
 
@@ -91,13 +115,16 @@ class PipelineRuntimeAgentNodeSession implements AgentNodeSession {
 
     try {
       const result = await this.options.runAgent({
+        runId: input.runId,
+        nodeId: node.id,
+        attempt: input.attempt,
         workspaceCwd: this.options.workspaceCwd(),
         agentName: node.agent,
         promptText: input.prompt,
         prompt: {
           skills: [...node.skills],
-          // The catalog resolves the public instructionsFile field into this
-          // compatibility slot before compilation.
+          // Le catalogue résout instructionsFile dans ce champ de compatibilité
+          // avant la compilation afin de ne pas modifier le contrat du runtime.
           instructions: node.promptFile,
           task: input.prompt,
           context: Object.values(input.inputs),
@@ -109,6 +136,8 @@ class PipelineRuntimeAgentNodeSession implements AgentNodeSession {
         permissions: mapPolicyToLegacyPermissions(node.policy),
         promotion: node.policy.promotion,
         skills: [...node.skills],
+        onSandboxRunState: input.onSandboxRunState,
+        resumeSandboxRun: input.resumeSandboxRun,
       });
       return {
         artifact: {
@@ -119,6 +148,7 @@ class PipelineRuntimeAgentNodeSession implements AgentNodeSession {
         },
       };
     } catch (e: unknown) {
+      if (e instanceof PipelineSandboxResumeDivergenceError) throw e;
       return {
         code: "agent_failed",
         message: e instanceof Error && e.message ? e.message : String(e),

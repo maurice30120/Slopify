@@ -1,0 +1,45 @@
+{
+  "runId": "24bc3e92-53b4-4f31-8fca-12dd65f8dc79",
+  "pipelineId": "grill-spec-tickets-implement-review",
+  "status": "running",
+  "inputVariables": {
+    "userPrompt": "genere un poem en français peoem.md"
+  },
+  "nodeStates": {
+    "plan": {
+      "status": "running",
+      "attempts": 1,
+      "startedAt": "2026-07-27T12:27:12.558Z"
+    },
+    "plan_approval": {
+      "status": "pending",
+      "attempts": 0
+    },
+    "spec": {
+      "status": "pending",
+      "attempts": 0
+    },
+    "tasks": {
+      "status": "pending",
+      "attempts": 0
+    },
+    "delivery_approval": {
+      "status": "pending",
+      "attempts": 0
+    }
+  },
+  "artifacts": {},
+  "diagnostics": [],
+  "createdAt": "2026-07-27T12:27:12.538Z",
+  "updatedAt": "2026-07-27T12:27:12.559Z",
+  "activeInterview": {
+    "nodeId": "plan",
+    "protocol": "proposed-plan",
+    "originalPrompt": "User request:\ngenere un poem en français peoem.md\n",
+    "state": "question",
+    "completionRequested": false,
+    "turns": [],
+    "repairAttemptsUsed": 0,
+    "finalOutputRequestsUsed": 0
+  }
+}

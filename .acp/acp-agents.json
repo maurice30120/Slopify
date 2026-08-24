@@ -1,0 +1,23 @@
+{
+  "agents": {
+    "Codex CLI": {
+      "command": "npx",
+      "args": ["-y", "@agentclientprotocol/codex-acp@1.1.7"],
+      "env": {}
+    },
+    "Codex Sandbox": {
+      "transport": "sandbox",
+      "agent": "codex",
+      "model": "gpt-5.6-codex",
+      "effort": "high"
+    }
+  },
+  "pipeline": {
+    "enabled": true,
+    "instructionsMaxBytes": 262144,
+    "timeouts": {
+      "initializeMs": 120000,
+      "promptMs": 1800000
+    }
+  }
+}

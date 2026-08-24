@@ -5,7 +5,7 @@ import {
   InMemoryPipelineRunStore,
   NATIVE_ACP_BASELINE_CAPABILITIES,
   PipelineRuntime,
-  SANDCASTLE_BASELINE_CAPABILITIES,
+  SANDBOX_BASELINE_CAPABILITIES,
   compilePipelineV3Definition,
   type AgentNodeSessionActivity,
   type AgentNodeSessionFactoryInput,
@@ -26,12 +26,12 @@ const hostSurfaces: HostSurfaceContract[] = [
   {
     name: "Pi",
     slug: "pi",
-    capabilities: SANDCASTLE_BASELINE_CAPABILITIES,
+    capabilities: SANDBOX_BASELINE_CAPABILITIES,
   },
   {
     name: "VS Code",
     slug: "vscode",
-    capabilities: SANDCASTLE_BASELINE_CAPABILITIES,
+    capabilities: SANDBOX_BASELINE_CAPABILITIES,
   },
 ];
 

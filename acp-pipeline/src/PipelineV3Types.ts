@@ -1,4 +1,5 @@
-import type { NormalizedPipelinePolicy } from "./PipelinePolicy";
+import type { NormalizedPipelinePolicy, NormalizedPromotionPolicy } from "./PipelinePolicy";
+import type { PipelineIntegrationConflict, PipelineSandboxResumeDivergence } from "./PipelineAgentRunner";
 
 export type PipelineArtifactFormat = "text" | "markdown" | "json";
 
@@ -55,11 +56,11 @@ export interface PipelineAgentNodeDefinition {
   id: string;
   type?: "agent";
   agent: string;
-  /** Run-specific task and data. */
+  /** Tâche et données propres au run. */
   prompt?: string;
-  /** Invariant role and rules loaded separately from prompt. */
+  /** Rôle et règles invariants, chargés séparément de la tâche. */
   instructionsFile?: string;
-  /** @deprecated Use instructionsFile. */
+  /** @deprecated Utiliser `instructionsFile`. */
   promptFile?: string;
   skills?: string[];
   needs?: string[];
@@ -96,6 +97,7 @@ export interface PipelineV3Definition {
   version: 3;
   id: string;
   title: string;
+  promotion?: NormalizedPromotionPolicy;
   agents?: Record<string, unknown>;
   policies?: Record<string, PipelinePolicyReference>;
   nodes: PipelineNodeDefinition[];
@@ -108,7 +110,7 @@ export interface CompiledPipelineNode {
   kind: "agent" | "pause";
   agent?: string;
   prompt?: string;
-  /** Resolved invariant instructions; retained in this compatibility slot. */
+  /** Instructions invariantes résolues, conservées dans ce champ de compatibilité. */
   promptFile?: string;
   skills: readonly string[];
   needs: readonly string[];
@@ -128,6 +130,7 @@ export interface CompiledPipelineProgram {
   version: 3;
   id: string;
   title: string;
+  promotion: NormalizedPromotionPolicy;
   nodes: readonly CompiledPipelineNode[];
   nodesById: ReadonlyMap<string, CompiledPipelineNode>;
   dependentsById: ReadonlyMap<string, readonly string[]>;
@@ -152,8 +155,50 @@ export interface PipelineRuntimeSnapshot {
   nodeInterviewHistories?: Record<string, PipelineInterviewSnapshot>;
   finalArtifact?: PipelineArtifact;
   diagnostics: PipelineRuntimeDiagnostic[];
+  /** Durable adapter state required to resume isolated workspace effects. */
+  sandboxRuns?: Record<string, PipelineSandboxRunSnapshot>;
   createdAt: string;
   updatedAt: string;
+}
+
+export type PipelineSandboxIntegrationState =
+  | "sandbox_created"
+  | "checkpointed"
+  | "integrating"
+  | "integration_conflict"
+  | "resume_divergence"
+  | "integrated";
+
+export interface PipelineSandboxCheckpointSnapshot {
+  status: "checkpointed" | "no_changes";
+  commit: string;
+  remote: string;
+  ref: string;
+  preview: {
+    baseCommit: string;
+    checkpointCommit: string;
+    fileCount: number;
+    files: string[];
+    diff: string;
+  };
+}
+
+export interface PipelineSandboxRunSnapshot {
+  sandboxName: string;
+  sandboxId?: string;
+  runId: string;
+  nodeId: string;
+  attempt: number;
+  baseCommit: string;
+  integrationState: PipelineSandboxIntegrationState;
+  resourceState: "active" | "retained" | "removed";
+  checkpoint?: PipelineSandboxCheckpointSnapshot;
+  output?: string;
+  diagnosticsPath?: string;
+  integrationDiagnostic?: {
+    files: string[];
+  };
+  resumeDiagnostic?: string;
 }
 
 export interface PipelineRuntimeNodeSnapshot {
@@ -172,6 +217,8 @@ export interface PipelinePauseSnapshot {
   format: PipelinePauseFormat;
   handoff?: PipelineWorkspaceHandoffDefinition;
   workspaceGuard?: "documentation-only";
+  integrationConflict?: PipelineIntegrationConflict;
+  sandboxResumeDivergence?: PipelineSandboxResumeDivergence;
 }
 
 export type PipelineInterviewState = "question";
@@ -212,7 +259,12 @@ export type PipelineRuntimeResult =
   | { status: "completed"; runId: string; artifact?: PipelineArtifact; snapshot: PipelineRuntimeSnapshot }
   | { status: "paused"; runId: string; pause: PipelinePauseSnapshot; snapshot: PipelineRuntimeSnapshot }
   | { status: "failed"; runId: string; error: PipelineRuntimeDiagnostic; snapshot: PipelineRuntimeSnapshot }
-  | { status: "cancelled"; runId: string; snapshot: PipelineRuntimeSnapshot };
+  | {
+      status: "cancelled";
+      runId: string;
+      snapshot: PipelineRuntimeSnapshot;
+      promotion?: "rejected" | "cancelled";
+    };
 
 export interface PipelineResumeDecision {
   pauseId: string;
@@ -222,10 +274,13 @@ export interface PipelineResumeDecision {
 
 export interface PipelineNodeExecutionInput {
   runId: string;
+  attempt?: number;
   node: CompiledPipelineNode;
   prompt: string;
   inputs: Record<string, PipelineArtifact>;
   signal: AbortSignal;
+  onSandboxRunState?: (state: PipelineSandboxRunSnapshot) => void | Promise<void>;
+  resumeSandboxRun?: PipelineSandboxRunSnapshot;
 }
 
 export interface AgentNodeSessionTurnInput extends PipelineNodeExecutionInput {

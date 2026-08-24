@@ -13,6 +13,7 @@ import type {
   PipelineArtifact,
   PipelineNodeExecutionFailure,
   PipelineNodeExecutionResult,
+  PipelinePauseSnapshot,
   PipelineResumeDecision,
   PipelineRuntimeAdapter,
   PipelineRuntimeDiagnostic,
@@ -72,12 +73,21 @@ interface ActiveRun {
   activityUnsubscribers: Map<AgentNodeSession, () => void>;
   closedSessions: WeakSet<AgentNodeSession>;
   nodeTasks: Map<string, Promise<NodeTaskResult>>;
+  explicitRetryNodes: Set<string>;
 }
 
 type NodeTaskResult =
   | { nodeId: string; result: PipelineRuntimeDiagnostic | { ok: true } | { paused: PipelineRuntimeResult } }
   | { nodeId: string; thrown: unknown };
 
+/**
+ * Orchestre le DAG sans connaître le runtime concret ni effectuer de Promotion.
+ * Chaque transition durable est persistée avant l'événement correspondant afin
+ * qu'une reprise ne reconstruise jamais un état plus ancien que celui observé.
+ * Les sessions restent strictement attachées à un couple run/nœud.
+ *
+ * Voir `docs/adr/0003-keep-acp-as-the-sandbox-runtime-boundary.md`.
+ */
 export class PipelineRuntime {
   private readonly runs = new Map<string, ActiveRun>();
   private readonly programsById = new Map<string, CompiledPipelineProgram>();
@@ -131,6 +141,7 @@ export class PipelineRuntime {
       activityUnsubscribers: new Map(),
       closedSessions: new WeakSet(),
       nodeTasks: new Map(),
+      explicitRetryNodes: new Set(),
     };
     this.runs.set(runId, active);
     await this.store?.create(cloneSnapshot(snapshot));
@@ -212,6 +223,60 @@ export class PipelineRuntime {
     return this.advance(active);
   }
 
+  async retryNode(
+    runId: string,
+    nodeId: string,
+    pauseId: string,
+  ): Promise<PipelineRuntimeResult> {
+    const active = await this.requireActiveRun(runId);
+    const pause = active.snapshot.pendingPause;
+    if (!pause || pause.id !== pauseId || pause.nodeId !== nodeId) {
+      const diagnostic = {
+        code: "invalid_resume",
+        message: `Pause "${pauseId}" is not current for run "${runId}".`,
+      };
+      return { status: "failed", runId, error: diagnostic, snapshot: cloneSnapshot(active.snapshot) };
+    }
+    const node = active.program.nodesById.get(nodeId);
+    if (!node || node.kind !== "agent") {
+      const diagnostic = {
+        nodeId,
+        code: "invalid_retry_node",
+        message: `Node "${nodeId}" is not an agent node in run "${runId}".`,
+      };
+      return { status: "failed", runId, error: diagnostic, snapshot: cloneSnapshot(active.snapshot) };
+    }
+    const state = active.snapshot.nodeStates[nodeId];
+    if (!state || state.status !== "completed") {
+      const diagnostic = {
+        nodeId,
+        code: "invalid_retry_node",
+        message: `Node "${nodeId}" is not completed in run "${runId}".`,
+      };
+      return { status: "failed", runId, error: diagnostic, snapshot: cloneSnapshot(active.snapshot) };
+    }
+
+    for (const [key, artifact] of Object.entries(active.snapshot.artifacts)) {
+      if (artifact.producerNodeId === nodeId) {
+        delete active.snapshot.artifacts[key];
+      }
+    }
+    if (active.snapshot.finalArtifact?.producerNodeId === nodeId) {
+      active.snapshot.finalArtifact = undefined;
+    }
+    active.snapshot.nodeStates[nodeId] = {
+      status: "pending",
+      attempts: state.attempts,
+    };
+    active.snapshot.pendingPause = undefined;
+    active.snapshot.status = "running";
+    active.snapshot.updatedAt = this.isoNow();
+    active.explicitRetryNodes.add(nodeId);
+    await this.persist(active.snapshot);
+    await this.emitRuntimeEvent({ runId, type: "resumed", nodeId, at: active.snapshot.updatedAt });
+    return this.advance(active);
+  }
+
   async cancel(runId: string): Promise<PipelineRuntimeResult> {
     const active = await this.requireActiveRun(runId);
     active.controller.abort();
@@ -228,6 +293,67 @@ export class PipelineRuntime {
     await this.emitRuntimeEvent({ runId, type: "cancelled", at: active.snapshot.updatedAt });
     this.runs.delete(runId);
     return { status: "cancelled", runId, snapshot: cloneSnapshot(active.snapshot) };
+  }
+
+  async recover(runId: string): Promise<PipelineRuntimeResult> {
+    const active = await this.requireActiveRun(runId);
+    if (active.snapshot.pendingPause) {
+      return {
+        status: "paused",
+        runId,
+        pause: active.snapshot.pendingPause,
+        snapshot: cloneSnapshot(active.snapshot),
+      };
+    }
+    if (active.snapshot.status !== "running") {
+      throw new Error(`Pipeline run "${runId}" is not recoverable from status "${active.snapshot.status}".`);
+    }
+    for (const [nodeId, state] of Object.entries(active.snapshot.nodeStates)) {
+      if (state.status === "running") {
+        active.snapshot.nodeStates[nodeId] = {
+          ...state,
+          status: "pending",
+          attempts: Math.max(0, state.attempts - 1),
+        };
+      }
+    }
+    active.snapshot.updatedAt = this.isoNow();
+    await this.persist(active.snapshot);
+    return this.advance(active);
+  }
+
+  protected async suspendRecoveredRun(
+    runId: string,
+    pause: PipelinePauseSnapshot,
+    update?: (snapshot: PipelineRuntimeSnapshot) => void,
+  ): Promise<PipelineRuntimeResult> {
+    const active = await this.requireActiveRun(runId);
+    active.snapshot.status = "paused";
+    active.snapshot.pendingPause = pause;
+    update?.(active.snapshot);
+    active.snapshot.updatedAt = this.isoNow();
+    await this.persist(active.snapshot);
+    await this.emitRuntimeEvent({ runId, type: "paused", nodeId: pause.nodeId, at: active.snapshot.updatedAt });
+    return { status: "paused", runId, pause, snapshot: cloneSnapshot(active.snapshot) };
+  }
+
+  protected async retryRecoveredRun(runId: string): Promise<PipelineRuntimeResult> {
+    const active = await this.requireActiveRun(runId);
+    active.controller = new AbortController();
+    active.snapshot.status = "running";
+    active.snapshot.pendingPause = undefined;
+    for (const [nodeId, state] of Object.entries(active.snapshot.nodeStates)) {
+      if (state.status === "running") {
+        active.snapshot.nodeStates[nodeId] = {
+          ...state,
+          status: "pending",
+          attempts: Math.max(0, state.attempts - 1),
+        };
+      }
+    }
+    active.snapshot.updatedAt = this.isoNow();
+    await this.persist(active.snapshot);
+    return this.advance(active);
   }
 
   async inspect(runId: string): Promise<PipelineRuntimeSnapshot | null> {
@@ -269,6 +395,11 @@ export class PipelineRuntime {
       const completed = await Promise.race(active.nodeTasks.values());
       active.nodeTasks.delete(completed.nodeId);
       if ("thrown" in completed) {
+        active.controller.abort();
+        await this.cancelActiveSessions(active);
+        const peers = [...active.nodeTasks.values()];
+        active.nodeTasks.clear();
+        await Promise.allSettled(peers);
         throw completed.thrown;
       }
       const result = completed.result;
@@ -358,10 +489,12 @@ export class PipelineRuntime {
         message: unsupportedPolicy.message,
       };
     }
+    const explicitRetry = active.explicitRetryNodes.delete(node.id);
+    const maximumAttempt = explicitRetry ? state.attempts + 1 : node.retry.maxAttempts;
     if (node.interaction) {
-      return this.executeInterviewNode(active, node, prompt, inputs);
+      return this.executeInterviewNode(active, node, prompt, inputs, undefined, maximumAttempt);
     }
-    for (let attempt = state.attempts + 1; attempt <= node.retry.maxAttempts; attempt++) {
+    for (let attempt = state.attempts + 1; attempt <= maximumAttempt; attempt++) {
       active.snapshot.nodeStates[node.id] = { ...state, status: "running", attempts: attempt, startedAt: state.startedAt ?? this.isoNow() };
       active.snapshot.updatedAt = this.isoNow();
       await this.persist(active.snapshot);
@@ -376,10 +509,13 @@ export class PipelineRuntime {
       try {
         const result = await session.send({
           runId: active.snapshot.runId,
+          attempt,
           node,
           prompt,
           inputs,
           signal: active.controller.signal,
+          onSandboxRunState: state => this.persistSandboxRunState(active, state),
+          resumeSandboxRun: this.resumeSandboxRun(active, node.id, attempt),
         });
         if (active.controller.signal.aborted) {
           return { ok: true };
@@ -399,7 +535,7 @@ export class PipelineRuntime {
         }
 
         active.snapshot.diagnostics.push({ nodeId: node.id, attempt, code: result.code, message: result.message });
-        if (!result.retryable || attempt >= node.retry.maxAttempts) {
+        if (!result.retryable || attempt >= maximumAttempt) {
           active.snapshot.nodeStates[node.id] = {
             ...active.snapshot.nodeStates[node.id],
             status: "failed",
@@ -439,6 +575,7 @@ export class PipelineRuntime {
     originalPrompt: string,
     inputs: Record<string, PipelineArtifact>,
     fixedAttempt?: number,
+    maximumAttempt = node.retry.maxAttempts,
   ): Promise<PipelineRuntimeDiagnostic | { ok: true } | { paused: PipelineRuntimeResult }> {
     const protocol = node.interaction ? getPipelineInterviewProtocol(node.interaction.protocol) : undefined;
     if (!protocol || !node.output || !node.interaction) {
@@ -471,7 +608,7 @@ export class PipelineRuntime {
     const firstAttempt = fixedAttempt ?? active.snapshot.nodeStates[node.id].attempts + 1;
     let replayNextAttempt = Boolean(existing) && !active.sessions.has(node.id);
 
-    for (let attempt = firstAttempt; attempt <= node.retry.maxAttempts; attempt++) {
+    for (let attempt = firstAttempt; attempt <= maximumAttempt; attempt++) {
       active.snapshot.nodeStates[node.id] = {
         ...active.snapshot.nodeStates[node.id],
         status: "running",
@@ -501,11 +638,13 @@ export class PipelineRuntime {
           prompt,
           inputs,
           signal: active.controller.signal,
+          onSandboxRunState: state => this.persistSandboxRunState(active, state),
+          resumeSandboxRun: this.resumeSandboxRun(active, node.id, attempt),
           replay: isReplay,
         });
         if (!("artifact" in result)) {
           active.snapshot.diagnostics.push({ nodeId: node.id, attempt, code: result.code, message: result.message });
-          if (!result.retryable || attempt >= node.retry.maxAttempts) {
+          if (!result.retryable || attempt >= maximumAttempt) {
             active.snapshot.nodeStates[node.id] = {
               ...active.snapshot.nodeStates[node.id],
               status: "failed",
@@ -515,6 +654,9 @@ export class PipelineRuntime {
             await this.persist(active.snapshot);
             return { nodeId: node.id, attempt, code: result.code, message: result.message };
           }
+          // Un historique ACP ne doit être rejoué que si la session distante a
+          // été perdue. Une autre erreur retryable relance la tentative sans
+          // dupliquer dans l'agent les tours déjà présents dans la session.
           const shouldReplayTransportLoss = isInterviewTransportLoss(result);
           await this.closeInterviewSession(active, node.id);
           replayNextAttempt = shouldReplayTransportLoss;
@@ -721,6 +863,7 @@ export class PipelineRuntime {
         activityUnsubscribers: new Map<AgentNodeSession, () => void>(),
         closedSessions: new WeakSet<AgentNodeSession>(),
         nodeTasks: new Map<string, Promise<NodeTaskResult>>(),
+        explicitRetryNodes: new Set<string>(),
       };
       this.runs.set(runId, restored);
       return restored;
@@ -732,7 +875,34 @@ export class PipelineRuntime {
     await this.store?.save(cloneSnapshot(snapshot));
   }
 
+  private async persistSandboxRunState(
+    active: ActiveRun,
+    state: NonNullable<PipelineRuntimeSnapshot["sandboxRuns"]>[string],
+  ): Promise<void> {
+    if (state.runId !== active.snapshot.runId) {
+      throw new Error(`Sandbox Run "${state.sandboxName}" belongs to run "${state.runId}", not "${active.snapshot.runId}".`);
+    }
+    active.snapshot.sandboxRuns = {
+      ...active.snapshot.sandboxRuns,
+      [state.sandboxName]: cloneJson(state),
+    };
+    active.snapshot.updatedAt = this.isoNow();
+    await this.persist(active.snapshot);
+  }
+
+  private resumeSandboxRun(
+    active: ActiveRun,
+    nodeId: string,
+    attempt: number,
+  ): NonNullable<PipelineRuntimeSnapshot["sandboxRuns"]>[string] | undefined {
+    return Object.values(active.snapshot.sandboxRuns ?? {}).find(state =>
+      state.nodeId === nodeId && state.attempt === attempt
+    );
+  }
+
   private recordInterviewHistory(active: ActiveRun, interview: NonNullable<PipelineRuntimeSnapshot["activeInterview"]>): void {
+    // L'historique est aussi publié comme artefact structuré : une reprise peut
+    // reconstruire l'entretien sans dépendre des chunks de diagnostic éphémères.
     const history = cloneJson(interview);
     active.snapshot.nodeInterviewHistories = {
       ...active.snapshot.nodeInterviewHistories,
@@ -814,6 +984,9 @@ export class PipelineRuntime {
   }
 
   private async closeSessionForRun(active: ActiveRun, session: AgentNodeSession): Promise<void> {
+    // Plusieurs chemins terminaux convergent ici (succès, retry, échec et
+    // annulation). La fermeture doit rester idempotente pour ne pas envoyer deux
+    // close au même transport ACP.
     if (active.closedSessions.has(session)) {
       return;
     }

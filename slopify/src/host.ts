@@ -6,6 +6,7 @@ import {
   PipelineRuntime,
   PipelineRuntimeAgentAdapter,
   resolvePipelineStepText,
+  workspacePipelineRunStore,
   type AgentNodeSessionFactory,
   type CompiledPipelineProgram,
   type CompiledPipelineNode,
@@ -13,6 +14,7 @@ import {
   type PipelineAgentRunner,
   type PipelineResumeDecision,
   type PipelineRuntimeResult,
+  type PipelineRunStore,
 } from '@acp-client/pipeline';
 
 import type { CliTerminal } from './terminal.js';
@@ -26,6 +28,7 @@ export interface CliLogger {
 
 export interface CliPipelineBackend {
   programs: CompiledPipelineProgram[];
+  preflightPipeline?(program: CompiledPipelineProgram, runId: string): Promise<void>;
   runAgent?: PipelineAgentRunner;
   clearRunLogs?(): void;
 }
@@ -55,6 +58,11 @@ export interface CliPipelineHostOptions {
   runIdFactory?: () => string;
 }
 
+/**
+ * Adapte le runtime de pipeline au cycle de vie de la CLI. Les runs en pause
+ * restent attachés à leur instance pour pouvoir reprendre leurs sessions ; les
+ * runs terminaux sont retirés immédiatement pour ne pas conserver de processus.
+ */
 export class CliPipelineHost {
   private readonly backend: CliPipelineBackend;
   private readonly programs: CompiledPipelineProgram[];
@@ -64,11 +72,13 @@ export class CliPipelineHost {
   private readonly runLogs = new Map<string, PipelineRunLog>();
   private readonly activeAgentNodes = new Map<string, CompiledPipelineNode>();
   private readonly activityByNode = new Map<string, 'agent_message_chunk' | 'agent_thought_chunk'>();
+  private readonly runStore: PipelineRunStore;
 
   constructor(
     private readonly workspaceCwd: string,
     private readonly options: CliPipelineHostOptions,
   ) {
+    this.runStore = workspacePipelineRunStore(workspaceCwd);
     this.logger = {
       log: message => {
         this.appendHostLog('host_log', { message });
@@ -121,6 +131,7 @@ export class CliPipelineHost {
     }
 
     const runId = this.options.runIdFactory?.() ?? randomUUID();
+    await this.backend.preflightPipeline?.(program, runId);
     PipelineRunLog.clear(this.workspaceCwd);
     this.backend.clearRunLogs?.();
     const runLog = PipelineRunLog.create(this.workspaceCwd, runId, program.id);
@@ -131,33 +142,7 @@ export class CliPipelineHost {
       pipelineTitle: program.title,
       promptBytes: Buffer.byteLength(prompt, 'utf8'),
     });
-    const runtime = new PipelineRuntime({ createSession: this.createSession }, {
-      runIdFactory: () => runId,
-      programs: [program],
-      onEvent: event => {
-        const log = this.runLogs.get(event.runId);
-        const eventNode = event.nodeId ? program.nodesById.get(event.nodeId) : undefined;
-        if (event.type === 'node_started' && eventNode?.agent) {
-          this.activeAgentNodes.set(eventNode.agent, eventNode);
-        }
-        if (eventNode?.agent) {
-          log?.appendNode(eventNode, 'runtime_event', event);
-        } else {
-          log?.append('runtime_event', event);
-        }
-        if ((event.type === 'node_completed' || event.type === 'node_failed') && eventNode?.agent) {
-          this.activeAgentNodes.delete(eventNode.agent);
-        }
-        if (this.options.verbose) {
-          const node = event.nodeId ? ` node=${event.nodeId}` : '';
-          const message = event.message ? ` ${event.message}` : '';
-          this.options.terminal.writeError(`[runtime] ${event.type}${node}${message}`);
-        }
-        if ((event.type === 'node_completed' || event.type === 'node_failed') && event.nodeId) {
-          this.activityByNode.delete(activityKey(event.runId, event.nodeId));
-        }
-      },
-    });
+    const runtime = this.createRuntime(program, runId);
     this.runtimes.set(runId, runtime);
     const result = await runtime.start(program, { inputs: { userPrompt: prompt } });
     runLog.append('run_result', summarizeRuntimeResult(result));
@@ -166,10 +151,7 @@ export class CliPipelineHost {
   }
 
   async resume(runId: string, decision: PipelineResumeDecision): Promise<PipelineRuntimeResult> {
-    const runtime = this.runtimes.get(runId);
-    if (!runtime) {
-      throw new Error(`Unknown active ACP pipeline run "${runId}".`);
-    }
+    const runtime = await this.requireRuntime(runId);
     const result = await runtime.resume(runId, decision);
     this.runLogs.get(runId)?.append('run_resumed_result', summarizeRuntimeResult(result));
     this.cleanupTerminalResult(result);
@@ -177,10 +159,7 @@ export class CliPipelineHost {
   }
 
   async cancel(runId: string): Promise<PipelineRuntimeResult> {
-    const runtime = this.runtimes.get(runId);
-    if (!runtime) {
-      throw new Error(`Unknown active ACP pipeline run "${runId}".`);
-    }
+    const runtime = await this.requireRuntime(runId);
     const result = await runtime.cancel(runId);
     this.runLogs.get(runId)?.append('run_cancelled_result', summarizeRuntimeResult(result));
     this.runtimes.delete(runId);
@@ -213,6 +192,57 @@ export class CliPipelineHost {
     }
   }
 
+  async recover(runId: string): Promise<PipelineRuntimeResult> {
+    const runtime = await this.requireRuntime(runId);
+    const result = await runtime.recover(runId);
+    this.runLogs.get(runId)?.append('run_recovered_result', summarizeRuntimeResult(result));
+    this.cleanupTerminalResult(result);
+    return result;
+  }
+
+  private createRuntime(program: CompiledPipelineProgram, runId: string): PipelineRuntime {
+    return new PipelineRuntime({ createSession: this.createSession }, {
+      runIdFactory: () => runId,
+      programs: [program],
+      store: this.runStore,
+      onEvent: event => {
+        const log = this.runLogs.get(event.runId);
+        const eventNode = event.nodeId ? program.nodesById.get(event.nodeId) : undefined;
+        if (event.type === 'node_started' && eventNode?.agent) {
+          this.activeAgentNodes.set(eventNode.agent, eventNode);
+        }
+        if (eventNode?.agent) log?.appendNode(eventNode, 'runtime_event', event);
+        else log?.append('runtime_event', event);
+        if ((event.type === 'node_completed' || event.type === 'node_failed') && eventNode?.agent) {
+          this.activeAgentNodes.delete(eventNode.agent);
+        }
+        if (this.options.verbose) {
+          const node = event.nodeId ? ` node=${event.nodeId}` : '';
+          const message = event.message ? ` ${event.message}` : '';
+          this.options.terminal.writeError(`[runtime] ${event.type}${node}${message}`);
+        }
+        if ((event.type === 'node_completed' || event.type === 'node_failed') && event.nodeId) {
+          this.activityByNode.delete(activityKey(event.runId, event.nodeId));
+        }
+      },
+    });
+  }
+
+  private async requireRuntime(runId: string): Promise<PipelineRuntime> {
+    const active = this.runtimes.get(runId);
+    if (active) return active;
+    const snapshot = await this.runStore.load(runId);
+    const program = snapshot
+      ? this.programs.find(candidate => candidate.id === snapshot.pipelineId)
+      : undefined;
+    if (!snapshot || !program || (snapshot.status !== 'paused' && snapshot.status !== 'running')) {
+      throw new Error(`Unknown active ACP pipeline run "${runId}".`);
+    }
+    const restored = this.createRuntime(program, runId);
+    this.runtimes.set(runId, restored);
+    return restored;
+  }
+
   private findRunLog(_input: unknown): PipelineRunLog | undefined {
     if (this.runLogs.size !== 1) {
       return undefined;
@@ -230,44 +260,49 @@ export class CliPipelineHost {
   }
 
   private createDefaultSessionFactory(runner: PipelineAgentRunner): AgentNodeSessionFactory {
+    const loggedRunner = (async input => {
+      const runLog = this.findRunLog(input);
+      const activeNode = this.activeAgentNodes.get(input.agentName);
+      const skills = this.options.verbose
+        ? ` (skills=${input.skills?.join(',') || 'none'})`
+        : '';
+      this.options.terminal.writeError(`[slopify] Starting node agent "${input.agentName}"${skills}`);
+      runLog?.appendForNode(activeNode, 'agent_started', {
+        agentName: input.agentName,
+        workspaceCwd: input.workspaceCwd,
+        sideEffects: input.sideEffects,
+        permissions: input.permissions,
+        promotion: input.promotion,
+        skills: input.skills ?? [],
+        promptBytes: Buffer.byteLength(input.promptText, 'utf8'),
+      });
+      try {
+        const result = await runner(input);
+        runLog?.appendForNode(activeNode, 'agent_completed', {
+          agentName: input.agentName,
+          textBytes: Buffer.byteLength(resolvePipelineStepText(result), 'utf8'),
+          promotion: typeof result === 'object' ? result.promotion : undefined,
+        });
+        if (this.options.verbose) {
+          this.options.terminal.writeError(`[slopify] Agent "${input.agentName}" completed.`);
+        }
+        return result;
+      } catch (error: unknown) {
+        runLog?.appendForNode(activeNode, 'agent_failed', {
+          agentName: input.agentName,
+          error: serializeError(error),
+        });
+        this.logger.error(`Agent "${input.agentName}" failed`, error);
+        throw error;
+      }
+    }) as PipelineAgentRunner;
+    loggedRunner.finalizePipelineChangeSet = runner.finalizePipelineChangeSet
+      ? input => runner.finalizePipelineChangeSet!(input)
+      : undefined;
+
     return new PipelineRuntimeAgentAdapter({
       workspaceCwd: () => this.workspaceCwd,
-      runAgent: async input => {
-        const runLog = this.findRunLog(input);
-        const activeNode = this.activeAgentNodes.get(input.agentName);
-        const skills = this.options.verbose
-          ? ` (skills=${input.skills?.join(',') || 'none'})`
-          : '';
-        this.options.terminal.writeError(`[slopify] Starting node agent "${input.agentName}"${skills}`);
-        runLog?.appendForNode(activeNode, 'agent_started', {
-          agentName: input.agentName,
-          workspaceCwd: input.workspaceCwd,
-          sideEffects: input.sideEffects,
-          permissions: input.permissions,
-          promotion: input.promotion,
-          skills: input.skills ?? [],
-          promptBytes: Buffer.byteLength(input.promptText, 'utf8'),
-        });
-        try {
-          const result = await runner(input);
-          runLog?.appendForNode(activeNode, 'agent_completed', {
-            agentName: input.agentName,
-            textBytes: Buffer.byteLength(resolvePipelineStepText(result), 'utf8'),
-            promotion: typeof result === 'object' ? result.promotion : undefined,
-          });
-          if (this.options.verbose) {
-            this.options.terminal.writeError(`[slopify] Agent "${input.agentName}" completed.`);
-          }
-          return result;
-        } catch (error: unknown) {
-          runLog?.appendForNode(activeNode, 'agent_failed', {
-            agentName: input.agentName,
-            error: serializeError(error),
-          });
-          this.logger.error(`Agent "${input.agentName}" failed`, error);
-          throw error;
-        }
-      },
+      runAgent: loggedRunner,
       onSessionUpdate: (activeRunId, node, update) => {
         this.runLogs.get(activeRunId)?.appendNode(node, 'session_update', sanitizeSessionNotification(update));
         this.reportSessionUpdate(activeRunId, node, update);
@@ -384,6 +419,9 @@ function sanitizeSessionNotification(notification: SessionNotification): unknown
     return update;
   }
   if (kind === 'agent_thought_chunk') {
+    // Les logs conservent l'existence et la taille d'une pensée pour le diagnostic,
+    // jamais son contenu. Le texte de raisonnement ne doit pas être persisté dans
+    // `.acp/logs`, même en mode verbose.
     const content = update.content;
     const text = content.type === 'text' ? content.text : '';
     return {

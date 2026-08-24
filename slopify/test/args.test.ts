@@ -15,6 +15,7 @@ test('parses the exact run contract without an agent option', () => {
       json: false,
       verbose: true,
       yes: true,
+      keepSandboxes: false,
     },
   );
 });
@@ -42,7 +43,7 @@ test('requires a pipeline and prompt', () => {
   );
 });
 
-test('parses list json and verbose options without accepting --yes', () => {
+test('parses list json and verbose options without accepting run-only flags', () => {
   assert.deepEqual(parseCliArgs(['list', '--json', '--verbose'], '/repo'), {
     kind: 'list',
     cwd: '/repo',
@@ -52,6 +53,10 @@ test('parses list json and verbose options without accepting --yes', () => {
 
   assert.throws(
     () => parseCliArgs(['list', '--yes'], '/repo'),
+    /Usage: slopify list/,
+  );
+  assert.throws(
+    () => parseCliArgs(['list', '--keep-sandboxes'], '/repo'),
     /Usage: slopify list/,
   );
 });
@@ -65,6 +70,7 @@ test('keeps prompt-looking options after the positional delimiter', () => {
     json: false,
     verbose: false,
     yes: false,
+    keepSandboxes: false,
   });
 });
 
@@ -126,7 +132,7 @@ test('list with all valid options', () => {
 });
 
 test('run with all valid options', () => {
-  const result = parseCliArgs(['run', 'pipeline', 'prompt', '--cwd', 'demo', '--json', '--verbose', '--yes'], '/repo');
+  const result = parseCliArgs(['run', 'pipeline', 'prompt', '--cwd', 'demo', '--json', '--verbose', '--yes', '--keep-sandboxes'], '/repo');
   assert.deepEqual(result, {
     kind: 'run',
     pipelineName: 'pipeline',
@@ -135,6 +141,7 @@ test('run with all valid options', () => {
     json: true,
     verbose: true,
     yes: true,
+    keepSandboxes: true,
   });
 });
 
@@ -142,10 +149,26 @@ test('run with -y short option', () => {
   const result = parseCliArgs(['run', 'pipeline', 'prompt', '-y'], '/repo');
   assert.equal(result.kind, 'run');
   assert.equal((result as any).yes, true);
+  assert.equal((result as any).keepSandboxes, false);
+});
+
+test('parses crash recovery by persisted run id', () => {
+  assert.deepEqual(parseCliArgs(['resume', 'run-42', '--yes', '--json'], '/repo'), {
+    kind: 'resume', runId: 'run-42', cwd: '/repo', json: true, verbose: false,
+    yes: true, keepSandboxes: false,
+  });
+});
+
+test('parses --keep-sandboxes independently from --yes', () => {
+  const result = parseCliArgs(['run', 'pipeline', 'prompt', '--keep-sandboxes'], '/repo');
+  assert.equal(result.kind, 'run');
+  assert.equal((result as any).yes, false);
+  assert.equal((result as any).keepSandboxes, true);
 });
 
 test('positional delimiter stops option parsing', () => {
   const result = parseCliArgs(['run', 'pipeline', '--', '--fix', 'something'], '/repo');
   assert.equal(result.kind, 'run');
   assert.equal((result as any).prompt, '--fix something');
+  assert.equal((result as any).keepSandboxes, false);
 });

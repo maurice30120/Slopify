@@ -42,6 +42,12 @@ export class InMemoryPipelineRunStore implements PipelineRunStore {
   async readEvents(runId: string): Promise<PipelineRuntimeEvent[]> {
     return [...(this.events.get(runId) ?? [])];
   }
+
+  /** Releases the snapshot and event history for an ephemeral terminal run. */
+  async delete(runId: string): Promise<void> {
+    this.snapshots.delete(runId);
+    this.events.delete(runId);
+  }
 }
 
 export class FilePipelineRunStore implements PipelineRunStore {
@@ -72,6 +78,9 @@ export class FilePipelineRunStore implements PipelineRunStore {
   async save(snapshot: PipelineRuntimeSnapshot): Promise<void> {
     const path = this.snapshotPath(snapshot.runId);
     await mkdir(dirname(path), { recursive: true });
+    // Le renommage remplace atomiquement le snapshot : après une interruption,
+    // une reprise lit soit l'ancienne version complète, soit la nouvelle, jamais
+    // un JSON partiellement écrit.
     const tempPath = `${path}.${process.pid}.${Date.now()}.tmp`;
     await writeFile(tempPath, `${JSON.stringify(snapshot, null, 2)}\n`, "utf8");
     await rename(tempPath, path);

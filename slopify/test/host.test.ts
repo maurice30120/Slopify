@@ -5,6 +5,7 @@ import * as path from 'node:path';
 import test from 'node:test';
 
 import {
+  PipelineIntegrationConflictError,
   compilePipelineV3Definition,
   type CompiledPipelineProgram,
   type PipelineAgentRunInput,
@@ -90,6 +91,87 @@ test('runs an injected backend and forwards agent metadata', async () => {
   assert.equal(completed.status === 'completed' ? completed.artifact?.value : '', 'Use PipelineRuntime');
 });
 
+test('resumes a persisted pipeline pause after the CLI host is reconstructed', async () => {
+  const cwd = workspace();
+  const runner: PipelineAgentRunner = async () => ({ text: 'Which API?' });
+  const firstHost = new CliPipelineHost(cwd, {
+    terminal: new FakeTerminal(),
+    backendFactory: backend(runner),
+    runIdFactory: () => 'run-after-crash',
+  });
+  const paused = await firstHost.start('question-flow', 'add a CLI');
+  assert.equal(paused.status, 'paused');
+
+  const restoredHost = new CliPipelineHost(cwd, {
+    terminal: new FakeTerminal(),
+    backendFactory: backend(runner),
+  });
+  const completed = await restoredHost.resume('run-after-crash', {
+    pauseId: paused.status === 'paused' ? paused.pause.id : 'unreachable',
+    kind: 'answer',
+    value: 'Use the persisted snapshot',
+  });
+
+  assert.equal(completed.status, 'completed');
+  assert.equal(completed.status === 'completed' ? completed.artifact?.value : '', 'Use the persisted snapshot');
+});
+
+test('surfaces an Integration Conflict and retries its node through the CLI host', async () => {
+  const attempts: number[] = [];
+  let finalizations = 0;
+  const runner: PipelineAgentRunner = async input => {
+    attempts.push(input.attempt ?? 0);
+    return { text: 'Which API?' };
+  };
+  runner.finalizePipelineChangeSet = async input => {
+    finalizations += 1;
+    if (finalizations === 1) {
+      throw new PipelineIntegrationConflictError({
+        runId: input.runId,
+        retryNodeId: 'plan',
+        checkpoints: [
+          { nodeId: 'plan', attempt: 1, commit: 'plan-1', ref: 'refs/checkpoints/plan-1' },
+        ],
+        files: ['src/shared.ts'],
+      });
+    }
+    return {
+      promotion: 'no_changes',
+      preview: {
+        baseCommit: 'base',
+        changeSetCommit: 'base',
+        fileCount: 0,
+        files: [],
+        diff: '',
+      },
+      integratedNodeIds: ['plan'],
+    };
+  };
+  const host = new CliPipelineHost(workspace(), {
+    terminal: new FakeTerminal(),
+    backendFactory: backend(runner),
+    runIdFactory: () => 'run-cli-integration-conflict',
+  });
+
+  const question = await host.start('question-flow', 'add a CLI');
+  assert.equal(question.status, 'paused');
+  const conflict = await host.resume(question.runId, {
+    pauseId: question.status === 'paused' ? question.pause.id : 'unreachable',
+    kind: 'answer',
+    value: 'Use PipelineRuntime',
+  });
+  assert.equal(conflict.status, 'paused');
+  assert.equal(conflict.snapshot.pendingPause?.integrationConflict?.retryNodeId, 'plan');
+
+  const completed = await host.resume(conflict.runId, {
+    pauseId: conflict.status === 'paused' ? conflict.pause.id : 'unreachable',
+    kind: 'approve',
+  });
+  assert.equal(completed.status, 'completed');
+  assert.deepEqual(attempts, [1, 2]);
+  assert.equal(finalizations, 2);
+});
+
 test('passes workspace services to the backend factory', () => {
   const cwd = workspace();
   const terminal = new FakeTerminal();
@@ -109,6 +191,28 @@ test('passes workspace services to the backend factory', () => {
   assert.equal(actualTerminal, terminal);
   assert.ok(terminal.errors.includes('[slopify] backend ready'));
   assert.equal(host.listPipelines()[0]?.id, 'question-flow');
+});
+
+test('preflights a workspace-writing pipeline before creating run artifacts', async () => {
+  const cwd = workspace();
+  let runnerCalls = 0;
+  const host = new CliPipelineHost(cwd, {
+    terminal: new FakeTerminal(),
+    backendFactory: (() => ({
+      programs: [program()],
+      preflightPipeline: async () => { throw new Error('workspace preflight failed'); },
+      runAgent: async () => {
+        runnerCalls += 1;
+        return { text: 'must not run' };
+      },
+    })) as CliPipelineBackendFactory,
+    runIdFactory: () => 'run-preflight',
+  });
+
+  await assert.rejects(() => host.start('question-flow', 'add a CLI'), /workspace preflight failed/);
+  assert.equal(runnerCalls, 0);
+  assert.equal(fs.existsSync(path.join(cwd, '.acp', 'logs')), false);
+  assert.equal(fs.existsSync(path.join(cwd, '.acp', 'runs-v3')), false);
 });
 
 test('requires a runner from the host or backend', () => {

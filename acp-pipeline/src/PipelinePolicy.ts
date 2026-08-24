@@ -15,8 +15,8 @@ export interface NormalizedPipelinePolicy {
 export interface PipelineAdapterPolicyCapabilities {
   filesystem: readonly NormalizedFilesystemPolicy[];
   terminal: readonly NormalizedTerminalPolicy[];
-  network: readonly NormalizedNetworkPolicy[];
-  promotion: readonly NormalizedPromotionPolicy[];
+  network: readonly NormalizedNetworkPolicy[] | "inherited";
+  promotion: readonly NormalizedPromotionPolicy[] | "pipeline";
 }
 
 export interface PipelinePolicyDenial {
@@ -56,11 +56,12 @@ export const NATIVE_ACP_BASELINE_CAPABILITIES: PipelineAdapterPolicyCapabilities
   promotion: ["discard"] as const,
 });
 
-export const SANDCASTLE_BASELINE_CAPABILITIES: PipelineAdapterPolicyCapabilities = Object.freeze({
+export const SANDBOX_BASELINE_CAPABILITIES: PipelineAdapterPolicyCapabilities = Object.freeze({
   filesystem: ["read-only", "workspace-write"] as const,
   terminal: ["none", "read-only", "workspace-write"] as const,
-  network: ["disabled", "enabled"] as const,
-  promotion: ["discard", "ask", "auto-apply", "auto-reject"] as const,
+  // Docker Sandbox network policy is global and is not a node-level guarantee.
+  network: "inherited",
+  promotion: "pipeline",
 });
 
 export function normalizePipelinePolicy(policy: PipelinePolicyReference | undefined): NormalizedPipelinePolicy {
@@ -77,9 +78,15 @@ export function validateAdapterSupportsPolicy(
   capabilities: PipelineAdapterPolicyCapabilities,
   policy: NormalizedPipelinePolicy,
 ): PipelinePolicyDenial[] {
+  // Une politique non garantie est refusée avant l'exécution plutôt que dégradée
+  // silencieusement : l'isolation annoncée au pipeline doit rester vraie quel
+  // que soit l'adaptateur choisi.
   const denials: PipelinePolicyDenial[] = [];
   for (const field of ["filesystem", "terminal", "network", "promotion"] as const) {
-    if (!capabilities[field].includes(policy[field] as never)) {
+    const supported = capabilities[field];
+    if (field === "network" && supported === "inherited") continue;
+    if (field === "promotion" && supported === "pipeline") continue;
+    if (!(supported as readonly string[]).includes(policy[field])) {
       denials.push({
         code: "unsupported_policy",
         field,
@@ -139,5 +146,7 @@ export function mapPolicyToLegacySideEffects(policy: NormalizedPipelinePolicy): 
 }
 
 export function mapPolicyToLegacyPermissions(_policy: NormalizedPipelinePolicy): "ask" | "allowAll" {
+  // Le vocabulaire legacy ne peut pas exprimer les quatre axes de la politique.
+  // Conserver `ask` évite qu'une conversion approximative élargisse les droits.
   return "ask";
 }

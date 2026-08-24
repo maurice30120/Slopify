@@ -24,9 +24,9 @@ const SKILLS_DIR = path.join(".agents", "skills");
 const SKILL_FILE = "SKILL.md";
 
 /**
- * Scans `.agents/skills/<name>/SKILL.md` and parses YAML frontmatter
- * (`name`, `description`, `disable-model-invocation`). Skills missing a
- * `name` or `description`, or that fail to parse, are skipped.
+ * Parcourt `.agents/skills/<name>/SKILL.md` et analyse le frontmatter YAML
+ * (`name`, `description`, `disable-model-invocation`). Une skill sans `name`
+ * ou `description`, ou dont l'analyse échoue, est ignorée.
  */
 export function loadSkillCatalog(
 	options: SkillCatalogOptions,
@@ -121,8 +121,9 @@ function readScalar(frontmatter: string, key: string): string {
 }
 
 /**
- * Builds explicit `<skill>` blocks for a pipeline step. Skills listed by a
- * node are injected even when they are hidden from automatic model discovery.
+ * Construit les blocs `<skill>` explicites d'une étape de pipeline. Les skills
+ * déclarées par un nœud sont injectées même si leur découverte automatique par
+ * le modèle est désactivée.
  */
 export function renderSkillsCatalog(
 	catalog: SkillCatalogEntry[],

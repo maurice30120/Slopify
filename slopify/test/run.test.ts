@@ -3,7 +3,7 @@ import test from 'node:test';
 
 import type { PipelineRuntimeResult } from '@acp-client/pipeline';
 
-import type { CliRunCommand } from '../src/args.js';
+import type { CliResumeCommand, CliRunCommand } from '../src/args.js';
 import { formatPipelineList, runPipelineInteractive } from '../src/run.js';
 import type { CliTerminal } from '../src/terminal.js';
 import type { CliPipelineListEntry } from '../src/host.js';
@@ -92,6 +92,37 @@ test('answers a v3 question then approves the next pause', async () => {
   assert.deepEqual(terminal.questions, ['Answer [/done to finish]:']);
   assert.equal(terminal.output[0], '\n## Pipeline question\n\nWhich API?\n\nRecommended answer\n\nUse the public API.\n');
   assert.equal(terminal.output.at(-1), 'done');
+});
+
+test('recovers a persisted running pipeline instead of starting a new one', async () => {
+  const terminal = new FakeTerminal();
+  let starts = 0;
+  let recoveries = 0;
+  const host = {
+    start: async (): Promise<PipelineRuntimeResult> => {
+      starts += 1;
+      throw new Error('must not start');
+    },
+    recover: async (runId: string): Promise<PipelineRuntimeResult> => {
+      recoveries += 1;
+      return {
+        status: 'completed', runId,
+        artifact: { name: 'out', type: 'note', format: 'text', value: 'recovered', producerNodeId: 'work' },
+        snapshot: { ...snapshot('completed'), runId, inputVariables: { userPrompt: 'original prompt' } },
+      };
+    },
+    resume: async (): Promise<PipelineRuntimeResult> => { throw new Error('must not resume'); },
+  };
+  const resumeCommand: CliResumeCommand = {
+    kind: 'resume', runId: 'run-42', cwd: '/repo', json: false, verbose: false, yes: false,
+  };
+
+  const result = await runPipelineInteractive(host, terminal, resumeCommand);
+
+  assert.equal(result.status, 'completed');
+  assert.equal(starts, 0);
+  assert.equal(recoveries, 1);
+  assert.equal(terminal.output.at(-1), 'recovered');
 });
 
 test('translates /done into complete-interview for v3 questions', async () => {
@@ -259,6 +290,26 @@ test('reports failed and cancelled final results on stderr', async () => {
 
   assert.equal(cancelled.status, 'cancelled');
   assert.deepEqual(cancelledTerminal.errors, ['Pipeline cancelled.']);
+});
+
+test('reports a rejected Pipeline Change Set distinctly from cancellation', async () => {
+  const terminal = new FakeTerminal();
+  const rejected = Object.assign({
+    status: 'cancelled' as const,
+    runId: 'run-rejected',
+    snapshot: { ...snapshot('cancelled'), runId: 'run-rejected' },
+  }, { promotion: 'rejected' as const }) as PipelineRuntimeResult;
+  const host = {
+    start: async (): Promise<PipelineRuntimeResult> => rejected,
+    resume: async (): Promise<PipelineRuntimeResult> => {
+      throw new Error('resume should not be called');
+    },
+  };
+
+  const result = await runPipelineInteractive(host, terminal, command());
+
+  assert.equal(result.status, 'rejected');
+  assert.deepEqual(terminal.errors, ['Pipeline Change Set rejected.']);
 });
 
 test('reports failed final results with node and attempt context when available', async () => {

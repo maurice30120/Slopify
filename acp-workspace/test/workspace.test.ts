@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -12,9 +13,9 @@ import {
   createWorkspaceRun,
   removeAgentConfig,
   upsertAgentConfig,
-  type WorkspaceConnectorOverrides,
 } from '../src/index.js';
 import type { PipelineRuntimeResult } from '@acp-client/pipeline';
+import type { SubprocessRequest, SubprocessResult } from '@acp-client/sandbox';
 
 function workspace(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'acp-workspace-'));
@@ -22,71 +23,89 @@ function workspace(): string {
 
 test('public entry point parses native configuration', () => {
   const config = parseAcpConfig(JSON.stringify({ agents: { Codex: { command: 'codex', args: ['acp'] } } }));
-  assert.equal(config.agents.Codex.command, 'codex');
+  assert.equal('command' in config.agents.Codex ? config.agents.Codex.command : undefined, 'codex');
   assert.deepEqual(config.errors, []);
 });
 
-test('writes, moves and removes agents while preserving configuration envelopes', () => {
+test('accepts only Codex for the sandbox transport with corrective errors', () => {
+  const accepted = parseAcpConfig(JSON.stringify({ agents: {
+    Isolated: { transport: 'sandbox', agent: 'codex', model: 'gpt-5.6-codex', effort: 'high' },
+  } }));
+  assert.deepEqual(accepted.errors, []);
+  assert.equal(accepted.agents.Isolated.transport, 'sandbox');
+
+  const rejected = parseAcpConfig(JSON.stringify({ agents: {
+    Other: { transport: 'sandbox', agent: 'pi', model: 'pi-model' },
+  } }));
+  assert.equal(rejected.agents.Other, undefined);
+  assert.match(rejected.errors.join('\n'), /must be "codex".*other Docker Sandbox agents are not supported yet/);
+});
+
+test('writes and removes agents in the single ACP catalogue while preserving its envelope', () => {
   const cwd = workspace();
-  fs.mkdirSync(path.join(cwd, '.acp', '.sandcastle'), { recursive: true });
+  fs.mkdirSync(path.join(cwd, '.acp'), { recursive: true });
   fs.writeFileSync(path.join(cwd, '.acp', 'acp-agents.json'), JSON.stringify({ pipeline: { enabled: false }, agents: {} }));
-  fs.writeFileSync(path.join(cwd, '.acp', '.sandcastle', 'config.json'), JSON.stringify({ promotion: 'ask', agents: {} }));
 
   upsertAgentConfig('Agent', { command: 'agent' }, cwd);
-  assert.equal(loadAgentCatalog(cwd).native.agents.Agent.command, 'agent');
-  upsertAgentConfig('Agent', { transport: 'sandcastle', provider: 'codex', model: 'gpt-5', effort: 'high', maxIterations: 3 }, cwd);
+  const nativeAgent = loadAgentCatalog(cwd).config.agents.Agent;
+  assert.equal('command' in nativeAgent ? nativeAgent.command : undefined, 'agent');
+  upsertAgentConfig('Agent', { transport: 'sandbox', agent: 'codex', model: 'gpt-5', effort: 'high' }, cwd);
   const moved = loadAgentCatalog(cwd);
-  assert.equal(moved.native.agents.Agent, undefined);
-  assert.equal(moved.sandcastle.agents.Agent.provider, 'codex');
+  assert.equal(moved.config.agents.Agent.transport, 'sandbox');
   removeAgentConfig('Agent', cwd);
   assert.equal(loadAgentCatalog(cwd).agents.Agent, undefined);
   assert.equal(JSON.parse(fs.readFileSync(path.join(cwd, '.acp', 'acp-agents.json'), 'utf8')).pipeline.enabled, false);
+  assert.equal(fs.existsSync(path.join(cwd, '.acp', '.sandcastle', 'config.json')), false);
 });
 
-test('WorkspaceRuntime selects native and Sandcastle connectors from one configuration', async () => {
+test('legacy isolated-agent configuration fails with an explicit manual migration error', () => {
   const cwd = workspace();
   fs.mkdirSync(path.join(cwd, '.acp', '.sandcastle'), { recursive: true });
   fs.writeFileSync(path.join(cwd, '.acp', 'acp-agents.json'), JSON.stringify({
-    agents: { Native: { command: 'native-acp', args: ['serve'] } },
+    agents: { Current: { transport: 'sandbox', agent: 'codex', model: 'gpt-5.6-codex' } },
   }));
   fs.writeFileSync(path.join(cwd, '.acp', '.sandcastle', 'config.json'), JSON.stringify({
-    promotion: 'ask',
-    agents: { Isolated: { transport: 'sandcastle', provider: 'codex', model: 'gpt-5', effort: 'high', maxIterations: 3 } },
+    agents: { Legacy: { transport: 'sandcastle', provider: 'codex', model: 'gpt-5' } },
   }));
-  const selected: string[] = [];
-  const connector = (kind: string): NonNullable<WorkspaceConnectorOverrides['native']> => async input => {
-    selected.push(`${kind}:${input.processConfig.command}`);
-    return {
-      agentId: `${kind}-agent`,
-      connInfo: {
-        initResponse: {},
-        client: undefined,
-        connection: {
-          newSession: async () => ({ sessionId: `${kind}-session` }),
-          prompt: async () => ({ stopReason: 'end_turn' }),
-          cancel: async () => undefined,
-          authenticate: async () => ({}),
-          extMethod: async () => ({}),
-        },
-      } as never,
-      dispose: () => undefined,
-    };
-  };
+
+  const catalog = loadAgentCatalog(cwd);
+
+  assert.deepEqual(Object.keys(catalog.agents), ['Current']);
+  const error = catalog.errors.join('\n');
+  assert.match(error, /\.acp\/\.sandcastle\/config\.json/);
+  assert.match(error, /no longer supported/i);
+  assert.match(error, /transport: "sandbox"/);
+  assert.match(error, /migrate manually/i);
+  assert.match(error, /remove.*\.acp\/\.sandcastle\/config\.json/i);
+});
+
+test('WorkspaceRuntime completes the Codex Docker Sandbox tracer path as no_changes with a fake sbx executor', async () => {
+  const cwd = workspace();
+  fs.mkdirSync(path.join(cwd, '.acp'), { recursive: true });
+  fs.writeFileSync(path.join(cwd, '.acp', 'acp-agents.json'), JSON.stringify({ agents: {
+    Isolated: { transport: 'sandbox', agent: 'codex', model: 'gpt-5.6-codex' },
+  } }));
+  const calls: SubprocessRequest[] = [];
   const runtime = createWorkspaceRuntime({
     workspaceCwd: cwd,
     host: {
       permissionContext: () => undefined,
-      requestPromotion: async () => 'cancelled',
       logger: { log: () => undefined, error: () => undefined },
     },
-    connectorOverrides: { native: connector('native'), sandcastle: connector('sandcastle') },
+    sandboxExecutor: async request => {
+      calls.push(request);
+      return fakeSandboxResponse(request);
+    },
   });
 
-  await runtime.runAgent({ workspaceCwd: cwd, agentName: 'Native', promptText: 'native' });
-  await runtime.runAgent({ workspaceCwd: cwd, agentName: 'Isolated', promptText: 'isolated' });
+  const outcome = await runtime.runAgent({
+    workspaceCwd: cwd, agentName: 'Isolated', runId: 'run-7', nodeId: 'verify', attempt: 1,
+    promptText: 'Inspect without changing files.', sideEffects: 'workspace',
+  });
 
-  assert.equal(selected[0], 'native:native-acp');
-  assert.match(selected[1], /^sandcastle:.+node/);
+  assert.deepEqual(outcome, { text: '', promotion: 'no_changes' });
+  assert.ok(calls.some(call => call.args[0] === 'create' && call.args.includes('--clone')));
+  assert.deepEqual(calls.at(-1)?.args.slice(0, 2), ['rm', '--force']);
 });
 
 test('public pipeline catalog resolves instructionsFile and keeps promptFile compatibility', () => {
@@ -140,7 +159,7 @@ test('hosts do not import workspace catalogues from the low-level runtime', () =
       const source = fs.readFileSync(file, 'utf8');
       const runtimeImports = [...source.matchAll(/import[\s\S]*?from ['"]@acp-client\/runtime['"]/g)].map(match => match[0]);
       for (const statement of runtimeImports) {
-        assert.doesNotMatch(statement, /load(?:AcpConfig|AgentCatalog|SandcastleConfig|PipelineProgramsFromRoot|SkillCatalog)/, file);
+        assert.doesNotMatch(statement, /load(?:AcpConfig|AgentCatalog|PipelineProgramsFromRoot|SkillCatalog)/, file);
       }
     }
   }
@@ -154,25 +173,25 @@ test('WorkspaceRuntime exposes only the deep run interface', () => {
     workspaceCwd: cwd,
     host: {
       permissionContext: () => undefined,
-      requestPromotion: async () => 'cancelled',
       logger: { log: () => undefined, error: () => undefined },
     },
   });
-  assert.deepEqual(Object.keys(runtime).sort(), ['clearRunLogs', 'programs', 'runAgent']);
+  assert.deepEqual(Object.keys(runtime).sort(), ['clearRunLogs', 'preflightPipeline', 'programs', 'runAgent']);
 });
 
-test('low-level runtime has no workspace, Pipeline V3, or Sandcastle ownership', () => {
+test('low-level runtime has no workspace, Pipeline V3, or isolated-runtime ownership', () => {
   const repo = path.resolve(import.meta.dirname, '..', '..', '..');
   const runtimeRoot = path.join(repo, 'acp-runtime');
   const manifest = JSON.parse(fs.readFileSync(path.join(runtimeRoot, 'package.json'), 'utf8'));
   assert.equal(manifest.dependencies['@acp-client/pipeline'], undefined);
-  assert.equal(manifest.dependencies['@acp-client/sandcastle'], undefined);
+  const removedPackage = `@acp-client/${['sand', 'castle'].join('')}`;
+  assert.equal(manifest.dependencies[removedPackage], undefined);
   const legacyCatalog = path.join(runtimeRoot, 'src', 'catalog');
   assert.equal(fs.existsSync(legacyCatalog) ? walk(legacyCatalog).some(file => file.endsWith('.ts')) : false, false);
   for (const file of walk(path.join(runtimeRoot, 'src'))) {
     if (!file.endsWith('.ts')) continue;
     const source = fs.readFileSync(file, 'utf8');
-    assert.doesNotMatch(source, /@acp-client\/(?:pipeline|sandcastle)/, file);
+    assert.doesNotMatch(source, /@acp-client\/pipeline/, file);
     assert.doesNotMatch(source, /(?:\.acp|\.scratch)\//, file);
   }
 });
@@ -224,6 +243,40 @@ test('WorkspaceRun rejects an invalid typed handoff before a host can approve it
   assert.equal(outcome.status, 'failed');
   assert.equal(outcome.status === 'failed' ? outcome.error.code : '', 'invalid_workspace_handoff');
   assert.match(outcome.status === 'failed' ? outcome.error.message : '', /does not exist/);
+});
+
+test('WorkspaceRun ignores its persisted run state for documentation-only pauses', async () => {
+  const cwd = workspace();
+  execFileSync('git', ['init'], { cwd, stdio: 'ignore' });
+  fs.writeFileSync(path.join(cwd, 'README.md'), '# Workspace\n');
+  execFileSync('git', ['add', 'README.md'], { cwd, stdio: 'ignore' });
+  execFileSync('git', [
+    '-c', 'user.name=ACP Test', '-c', 'user.email=acp@example.test',
+    'commit', '-m', 'initial',
+  ], { cwd, stdio: 'ignore' });
+  const run = createWorkspaceRun({
+    workspaceCwd: cwd,
+    start: async () => {
+      const runDirectory = path.join(cwd, '.acp', 'runs-v3', 'workspace', 'runs', 'run-plan');
+      fs.mkdirSync(runDirectory, { recursive: true });
+      fs.writeFileSync(path.join(runDirectory, 'events.ndjson'), '{}\n');
+      fs.writeFileSync(path.join(runDirectory, 'snapshot.json'), '{}\n');
+      return {
+        status: 'paused', runId: 'run-plan',
+        pause: {
+          id: 'approval', nodeId: 'plan_approval', type: 'approval',
+          content: 'Approve this plan?', format: 'proposed-plan',
+          workspaceGuard: 'documentation-only',
+        },
+        snapshot: runtimeSnapshot('paused'),
+      };
+    },
+    resume: async () => { throw new Error('not resumed'); },
+  });
+
+  const outcome = await run.start('planning', 'make a plan');
+
+  assert.equal(outcome.status, 'interaction-required');
 });
 
 test('Pipeline definitions and CLI contain no hidden slopify handoff protocol', () => {
@@ -281,6 +334,15 @@ function runtimeSnapshot(status: 'paused' | 'completed') {
     runId: 'run-1', pipelineId: 'test', status, nodeStates: {}, artifacts: {}, diagnostics: [],
     createdAt: '2026-07-23T00:00:00.000Z', updatedAt: '2026-07-23T00:00:00.000Z',
   };
+}
+
+function fakeSandboxResponse(request: SubprocessRequest): SubprocessResult {
+  if (request.command === 'git' && request.args[0] === 'rev-parse') return { exitCode: 0, stdout: 'true\n', stderr: '' };
+  if (request.args.join(' ') === 'version') return { exitCode: 0, stdout: 'sbx 0.35.0\n', stderr: '' };
+  if (request.args.join(' ') === 'create --help') return { exitCode: 0, stdout: '--clone\n', stderr: '' };
+  if (request.args.join(' ') === 'ls --help') return { exitCode: 0, stdout: '--json\n', stderr: '' };
+  if (request.args.join(' ') === 'ls --json') return { exitCode: 0, stdout: '[]\n', stderr: '' };
+  return { exitCode: 0, stdout: '', stderr: '' };
 }
 
 function walk(dir: string): string[] {

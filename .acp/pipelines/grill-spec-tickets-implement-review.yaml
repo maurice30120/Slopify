@@ -1,0 +1,130 @@
+version: 3
+id: grill-spec-tickets-implement-review
+title: Grill with Docs → Spec Docs → Ticket Docs → Sequential Implement → Review
+
+nodes:
+  - id: plan
+    agent: Codex CLI
+    skills: [grill-with-docs, grilling, domain-modeling]
+    interaction:
+      protocol: proposed-plan
+      repairAttempts: 3
+    instructionsFile: ../agents/interactive-planner.md
+    prompt: |
+      User request:
+      {{userPrompt}}
+    policy:
+      filesystem: workspace-write
+      terminal: none
+      network: disabled
+      promotion: auto-apply
+    output:
+      name: plan
+      type: acp.grill-decision/v1
+      format: markdown
+
+  - id: plan_approval
+    type: pause
+    pause: approval
+    content: |
+      {{inputs.plan}}
+    workspaceGuard: documentation-only
+    format: proposed-plan
+    needs: [plan]
+    inputs:
+      - name: plan
+        from: plan.plan
+        type: acp.grill-decision/v1
+        format: markdown
+    output:
+      name: approved
+      type: acp.grill-decision/v1
+      format: markdown
+
+  - id: spec
+    agent: Codex CLI
+    skills: [to-spec, domain-modeling]
+    instructionsFile: ../agents/matt-spec-writer.md
+    prompt: |
+      User request:
+      {{userPrompt}}
+
+      Approved decisions:
+      {{inputs.approvedDecisions}}
+    needs: [plan_approval]
+    inputs:
+      - name: approvedDecisions
+        from: plan_approval.approved
+        type: acp.grill-decision/v1
+        format: markdown
+    policy:
+      filesystem: workspace-write
+      terminal: none
+      network: disabled
+      promotion: auto-apply
+    output:
+      name: specification
+      type: acp.workspace-files/v1
+      format: markdown
+
+  - id: tasks
+    agent: Codex CLI
+    skills: [to-tickets]
+    instructionsFile: ../agents/matt-ticket-planner.md
+    prompt: |
+      User request:
+      {{userPrompt}}
+
+      Specification files:
+      {{inputs.specification}}
+    needs: [spec]
+    inputs:
+      - name: specification
+        from: spec.specification
+        type: acp.workspace-files/v1
+        format: markdown
+    policy:
+      filesystem: workspace-write
+      terminal: none
+      network: disabled
+      promotion: auto-apply
+    output:
+      name: tickets
+      type: acp.workspace-files/v1
+      format: markdown
+
+  - id: delivery_approval
+    type: pause
+    pause: approval
+    content: |
+      <proposed_plan>
+      <interview_state>ready</interview_state>
+
+      ## Specification files
+
+      {{inputs.specification}}
+
+      ## Ticket files
+
+      {{inputs.tickets}}
+      </proposed_plan>
+    handoff:
+      kind: workspace-files
+      minimumReferences: 2
+      layout: delivery
+    workspaceGuard: documentation-only
+    format: proposed-plan
+    needs: [tasks]
+    inputs:
+      - name: specification
+        from: spec.specification
+        type: acp.workspace-files/v1
+        format: markdown
+      - name: tickets
+        from: tasks.tickets
+        type: acp.workspace-files/v1
+        format: markdown
+    output:
+      name: approved
+      type: acp.sequential-delivery/v1
+      format: markdown

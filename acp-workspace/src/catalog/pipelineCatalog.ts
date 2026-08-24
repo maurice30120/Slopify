@@ -6,6 +6,7 @@ import {
 	compilePipelineV3Catalog,
 	type CompiledPipelineProgram,
 	type PipelineV3CatalogResult,
+	validateSandboxNodeNetworkPolicies,
 } from "@acp-client/pipeline";
 
 import { loadAcpConfig, loadAgentCatalog } from "../config/config.js";
@@ -18,7 +19,7 @@ export function getPipelinePrograms(
 	logger?: Logger,
 ): CompiledPipelineProgram[] {
 	const catalog = loadAgentCatalog(workspaceCwd);
-	const config = catalog.native;
+	const config = catalog.config;
 	if (!config.pipeline.enabled) {
 		return [];
 	}
@@ -101,10 +102,13 @@ export function loadPipelineProgramsFromRoot(
 		}
 		const filePath = path.join(dir, entry);
 		try {
-			sources.push({
-				filePath,
-				definition: parseYamlDocument(fs.readFileSync(filePath, "utf8")),
-			});
+			const definition = parseYamlDocument(fs.readFileSync(filePath, "utf8"));
+			const policyErrors = validateSandboxNodeNetworkPolicies(definition, options.agentConfigs);
+			if (policyErrors.length > 0) {
+				errors.push({ filePath, errors: policyErrors });
+				continue;
+			}
+			sources.push({ filePath, definition });
 		} catch (e: unknown) {
 			const message = e instanceof Error && e.message ? e.message : String(e);
 			errors.push({ filePath, errors: [`YAML parse error: ${message}`] });

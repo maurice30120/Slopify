@@ -73,21 +73,25 @@ export type WorkspaceRunOutcome =
   | { status: 'completed'; runId: string; artifact?: WorkspaceArtifact }
   | { status: 'interaction-required'; runId: string; interaction: WorkspaceRunInteraction }
   | { status: 'failed'; runId: string; error: { code: string; message: string; nodeId?: string; attempt?: number } }
+  | { status: 'rejected'; runId: string }
   | { status: 'cancelled'; runId: string };
 
 export interface WorkspaceRun {
   start(pipelineName: string, prompt: string): Promise<WorkspaceRunOutcome>;
+  recover(runId: string): Promise<WorkspaceRunOutcome>;
   respond(runId: string, interaction: HostInteraction): Promise<WorkspaceRunOutcome>;
   cancel(runId: string): Promise<void>;
 }
 
 export interface WorkspaceRunBackend {
   start(pipelineName: string, prompt: string): Promise<PipelineRuntimeResult>;
+  recover?(runId: string): Promise<PipelineRuntimeResult>;
   resume(runId: string, decision: PipelineResumeDecision): Promise<PipelineRuntimeResult>;
   cancel?(runId: string): Promise<PipelineRuntimeResult>;
 }
 
 export interface CreateWorkspaceRunOptions extends WorkspaceRunPolicyOptions {
+  recover?: WorkspaceRunBackend['recover'];
   resume: WorkspaceRunBackend['resume'];
   cancel?: WorkspaceRunBackend['cancel'];
 }
@@ -135,6 +139,9 @@ export function createWorkspaceRun(options: CreateWorkspaceRunOptions): Workspac
       }
       prompts.delete(result.runId);
       approvalValues.delete(result.runId);
+      if (delivered.promotion === 'rejected') {
+        return { status: 'rejected', runId: delivered.runId };
+      }
       return { status: 'cancelled', runId: delivered.runId };
     } catch (error: unknown) {
       prompts.delete(result.runId);
@@ -151,6 +158,15 @@ export function createWorkspaceRun(options: CreateWorkspaceRunOptions): Workspac
   return {
     async start(pipelineName, prompt) {
       const result = await options.start(pipelineName, prompt);
+      prompts.set(result.runId, prompt);
+      return settle(result, prompt);
+    },
+    async recover(runId) {
+      if (!options.recover) throw new Error('This Workspace ACP host does not support crash recovery.');
+      const result = await options.recover(runId);
+      const prompt = typeof result.snapshot.inputVariables?.userPrompt === 'string'
+        ? result.snapshot.inputVariables.userPrompt
+        : '';
       prompts.set(result.runId, prompt);
       return settle(result, prompt);
     },
@@ -363,11 +379,16 @@ function toWorkspacePath(workspaceCwd: string, file: string): string {
 function captureWorkspaceState(workspaceCwd: string): WorkspaceState | undefined {
   try {
     if (runGit(workspaceCwd, ['rev-parse', '--is-inside-work-tree']).trim() !== 'true') return undefined;
-    const exclusions = [':(exclude).scratch/**', ':(exclude)CONTEXT.md', ':(exclude)docs/architecture/adr/**'];
+    const exclusions = [
+      ':(exclude).scratch/**',
+      ':(exclude).acp/runs-v3/**',
+      ':(exclude)CONTEXT.md',
+      ':(exclude)docs/architecture/adr/**',
+    ];
     const trackedPatch = runGit(workspaceCwd, ['diff', '--binary', 'HEAD', '--', '.', ...exclusions]);
     const trackedPaths = splitLines(runGit(workspaceCwd, ['diff', '--name-only', 'HEAD', '--', '.', ...exclusions]));
     const untrackedFiles = Object.fromEntries(runGit(workspaceCwd, ['ls-files', '--others', '--exclude-standard', '-z'])
-      .split('\0').filter(Boolean).map(value => value.split(path.sep).join('/')).filter(file => !isDocumentationPath(file)).sort()
+      .split('\0').filter(Boolean).map(value => value.split(path.sep).join('/')).filter(file => !isWorkspaceGuardAllowedPath(file)).sort()
       .map(file => [file, fingerprintPath(path.join(workspaceCwd, file))]));
     return { trackedPatch, trackedPaths, untrackedFiles };
   } catch { return undefined; }
@@ -386,8 +407,9 @@ function runGit(cwd: string, args: string[]): string {
 }
 
 function splitLines(value: string): string[] { return value.split(/\r?\n/).map(line => line.trim()).filter(Boolean); }
-function isDocumentationPath(file: string): boolean {
+function isWorkspaceGuardAllowedPath(file: string): boolean {
   return file === 'CONTEXT.md' || file === '.scratch' || file.startsWith('.scratch/')
+    || file === '.acp/runs-v3' || file.startsWith('.acp/runs-v3/')
     || file === 'docs/architecture/adr' || file.startsWith('docs/architecture/adr/');
 }
 function fingerprintPath(file: string): string {

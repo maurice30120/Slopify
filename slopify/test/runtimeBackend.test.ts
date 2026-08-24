@@ -4,7 +4,11 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import test from 'node:test';
 
-import { createRuntimeCliBackend } from '../src/runtimeBackend.js';
+import {
+  createRuntimeCliBackend,
+  formatPipelineChangeSetPrompt,
+  formatRetainedSandbox,
+} from '../src/runtimeBackend.js';
 
 function workspace(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'acp-cli-runtime-'));
@@ -12,17 +16,12 @@ function workspace(): string {
 
 function writeWorkspaceConfig(cwd: string): void {
   const acpRoot = path.join(cwd, '.acp');
-  fs.mkdirSync(path.join(acpRoot, '.sandcastle'), { recursive: true });
   fs.mkdirSync(path.join(acpRoot, 'pipelines'), { recursive: true });
   fs.writeFileSync(path.join(acpRoot, 'acp-agents.json'), JSON.stringify({
     agents: {
       Planner: { command: process.execPath, args: ['--version'] },
     },
     pipeline: { enabled: true },
-  }));
-  fs.writeFileSync(path.join(acpRoot, '.sandcastle', 'config.json'), JSON.stringify({
-    promotion: 'autoReject',
-    agents: {},
   }));
   fs.writeFileSync(path.join(acpRoot, 'pipelines', 'plan.yaml'), `
 version: 3
@@ -79,4 +78,48 @@ test('rejects invalid workspace agent configuration before running a pipeline', 
   } finally {
     fs.rmSync(cwd, { recursive: true, force: true });
   }
+});
+
+test('formats every retained sandbox command as copyable CLI output', () => {
+  assert.equal(formatRetainedSandbox({
+    sandboxName: 'slopify-run-node-1-deadbeef',
+    commands: {
+      run: 'sbx run --name slopify-run-node-1-deadbeef',
+      shell: 'sbx exec -it slopify-run-node-1-deadbeef bash',
+      remove: 'sbx rm --force slopify-run-node-1-deadbeef',
+    },
+    diagnosticsPath: '/repo/.acp/logs/sandboxes/slopify-run-node-1-deadbeef.json',
+  }), [
+    'Docker Sandbox kept: slopify-run-node-1-deadbeef',
+    'Run: sbx run --name slopify-run-node-1-deadbeef',
+    'Shell: sbx exec -it slopify-run-node-1-deadbeef bash',
+    'Remove: sbx rm --force slopify-run-node-1-deadbeef',
+    'Diagnostics: /repo/.acp/logs/sandboxes/slopify-run-node-1-deadbeef.json',
+  ].join('\n'));
+});
+
+test('formats the complete Pipeline Change Set preview for the Promotion decision', () => {
+  assert.equal(formatPipelineChangeSetPrompt({
+    pipelineId: 'delivery',
+    integratedNodeIds: ['plan', 'implement'],
+    preview: {
+      baseCommit: 'base123',
+      changeSetCommit: 'change456',
+      fileCount: 2,
+      files: ['src/a.ts', 'src/b.ts'],
+      diff: 'diff --git a/src/a.ts b/src/a.ts\n+change\n',
+    },
+  }), [
+    'Pipeline Change Set for delivery',
+    'Agent checkpoints: plan, implement',
+    'Files changed: 2',
+    '- src/a.ts',
+    '- src/b.ts',
+    'Base: base123',
+    '',
+    'Diff:',
+    'diff --git a/src/a.ts b/src/a.ts',
+    '+change',
+    '',
+  ].join('\n'));
 });

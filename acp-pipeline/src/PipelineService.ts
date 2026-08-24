@@ -26,7 +26,6 @@ export interface PipelineServiceDependencies {
   getAgentConfigs?: () => Record<string, unknown>;
   createSession?: AgentNodeSessionFactory;
   onPipelineStart?: (input: { sessionId: string; program: CompiledPipelineProgram; workspaceCwd: string }) => void;
-  isAgentSandcastle?: (agentName: string, agentConfigs: Record<string, unknown>) => boolean;
   isRunAbortedError?: (error: unknown) => boolean;
   artifactPublisher?: PipelineArtifactPublisher;
 }
@@ -201,7 +200,7 @@ export class PipelineService extends EventEmitter {
         pauseType: pause.type,
         role: pause.nodeId,
         revised: false,
-        implementerUsesSandcastle: false,
+        implementerUsesSandbox: false,
       });
       this.emit('status', {
         sessionId,
@@ -219,7 +218,7 @@ export class PipelineService extends EventEmitter {
         pauseType: pause.type,
         role: pause.nodeId,
         revised: false,
-        implementerUsesSandcastle: false,
+        implementerUsesSandbox: false,
       });
     }
     this.emit('status', {

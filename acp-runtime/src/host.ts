@@ -13,6 +13,7 @@ export * from './acp/acpClient.js';
 export * from './acp/codexModelsCacheCompat.js';
 export * from './acp/connectionManager.js';
 export * from './acp/defaultConnector.js';
+export * from './acp/inMemoryConnector.js';
 export * from './acp/fileSystemHandler.js';
 export * from './acp/operationGuards.js';
 export * from './acp/permissionHandler.js';
