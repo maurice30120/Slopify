@@ -66,9 +66,9 @@ test('dispatches one implement-ticket run per ticket before review', async () =>
     'review-delivery',
   ]);
   assert.match(starts[1].prompt, /Ticket ID: T01/);
-  assert.match(starts[1].prompt, /Ticket: `\.scratch\/feature\/issues\/99-first\.md`/);
+  assert.match(starts[1].prompt, /Human-readable ticket: `\.scratch\/feature\/issues\/99-first\.md`/);
   assert.match(starts[2].prompt, /Dependencies: T01/);
-  assert.match(starts[2].prompt, /Ticket: `\.scratch\/feature\/issues\/01-second\.md`/);
+  assert.match(starts[2].prompt, /Human-readable ticket: `\.scratch\/feature\/issues\/01-second\.md`/);
   assert.match(starts[3].prompt, /Approved delivery files:/);
   assert.match(terminal.errors.join('\n'), /Starting ticket 1\/2/);
   assert.match(terminal.errors.join('\n'), /starting review/);
@@ -173,8 +173,8 @@ function ticketGraph() {
   return {
     contract: 'acp.ticket-graph/v1',
     tickets: [
-      { id: 'T01', title: 'First', scope: ['first'], needs: [], validation: ['first passes'] },
       { id: 'T02', title: 'Second', scope: ['second'], needs: ['T01'], validation: ['second passes'] },
+      { id: 'T01', title: 'First', scope: ['first'], needs: [], validation: ['first passes'] },
     ],
   };
 }

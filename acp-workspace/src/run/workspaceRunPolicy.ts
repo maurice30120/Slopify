@@ -229,7 +229,8 @@ export function createWorkspaceRunPolicy(options: WorkspaceRunPolicyOptions): Wo
             `Specification: \`${plan.specificationPath}\``,
             `Ticket ID: ${ticket.id}`,
             `Dependencies: ${ticket.needs.length > 0 ? ticket.needs.join(', ') : 'None'}`,
-            `Ticket: \`${ticket.markdownPath}\``,
+            `Ticket Graph node:\n${JSON.stringify(ticket.node, null, 2)}`,
+            `Human-readable ticket: \`${ticket.markdownPath}\``,
           ].join('\n'));
           if (ticketResult.status === 'paused') {
             throw new Error(`implement-ticket paused unexpectedly at node "${ticketResult.pause.nodeId}".`);
@@ -326,12 +327,28 @@ function prepareSequentialDelivery(workspaceCwd: string, result: Extract<Pipelin
   if (!fs.statSync(issuesAbsolute).isDirectory()) throw new Error(`Sequential delivery issues path is not a directory: ${issuesDirectory}`);
   const ticketGraph = readTicketGraph(result);
   const markdownByTicketId = indexTicketMarkdown(issuesAbsolute, issuesDirectory);
-  const tickets = ticketGraph.tickets.map(ticket => {
+  const tickets = orderTicketsByDependencies(ticketGraph.tickets).map(ticket => {
     const markdownPath = markdownByTicketId.get(ticket.id);
     if (!markdownPath) throw new Error(`Ticket Graph node "${ticket.id}" has no Markdown adapter in ${issuesDirectory}.`);
-    return { id: ticket.id, needs: ticket.needs, markdownPath };
+    return { id: ticket.id, needs: ticket.needs, node: ticket, markdownPath };
   });
   return { specificationPath, issuesDirectory, tickets };
+}
+
+function orderTicketsByDependencies(tickets: TicketGraphArtifact['tickets']): TicketGraphArtifact['tickets'] {
+  const remaining = [...tickets];
+  const completed = new Set<string>();
+  const ordered: TicketGraphArtifact['tickets'] = [];
+  while (remaining.length > 0) {
+    const readyIndex = remaining.findIndex(ticket => ticket.needs.every(need => completed.has(need)));
+    if (readyIndex < 0) {
+      throw new Error(`Ticket Graph dependencies cannot be satisfied for: ${remaining.map(ticket => ticket.id).join(', ')}.`);
+    }
+    const [ready] = remaining.splice(readyIndex, 1);
+    ordered.push(ready);
+    completed.add(ready.id);
+  }
+  return ordered;
 }
 
 function readTicketGraph(result: Extract<PipelineRuntimeResult, { status: 'completed' }>): TicketGraphArtifact {
