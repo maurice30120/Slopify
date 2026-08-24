@@ -211,8 +211,8 @@ test('WorkspaceRun uses Ticket Graph identities and dependencies regardless of M
       if (pipelineName === 'delivery') return completedDeliveryResult(content, {
         contract: 'acp.ticket-graph/v1',
         tickets: [
-          { id: 'T01', title: 'First', scope: ['first'], needs: [], validation: ['first passes'] },
           { id: 'T02', title: 'Second', scope: ['second'], needs: ['T01'], validation: ['second passes'] },
+          { id: 'T01', title: 'First', scope: ['first'], needs: [], validation: ['first passes'] },
         ],
       });
       return completedResult(pipelineName === 'review-delivery' ? 'review complete' : 'ticket complete');
@@ -226,10 +226,11 @@ test('WorkspaceRun uses Ticket Graph identities and dependencies regardless of M
     'delivery', 'implement-ticket', 'implement-ticket', 'review-delivery',
   ]);
   assert.match(starts[1].prompt, /Ticket ID: T01/);
-  assert.match(starts[1].prompt, /Ticket: `\.scratch\/feature\/issues\/99-first\.md`/);
+  assert.match(starts[1].prompt, /Human-readable ticket: `\.scratch\/feature\/issues\/99-first\.md`/);
   assert.match(starts[1].prompt, /Dependencies: None/);
+  assert.match(starts[1].prompt, /"scope": \[\s*"first"\s*\]/);
   assert.match(starts[2].prompt, /Ticket ID: T02/);
-  assert.match(starts[2].prompt, /Ticket: `\.scratch\/feature\/issues\/01-second\.md`/);
+  assert.match(starts[2].prompt, /Human-readable ticket: `\.scratch\/feature\/issues\/01-second\.md`/);
   assert.match(starts[2].prompt, /Dependencies: T01/);
   assert.equal(final.status, 'completed');
   assert.equal(final.status === 'completed' ? final.artifact?.value : undefined, 'review complete');
