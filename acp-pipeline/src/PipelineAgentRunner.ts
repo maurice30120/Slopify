@@ -114,12 +114,15 @@ export interface PipelineChangeSetFinalizationInput {
 	snapshot?: PipelineRuntimeSnapshot;
 }
 
-export interface PipelineChangeSetFinalizationResult {
-	promotion: PipelinePromotionStatus;
+export interface PipelineChangeSetPreparationResult {
 	preview: PipelineChangeSetPreview;
 	changeSetRef?: string;
 	changeSetCommit?: string;
 	integratedNodeIds: string[];
+}
+
+export interface PipelineChangeSetFinalizationResult extends PipelineChangeSetPreparationResult {
+	promotion: PipelinePromotionStatus;
 }
 
 export interface PipelineIntegrationConflictCheckpoint {
@@ -171,6 +174,10 @@ export class PipelineIntegrationConflictError extends Error {
 
 export interface PipelineAgentRunner {
 	(input: PipelineAgentRunInput): Promise<PipelineStepRunResult>;
+	preparePipelineChangeSet?(
+		input: PipelineChangeSetFinalizationInput,
+	): Promise<PipelineChangeSetPreparationResult>;
+	invalidatePipelineChangeSet?(input: PipelineChangeSetFinalizationInput): Promise<void>;
 	finalizePipelineChangeSet?(
 		input: PipelineChangeSetFinalizationInput,
 	): Promise<PipelineChangeSetFinalizationResult>;

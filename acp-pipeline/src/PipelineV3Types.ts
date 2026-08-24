@@ -1,4 +1,5 @@
 import type { NormalizedPipelinePolicy, NormalizedPromotionPolicy } from "./PipelinePolicy";
+import type { PipelineChangeSetFinalizationInput, PipelineChangeSetFinalizationResult, PipelineChangeSetPreparationResult } from "./PipelineAgentRunner";
 import type { PipelineIntegrationConflict, PipelineSandboxResumeDivergence } from "./PipelineAgentRunner";
 import type { ExecutionPlanSnapshot } from "./ExecutionPlan";
 
@@ -162,6 +163,8 @@ export interface PipelineRuntimeSnapshot {
   sandboxRuns?: Record<string, PipelineSandboxRunSnapshot>;
   /** Frozen dynamic plan and durable proof of whether it has already expanded. */
   executionPlan?: ExecutionPlanSnapshot;
+  /** Unique provisional result reviewed before it becomes eligible for Promotion. */
+  pipelineChangeSet?: PipelineChangeSetPreparationResult;
   createdAt: string;
   updatedAt: string;
 }
@@ -353,4 +356,11 @@ export type AgentNodeSessionFactory = (
 export interface PipelineRuntimeAdapter {
   createSession: AgentNodeSessionFactory;
   execute?(input: PipelineNodeExecutionInput): Promise<PipelineNodeExecutionResult>;
+  preparePipelineChangeSet?(
+    input: PipelineChangeSetFinalizationInput,
+  ): Promise<PipelineChangeSetPreparationResult | undefined>;
+  finalizePipelineChangeSet?(
+    input: PipelineChangeSetFinalizationInput,
+  ): Promise<PipelineChangeSetFinalizationResult | undefined>;
+  invalidatePipelineChangeSet?(input: PipelineChangeSetFinalizationInput): Promise<void>;
 }

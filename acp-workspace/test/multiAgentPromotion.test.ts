@@ -96,6 +96,12 @@ test('collects parallel sandbox checkpoints, previews once, and promotes one det
   ]);
 
   assert.equal(calls.some(call => call.command === 'git' && call.args[0] === 'merge'), false);
+  const prepared = await runtime.runAgent.preparePipelineChangeSet!({ runId: 'run-1', program });
+
+  assert.deepEqual(prepared.integratedNodeIds, ['a', 'b']);
+  assert.deepEqual(prepared.preview.files, ['src/a.ts', 'src/b.ts']);
+  assert.equal(promotionPrompts, 0);
+  assert.equal(calls.some(call => call.command === 'git' && call.args[0] === 'merge'), false);
   const finalized = await runtime.runAgent.finalizePipelineChangeSet!({ runId: 'run-1', program });
 
   assert.equal(finalized.promotion, 'applied');

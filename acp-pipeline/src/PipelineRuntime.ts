@@ -8,6 +8,7 @@ import {
 import { getPipelineInterviewProtocol } from "./PipelineInterviewProtocol";
 import {
   compileExecutionPlan,
+  FINAL_REVIEW_NODE_ID,
   markExecutionPlanExpanded,
   validateExecutionPlan,
   validateExecutionPlanSnapshot,
@@ -535,7 +536,20 @@ export class PipelineRuntime {
   private async executeNode(active: ActiveRun, node: CompiledPipelineNode): Promise<PipelineRuntimeDiagnostic | { ok: true } | { paused: PipelineRuntimeResult }> {
     const state = active.snapshot.nodeStates[node.id];
     const inputs = resolveInputs(node, active.snapshot.artifacts);
-    const prompt = renderRuntimeTemplate(node.prompt ?? "", active.snapshot.inputVariables ?? {}, inputs);
+    let prompt = renderRuntimeTemplate(node.prompt ?? "", active.snapshot.inputVariables ?? {}, inputs);
+    if (node.id === FINAL_REVIEW_NODE_ID && this.adapter.preparePipelineChangeSet) {
+      const prepared = active.snapshot.pipelineChangeSet ?? await this.adapter.preparePipelineChangeSet({
+        runId: active.snapshot.runId,
+        program: active.program,
+        snapshot: structuredClone(active.snapshot),
+      });
+      if (prepared) {
+        active.snapshot.pipelineChangeSet = structuredClone(prepared);
+        active.snapshot.updatedAt = this.isoNow();
+        await this.persist(active.snapshot);
+        prompt = `${prompt}\n\nReview this complete provisional Pipeline Change Set, including interactions between all integrated checkpoints:\n${JSON.stringify(prepared, null, 2)}`;
+      }
+    }
     const skillErrors = this.resolveNodeSkills ? await this.resolveNodeSkills(node) : [];
     if (skillErrors.length > 0) {
       const attempt = state.attempts + 1;

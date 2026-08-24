@@ -11,6 +11,7 @@ import {
   type PipelineAgentRunner,
   type PipelineChangeSetFinalizationInput,
   type PipelineChangeSetFinalizationResult,
+  type PipelineChangeSetPreparationResult,
   type PipelinePromotionStatus,
   PipelineSandboxResumeDivergenceError,
   type PipelineRuntimeSnapshot,
@@ -95,6 +96,7 @@ export function createWorkspaceRuntime(options: CreateWorkspaceRuntimeOptions): 
     selectNetworkPolicy: choices => selectSandboxNetworkPolicy(options.host, choices),
     reportNetworkPolicy: message => options.host.permissionContext()?.ui.write?.(message),
   });
+  const preparedChangeSetsByRunId = new Map<string, PipelineChangeSetResult>();
   // Toutes les tentatives sont conservées jusqu'à la finalisation : un retry
   // remplace uniquement le checkpoint du même nœud, sans toucher aux résultats
   // valides des autres agents.
@@ -195,14 +197,29 @@ export function createWorkspaceRuntime(options: CreateWorkspaceRuntimeOptions): 
       : { text: result.text };
   }) as PipelineAgentRunner;
 
-  runAgent.finalizePipelineChangeSet = input => finalizePipelineChangeSet({
+  runAgent.preparePipelineChangeSet = async input => await finalizePipelineChangeSet({
     input,
     checkpointsByRunId,
+    preparedChangeSetsByRunId,
+    prepareOnly: true,
     workspaceCwd: options.workspaceCwd,
     host: options.host,
     execute: options.sandboxExecutor,
     sandboxRuntime,
-  });
+  }) as PipelineChangeSetPreparationResult;
+  runAgent.finalizePipelineChangeSet = async input => await finalizePipelineChangeSet({
+    input,
+    checkpointsByRunId,
+    preparedChangeSetsByRunId,
+    workspaceCwd: options.workspaceCwd,
+    host: options.host,
+    execute: options.sandboxExecutor,
+    sandboxRuntime,
+  }) as PipelineChangeSetFinalizationResult;
+  runAgent.invalidatePipelineChangeSet = async input => {
+    preparedChangeSetsByRunId.delete(input.runId);
+    checkpointsByRunId.delete(input.runId);
+  };
 
   return {
     programs,
@@ -250,6 +267,8 @@ function toAgentCheckpointResult(dependency: NonNullable<PipelineAgentRunInput['
 interface FinalizePipelineChangeSetOptions {
   input: PipelineChangeSetFinalizationInput;
   checkpointsByRunId: Map<string, Map<string, Map<number, AgentCheckpointResult>>>;
+  preparedChangeSetsByRunId: Map<string, PipelineChangeSetResult>;
+  prepareOnly?: boolean;
   workspaceCwd: string;
   host: WorkspaceRuntimeHost;
   execute?: SubprocessExecutor;
@@ -258,10 +277,12 @@ interface FinalizePipelineChangeSetOptions {
 
 async function finalizePipelineChangeSet(
   options: FinalizePipelineChangeSetOptions,
-): Promise<PipelineChangeSetFinalizationResult> {
+): Promise<PipelineChangeSetFinalizationResult | PipelineChangeSetPreparationResult> {
   const { input } = options;
   const gitPromotion = new GitPromotion(options.execute ?? createNodeSubprocessExecutor());
   const extensions = createSandboxExtensionHandler(options.sandboxRuntime, gitPromotion);
+  const alreadyPrepared = options.preparedChangeSetsByRunId.get(input.runId)
+    ?? changeSetFromSnapshot(input);
   const durableRuns = Object.values(input.snapshot?.sandboxRuns ?? {})
     .filter(run => run.runId === input.runId);
   for (const run of durableRuns) {
@@ -292,8 +313,7 @@ async function finalizePipelineChangeSet(
     ? durableCheckpoints
     : options.checkpointsByRunId.get(input.runId);
   if (!checkpoints || checkpoints.size === 0) {
-    return {
-      promotion: 'no_changes',
+    const empty = {
       preview: {
         baseCommit: '',
         changeSetCommit: '',
@@ -303,6 +323,7 @@ async function finalizePipelineChangeSet(
       },
       integratedNodeIds: [],
     };
+    return options.prepareOnly ? empty : { ...empty, promotion: 'no_changes' };
   }
 
   const orderedNodeIds = orderPipelineNodeIdsForIntegration(input.program, checkpoints.keys());
@@ -323,16 +344,20 @@ async function finalizePipelineChangeSet(
   const orderedCheckpoints = orderedNodeIds.map(nodeId => selectedCheckpoints.get(nodeId)!);
   const policy = input.program.promotion;
   try {
-    const changeSet = await callSandboxExtension<IntegrateAgentCheckpointsInput, PipelineChangeSetResult>(
-      extensions,
-      'sandbox/preview',
-      {
-      workspaceCwd: options.workspaceCwd,
-      runId: input.runId,
-      checkpoints: orderedCheckpoints,
-      },
+    const changeSet = alreadyPrepared ?? await callSandboxExtension<IntegrateAgentCheckpointsInput, PipelineChangeSetResult>(
+      extensions, 'sandbox/preview', { workspaceCwd: options.workspaceCwd, runId: input.runId, checkpoints: orderedCheckpoints },
     );
-    await gitPromotion.deleteAgentCheckpoints(options.workspaceCwd, supersededCheckpoints);
+    if (!alreadyPrepared) {
+      options.preparedChangeSetsByRunId.set(input.runId, changeSet);
+      await gitPromotion.deleteAgentCheckpoints(options.workspaceCwd, supersededCheckpoints);
+    }
+    const prepared = {
+      preview: changeSet.preview,
+      changeSetRef: changeSet.changeSet.ref,
+      changeSetCommit: changeSet.changeSet.commit,
+      integratedNodeIds: changeSet.changeSet.integratedNodeIds,
+    };
+    if (options.prepareOnly) return prepared;
     const promotionRequest: PromotePipelineChangeSetInput = {
       workspaceCwd: options.workspaceCwd,
       policy,
@@ -355,6 +380,7 @@ async function finalizePipelineChangeSet(
       integratedNodeIds: promoted.changeSet.integratedNodeIds,
     };
     options.checkpointsByRunId.delete(input.runId);
+    options.preparedChangeSetsByRunId.delete(input.runId);
     return result;
   } catch (error: unknown) {
     if (error instanceof IntegrationConflictError) {
@@ -365,6 +391,21 @@ async function finalizePipelineChangeSet(
     if (input.snapshot) options.checkpointsByRunId.delete(input.runId);
     throw error;
   }
+}
+
+function changeSetFromSnapshot(input: PipelineChangeSetFinalizationInput): PipelineChangeSetResult | undefined {
+  const prepared = input.snapshot?.pipelineChangeSet;
+  if (!prepared?.changeSetRef || !prepared.changeSetCommit || !prepared.preview.baseCommit) return undefined;
+  return {
+    preview: prepared.preview,
+    changeSet: {
+      runId: input.runId,
+      baseCommit: prepared.preview.baseCommit,
+      commit: prepared.changeSetCommit,
+      ref: prepared.changeSetRef,
+      integratedNodeIds: prepared.integratedNodeIds,
+    },
+  };
 }
 
 function toPipelineIntegrationConflict(

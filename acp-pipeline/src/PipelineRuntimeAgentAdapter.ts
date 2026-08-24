@@ -9,6 +9,7 @@ import type {
   PipelineAgentRunner,
   PipelineChangeSetFinalizationInput,
   PipelineChangeSetFinalizationResult,
+  PipelineChangeSetPreparationResult,
   PipelineStepStatusUpdate,
 } from "./PipelineAgentRunner";
 import type {
@@ -60,14 +61,28 @@ export class PipelineRuntimeAgentAdapter implements PipelineRuntimeAdapter {
     return this.options.runAgent.finalizePipelineChangeSet?.(input);
   }
 
+  async preparePipelineChangeSet(
+    input: PipelineChangeSetFinalizationInput,
+  ): Promise<PipelineChangeSetPreparationResult | undefined> {
+    return this.options.runAgent.preparePipelineChangeSet?.(input);
+  }
+
+  async invalidatePipelineChangeSet(input: PipelineChangeSetFinalizationInput): Promise<void> {
+    await this.options.runAgent.invalidatePipelineChangeSet?.(input);
+  }
+
   asSessionFactory(): AgentNodeSessionFactory {
     // La factory est une fonction enrichie d'un hook de finalisation. Conserver
     // ce hook sur l'objet callable permet aux hôtes historiques de participer à
     // la Promotion globale sans modifier la signature AgentNodeSessionFactory.
     const factory = (input => this.createSession(input)) as AgentNodeSessionFactory & {
       finalizePipelineChangeSet?: PipelineRuntimeAgentAdapter["finalizePipelineChangeSet"];
+      preparePipelineChangeSet?: PipelineRuntimeAgentAdapter["preparePipelineChangeSet"];
+      invalidatePipelineChangeSet?: PipelineRuntimeAgentAdapter["invalidatePipelineChangeSet"];
     };
     factory.finalizePipelineChangeSet = input => this.finalizePipelineChangeSet(input);
+    factory.preparePipelineChangeSet = input => this.preparePipelineChangeSet(input);
+    factory.invalidatePipelineChangeSet = input => this.invalidatePipelineChangeSet(input);
     return factory;
   }
 }

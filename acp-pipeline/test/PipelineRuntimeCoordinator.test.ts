@@ -10,6 +10,7 @@ import {
   orderPipelineNodeIdsForIntegration,
   type PipelineChangeSetFinalizationInput,
   type PipelineChangeSetFinalizationResult,
+  type PipelineChangeSetPreparationResult,
   type PipelineNodeExecutionResult,
   type PipelineRuntimeAdapter,
 } from "../dist/index.js";
@@ -1085,4 +1086,109 @@ test("a cancelled Promotion cancels the run without emitting completed", async (
       .filter(type => type === "completed" || type === "cancelled"),
     ["cancelled"],
   );
+});
+
+test("final review observes the complete provisional Pipeline Change Set before one Promotion", async () => {
+  const program = compilePipelineV3Definition({
+    version: 3,
+    id: "review-complete-change-set",
+    title: "Review complete change set",
+    nodes: [{
+      id: "tasks", agent: "Codex", prompt: "Plan", output: { name: "graph", type: "acp.ticket-graph/v1", format: "json" },
+    }],
+  }, agents).program!;
+  const sequence: string[] = [];
+  const preparation: PipelineChangeSetPreparationResult = {
+    preview: { baseCommit: "base", changeSetCommit: "combined", fileCount: 2, files: ["left.ts", "right.ts"], diff: "combined interaction" },
+    changeSetRef: "refs/slopify/runs/run-reviewed/change-set",
+    changeSetCommit: "combined",
+    integratedNodeIds: ["left", "right"],
+  };
+  let reviewPrompt = "";
+  let promotions = 0;
+  const runtime = new PipelineRuntime({
+    async preparePipelineChangeSet() {
+      sequence.push("prepare");
+      return preparation;
+    },
+    async createSession({ runId, node }) {
+      return { runId, nodeId: node.id, async send(input): Promise<PipelineNodeExecutionResult> {
+        if (node.id === "tasks") return { artifact: { name: "graph", type: "acp.ticket-graph/v1", format: "json", value: {
+          contract: "acp.ticket-graph/v1", tickets: [
+            { id: "left", title: "Left", scope: [], needs: [], validation: [] },
+            { id: "right", title: "Right", scope: [], needs: [], validation: [] },
+          ],
+        } } };
+        if (node.id === "final-review") {
+          sequence.push("review");
+          reviewPrompt = input.prompt;
+          return { artifact: { name: "review", type: "acp.verification-report/v1", format: "json", value: {
+            contract: "acp.verification-report/v1", verdict: "passed", categories: [
+              { name: "interactions", required: true, status: "passed", details: "combined result is coherent" },
+            ],
+          } } };
+        }
+        await input.onSandboxRunState?.({ sandboxName: `sandbox-${node.id}`, runId, nodeId: node.id, attempt: 1,
+          baseCommit: "base", integrationState: "checkpointed", resourceState: "removed", checkpoint: {
+            status: "checkpointed", commit: `commit-${node.id}`, remote: `remote-${node.id}`, ref: `refs/checkpoints/${node.id}`,
+            preview: { baseCommit: "base", checkpointCommit: `commit-${node.id}`, fileCount: 1, files: [`${node.id}.ts`], diff: node.id },
+          } });
+        return { artifact: { name: "result", type: "acp.implementation-result/v1", format: "json", value: {
+          contract: "acp.implementation-result/v1", ticketId: node.id, branch: node.id, commits: [`commit-${node.id}`], summary: node.id, validations: [],
+        } } };
+      }, async cancel() {}, async close() {} };
+    },
+    async finalizePipelineChangeSet(input) {
+      promotions += 1;
+      sequence.push("promote");
+      assert.equal(input.snapshot?.pipelineChangeSet?.changeSetCommit, "combined");
+      return { ...preparation, promotion: "applied" };
+    },
+  }, { runIdFactory: () => "run-reviewed" });
+
+  const result = await runtime.start(program, { maxConcurrency: 2 });
+
+  assert.equal(result.status, "completed");
+  assert.deepEqual(sequence, ["prepare", "review", "promote"]);
+  assert.equal(promotions, 1);
+  assert.match(reviewPrompt, /left\.ts/);
+  assert.match(reviewPrompt, /right\.ts/);
+  assert.match(reviewPrompt, /combined interaction/);
+});
+
+test("a failed final review invalidates the provisional result and forbids Promotion", async () => {
+  const program = compilePipelineV3Definition({
+    version: 3, id: "reject-change-set", title: "Reject change set",
+    nodes: [{ id: "tasks", agent: "Codex", prompt: "Plan", output: { name: "graph", type: "acp.ticket-graph/v1", format: "json" } }],
+  }, agents).program!;
+  let promotions = 0;
+  let invalidations = 0;
+  const runtime = new PipelineRuntime({
+    async preparePipelineChangeSet() {
+      return { preview: { baseCommit: "base", changeSetCommit: "combined", fileCount: 1, files: ["bad.ts"], diff: "bad interaction" },
+        changeSetRef: "refs/change-set", changeSetCommit: "combined", integratedNodeIds: ["work"] };
+    },
+    async createSession({ runId, node }) { return { runId, nodeId: node.id, async send(): Promise<PipelineNodeExecutionResult> {
+      if (node.id === "tasks") return { artifact: { name: "graph", type: "acp.ticket-graph/v1", format: "json", value: {
+        contract: "acp.ticket-graph/v1", tickets: [{ id: "work", title: "Work", scope: [], needs: [], validation: [] }],
+      } } };
+      if (node.id === "final-review") return { artifact: { name: "review", type: "acp.verification-report/v1", format: "json", value: {
+        contract: "acp.verification-report/v1", verdict: "failed", categories: [
+          { name: "interaction", required: true, status: "failed", details: "incompatible" },
+        ],
+      } } };
+      return { artifact: { name: "result", type: "acp.implementation-result/v1", format: "json", value: {
+        contract: "acp.implementation-result/v1", ticketId: node.id, branch: node.id, commits: [node.id], summary: node.id, validations: [],
+      } } };
+    }, async cancel() {}, async close() {} }; },
+    async finalizePipelineChangeSet(input) { promotions += 1; return { promotion: "applied", ...input.snapshot!.pipelineChangeSet! }; },
+    async invalidatePipelineChangeSet() { invalidations += 1; },
+  }, { runIdFactory: () => "run-rejected-review" });
+
+  const result = await runtime.start(program);
+
+  assert.equal(result.status, "cancelled");
+  assert.equal(promotions, 0);
+  assert.equal(invalidations, 1);
+  assert.equal(result.snapshot.pipelineChangeSet, undefined);
 });
