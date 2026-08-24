@@ -1,6 +1,7 @@
 import { parseArtifactProducer } from "./PipelineV3Compiler";
 import { validateAdapterSupportsPolicy } from "./PipelinePolicy";
 import { getPipelineInterviewProtocol } from "./PipelineInterviewProtocol";
+import { compileExecutionPlan, validateExecutionPlan, type ExecutionPlan } from "./ExecutionPlan";
 import {
   PIPELINE_NODE_ACP_HISTORY_ARTIFACT_NAME,
   PIPELINE_NODE_ACP_HISTORY_ARTIFACT_TYPE,
@@ -55,6 +56,7 @@ export interface PipelineRuntimeEvent {
 
 export interface PipelineRuntimeStartOptions {
   inputs?: Record<string, unknown>;
+  executionPlan?: ExecutionPlan;
 }
 
 export interface PipelineRunStore {
@@ -122,6 +124,10 @@ export class PipelineRuntime {
     this.programsById.set(program.id, program);
     const runId = this.runIdFactory();
     const at = this.isoNow();
+    const executionPlan = options.executionPlan ? validateExecutionPlan(options.executionPlan) : undefined;
+    if (executionPlan && (!executionPlan.plan || executionPlan.errors.length > 0)) {
+      throw new Error(`Invalid Execution Plan: ${executionPlan.errors.join(" ")}`);
+    }
     const snapshot: PipelineRuntimeSnapshot = {
       runId,
       pipelineId: program.id,
@@ -130,6 +136,12 @@ export class PipelineRuntime {
       nodeStates: Object.fromEntries(program.nodes.map(node => [node.id, { status: "pending", attempts: 0 }])),
       artifacts: {},
       diagnostics: [],
+      ...(executionPlan?.plan ? {
+        executionPlan: {
+          plan: executionPlan.plan,
+          expansion: { status: "pending", expandedNodeIds: [] },
+        },
+      } : {}),
       createdAt: at,
       updatedAt: at,
     };
@@ -204,11 +216,14 @@ export class PipelineRuntime {
     }
     if (node.output) {
       const value = decision.value ?? "";
-      active.snapshot.artifacts[artifactKey(node.id, node.output.name)] = {
+      const artifact = {
         ...node.output,
         value,
         producerNodeId: node.id,
       };
+      const planError = this.captureExecutionPlan(active, artifact);
+      if (planError) return this.fail(active, planError);
+      active.snapshot.artifacts[artifactKey(node.id, node.output.name)] = artifact;
     }
     active.snapshot.nodeStates[pause.nodeId] = {
       ...active.snapshot.nodeStates[pause.nodeId],
@@ -522,6 +537,8 @@ export class PipelineRuntime {
         }
         if ("artifact" in result) {
           const artifact = assertArtifact(node, result);
+          const planError = this.captureExecutionPlan(active, artifact);
+          if (planError) return planError;
           active.snapshot.artifacts[artifactKey(node.id, artifact.name)] = artifact;
           active.snapshot.nodeStates[node.id] = {
             ...active.snapshot.nodeStates[node.id],
@@ -689,6 +706,8 @@ export class PipelineRuntime {
             },
           };
           const artifact = assertArtifact(node, finalResult);
+          const planError = this.captureExecutionPlan(active, artifact);
+          if (planError) return planError;
           active.snapshot.artifacts[artifactKey(node.id, artifact.name)] = artifact;
           this.recordInterviewHistory(active, interview);
           active.snapshot.activeInterview = undefined;
@@ -855,6 +874,13 @@ export class PipelineRuntime {
       if (!snapshot || !program) {
         throw new Error(`Unknown active pipeline run "${runId}".`);
       }
+      if (snapshot.executionPlan) {
+        const validation = validateExecutionPlan(snapshot.executionPlan.plan);
+        if (!validation.plan || validation.errors.length > 0) {
+          throw new Error(`Invalid persisted Execution Plan for run "${runId}": ${validation.errors.join(" ")}`);
+        }
+        snapshot.executionPlan.plan = validation.plan;
+      }
       const restored = {
         program,
         snapshot,
@@ -869,6 +895,36 @@ export class PipelineRuntime {
       return restored;
     }
     return active;
+  }
+
+  private captureExecutionPlan(
+    active: ActiveRun,
+    artifact: PipelineArtifact,
+  ): PipelineRuntimeDiagnostic | undefined {
+    // Markdown keeps the human adapter contract; only the structured JSON
+    // artifact is authoritative enough to freeze into an Execution Plan.
+    if (artifact.type !== "acp.ticket-graph/v1" || artifact.format !== "json") return undefined;
+    const compiled = compileExecutionPlan(artifact.value);
+    if (!compiled.plan) {
+      return {
+        nodeId: artifact.producerNodeId,
+        code: "invalid_execution_plan",
+        message: compiled.errors.join(" "),
+      };
+    }
+    if (active.snapshot.executionPlan) {
+      if (JSON.stringify(active.snapshot.executionPlan.plan) === JSON.stringify(compiled.plan)) return undefined;
+      return {
+        nodeId: artifact.producerNodeId,
+        code: "execution_plan_frozen",
+        message: "A different Ticket Graph requires a new Execution Plan version; the active plan is frozen.",
+      };
+    }
+    active.snapshot.executionPlan = {
+      plan: compiled.plan,
+      expansion: { status: "pending", expandedNodeIds: [] },
+    };
+    return undefined;
   }
 
   private async persist(snapshot: PipelineRuntimeSnapshot): Promise<void> {

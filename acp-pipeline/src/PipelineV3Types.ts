@@ -1,5 +1,6 @@
 import type { NormalizedPipelinePolicy, NormalizedPromotionPolicy } from "./PipelinePolicy";
 import type { PipelineIntegrationConflict, PipelineSandboxResumeDivergence } from "./PipelineAgentRunner";
+import type { ExecutionPlanSnapshot } from "./ExecutionPlan";
 
 export type PipelineArtifactFormat = "text" | "markdown" | "json";
 
@@ -157,6 +158,8 @@ export interface PipelineRuntimeSnapshot {
   diagnostics: PipelineRuntimeDiagnostic[];
   /** Durable adapter state required to resume isolated workspace effects. */
   sandboxRuns?: Record<string, PipelineSandboxRunSnapshot>;
+  /** Frozen dynamic plan and durable proof of whether it has already expanded. */
+  executionPlan?: ExecutionPlanSnapshot;
   createdAt: string;
   updatedAt: string;
 }
