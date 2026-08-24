@@ -18,6 +18,7 @@ import {
   type SandboxRunInput,
   type SandboxRunResult,
 } from './runtime.js';
+import { IntegrationConflictError, type IntegrationConflict } from './gitPromotion.js';
 
 export type DockerSandboxAcpBridgeOptions = Omit<
   SandboxRunInput,
@@ -28,6 +29,7 @@ export interface SandboxBridgeFailure {
   code: string;
   message: string;
   diagnostic?: string;
+  conflict?: IntegrationConflict;
 }
 
 export type SandboxBridgePreviewResponse =
@@ -181,6 +183,9 @@ function textPrompt(params: PromptRequest): string {
 }
 
 function bridgeFailure(error: unknown): SandboxBridgeFailure {
+  if (error instanceof IntegrationConflictError) {
+    return { code: error.code, message: error.message, conflict: error.conflict };
+  }
   if (error instanceof SandboxResumeDivergenceError) {
     return { code: error.code, message: error.message, diagnostic: error.diagnostic };
   }

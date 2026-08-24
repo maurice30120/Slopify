@@ -151,6 +151,93 @@ test("parallel agents may finish in opposite orders while finalization stays uni
   assert.deepEqual(second.integrated, first.integrated);
 });
 
+test("a multi-parent descendant receives every satisfied dependency checkpoint in stable declaration order", async () => {
+  const program = multiAgentProgram();
+  const received: Array<{ nodeId: string; dependencies: string[] }> = [];
+  const adapter: PipelineRuntimeAdapter = {
+    async createSession({ runId, node }) {
+      return {
+        runId,
+        nodeId: node.id,
+        async send(input): Promise<PipelineNodeExecutionResult> {
+          received.push({
+            nodeId: node.id,
+            dependencies: (input.dependencyCheckpoints ?? []).map(checkpoint => `${checkpoint.nodeId}#${checkpoint.attempt}`),
+          });
+          await input.onSandboxRunState?.({
+            sandboxName: `sandbox-${node.id}`,
+            runId,
+            nodeId: node.id,
+            attempt: input.attempt ?? 1,
+            baseCommit: "base",
+            integrationState: "checkpointed",
+            resourceState: "removed",
+            checkpoint: {
+              status: "checkpointed",
+              commit: `commit-${node.id}`,
+              remote: `sandbox-${node.id}`,
+              ref: `refs/checkpoints/${node.id}`,
+              preview: { baseCommit: "base", checkpointCommit: `commit-${node.id}`, fileCount: 1, files: [`${node.id}.ts`], diff: "diff" },
+            },
+          });
+          return { artifact: { name: "out", type: "note", format: "text", value: node.id } };
+        },
+        async cancel() {},
+        async close() {},
+      };
+    },
+  };
+
+  const completed = await new PipelineRuntime(adapter, {
+    runIdFactory: () => "run-dependency-composition",
+  }).start(program, { maxConcurrency: 2 });
+
+  assert.equal(completed.status, "completed");
+  assert.deepEqual(received.find(entry => entry.nodeId === "join")?.dependencies, ["c#1", "b#1"]);
+});
+
+test("an incompatible descendant composition suspends inspectably and resumes only that descendant", async () => {
+  const program = multiAgentProgram();
+  const attempts: string[] = [];
+  let conflict = true;
+  const runtime = new PipelineRuntime({
+    async createSession({ runId, node }) {
+      return {
+        runId, nodeId: node.id,
+        async send(input): Promise<PipelineNodeExecutionResult> {
+          attempts.push(`${node.id}#${input.attempt}`);
+          if (node.id === "join" && conflict) {
+            conflict = false;
+            throw new PipelineIntegrationConflictError({
+              runId, retryNodeId: "join",
+              checkpoints: [
+                { nodeId: "b", attempt: 1, commit: "commit-b", ref: "refs/checkpoints/b" },
+                { nodeId: "c", attempt: 1, commit: "commit-c", ref: "refs/checkpoints/c" },
+              ],
+              files: ["src/shared.ts"],
+            });
+          }
+          return { artifact: { name: "out", type: "note", format: "text", value: node.id } };
+        },
+        async cancel() {}, async close() {},
+      };
+    },
+  }, { runIdFactory: () => "run-descendant-conflict", store: new InMemoryPipelineRunStore() });
+
+  const paused = await runtime.start(program, { maxConcurrency: 2 });
+  assert.equal(paused.status, "paused");
+  assert.equal(paused.snapshot.pendingPause?.integrationConflict?.retryNodeId, "join");
+  assert.match(paused.status === "paused" ? paused.pause.content : "", /src\/shared\.ts/);
+
+  const completed = await runtime.resume(paused.runId, {
+    pauseId: paused.status === "paused" ? paused.pause.id : "unreachable",
+    kind: "approve",
+  });
+  assert.equal(completed.status, "completed");
+  assert.deepEqual(attempts.filter(value => value.startsWith("join#")), ["join#1", "join#1"]);
+  assert.deepEqual(attempts.filter(value => !value.startsWith("join#")).sort(), ["a#1", "b#1", "c#1"]);
+});
+
 test("persists sandbox identity, base, checkpoint, integration state, and diagnostics before finalization", async () => {
   const program = compilePipelineV3Definition({
     version: 3,

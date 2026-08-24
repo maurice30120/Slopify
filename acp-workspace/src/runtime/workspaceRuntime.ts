@@ -128,6 +128,9 @@ export function createWorkspaceRuntime(options: CreateWorkspaceRuntimeOptions): 
           onSandboxRetained: options.onSandboxRetained,
           onStateChange: state => input.onSandboxRunState?.(toPipelineSandboxRunSnapshot(state)),
           ...(input.resumeSandboxRun ? { resumeState: toSandboxRunState(input.resumeSandboxRun) } : {}),
+          ...(input.dependencyCheckpoints?.length ? {
+            dependencyCheckpoints: input.dependencyCheckpoints.map(toAgentCheckpointResult),
+          } : {}),
           },
         )),
         getPermissionContext: options.host.permissionContext,
@@ -142,6 +145,16 @@ export function createWorkspaceRuntime(options: CreateWorkspaceRuntimeOptions): 
       });
       if (!acpResult.finalization.ok) {
         const failure = acpResult.finalization.error;
+        if (failure.code === 'integration_conflict' && failure.conflict) {
+          throw new PipelineIntegrationConflictError({
+            runId: failure.conflict.runId,
+            retryNodeId: input.nodeId ?? input.agentName,
+            checkpoints: failure.conflict.checkpoints.map(checkpoint => ({
+              nodeId: checkpoint.nodeId, attempt: checkpoint.attempt, commit: checkpoint.commit, ref: checkpoint.ref,
+            })),
+            files: failure.conflict.files,
+          });
+        }
         if (failure.code === 'sandbox_resume_divergence' && input.resumeSandboxRun) {
           throw new PipelineSandboxResumeDivergenceError({
             runId: input.runId ?? 'run',
@@ -221,6 +234,23 @@ export function createWorkspaceRuntime(options: CreateWorkspaceRuntimeOptions): 
       }
     },
     clearRunLogs: () => fs.rmSync(path.join(options.workspaceCwd, '.acp', 'logs', 'sandboxes'), { recursive: true, force: true }),
+  };
+}
+
+function toAgentCheckpointResult(dependency: NonNullable<PipelineAgentRunInput['dependencyCheckpoints']>[number]): AgentCheckpointResult {
+  return {
+    checkpointStatus: dependency.checkpoint.status,
+    checkpoint: {
+      runId: dependency.runId,
+      nodeId: dependency.nodeId,
+      attempt: dependency.attempt,
+      sandboxName: dependency.checkpoint.remote.replace(/^sandbox-/u, ''),
+      baseCommit: dependency.baseCommit,
+      commit: dependency.checkpoint.commit,
+      remote: dependency.checkpoint.remote,
+      ref: dependency.checkpoint.ref,
+    },
+    preview: dependency.checkpoint.preview,
   };
 }
 

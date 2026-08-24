@@ -583,6 +583,7 @@ export class PipelineRuntime {
           signal: active.controller.signal,
           onSandboxRunState: state => this.persistSandboxRunState(active, state),
           resumeSandboxRun: this.resumeSandboxRun(active, node.id, attempt),
+          dependencyCheckpoints: dependencyCheckpoints(active, node),
         });
         if (active.controller.signal.aborted) {
           return { ok: true };
@@ -1131,6 +1132,23 @@ export class PipelineRuntime {
   private isoNow(): string {
     return this.now().toISOString();
   }
+}
+
+function dependencyCheckpoints(active: ActiveRun, node: CompiledPipelineNode) {
+  const dependencies = new Set(node.needs);
+  return active.program.nodes.filter(candidate => dependencies.has(candidate.id)).flatMap(dependency => {
+    const dependencyNodeId = dependency.id;
+    const latest = Object.values(active.snapshot.sandboxRuns ?? {})
+      .filter(run => run.nodeId === dependencyNodeId && run.checkpoint)
+      .sort((left, right) => right.attempt - left.attempt)[0];
+    return latest?.checkpoint ? [{
+      runId: latest.runId,
+      nodeId: latest.nodeId,
+      attempt: latest.attempt,
+      baseCommit: latest.baseCommit,
+      checkpoint: structuredClone(latest.checkpoint),
+    }] : [];
+  });
 }
 
 function executionPlanNodes(plan: ExecutionPlan): CompiledPipelineNode[] {

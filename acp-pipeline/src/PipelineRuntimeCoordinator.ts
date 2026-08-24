@@ -79,9 +79,15 @@ export class PipelineRuntime extends CorePipelineRuntime {
     options: PipelineRuntimeStartOptions = {},
   ): Promise<PipelineRuntimeResult> {
     this.coordinatedProgramsById.set(program.id, program);
-    const result = await super.start(program, options);
-    this.programsByRunId.set(result.runId, program);
-    return this.finalizeTerminalResult(result, program);
+    try {
+      const result = await super.start(program, options);
+      this.programsByRunId.set(result.runId, program);
+      return this.finalizeTerminalResult(result, program);
+    } catch (error: unknown) {
+      if (!(error instanceof PipelineIntegrationConflictError)) throw error;
+      this.programsByRunId.set(error.conflict.runId, program);
+      return this.suspendIntegrationConflict(error);
+    }
   }
 
   override async resume(
@@ -118,6 +124,9 @@ export class PipelineRuntime extends CorePipelineRuntime {
     ) {
       const program = this.programsByRunId.get(runId)
         ?? this.coordinatedProgramsById.get(snapshot.pipelineId);
+      if (snapshot.nodeStates[conflict.retryNodeId]?.status !== "completed") {
+        return this.runRecoveryAttempt(runId, program, () => this.retryRecoveredRun(runId));
+      }
       const result = await super.retryNode(runId, conflict.retryNodeId, decision.pauseId);
       return program ? this.finalizeTerminalResult(result, program) : result;
     }
@@ -169,6 +178,21 @@ export class PipelineRuntime extends CorePipelineRuntime {
         }
       });
     }
+  }
+
+  private async suspendIntegrationConflict(error: PipelineIntegrationConflictError): Promise<PipelineRuntimeResult> {
+    const pause = integrationConflictPause(error);
+    return this.suspendRecoveredRun(error.conflict.runId, pause, snapshot => {
+      for (const checkpoint of error.conflict.checkpoints) {
+        const sandboxRun = Object.values(snapshot.sandboxRuns ?? {}).find(run =>
+          run.nodeId === checkpoint.nodeId && run.attempt === checkpoint.attempt
+        );
+        if (sandboxRun) {
+          sandboxRun.integrationState = "integration_conflict";
+          sandboxRun.integrationDiagnostic = { files: [...error.conflict.files] };
+        }
+      }
+    });
   }
 
   private async finalizeTerminalResult(
