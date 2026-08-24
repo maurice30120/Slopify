@@ -7,6 +7,7 @@ import test from 'node:test';
 import {
   DOCKER_SANDBOX_NETWORK_POLICY_CHOICES,
   DockerSandboxRuntime,
+  IntegrationConflictError,
   SANDBOX_EXTENSION_METHODS,
   SandboxRunCancelledError,
   SandboxRunTimeoutError,
@@ -185,6 +186,51 @@ test('creates and previews an attributed Agent Checkpoint without mutating the h
   assert.equal(states[0].baseCommit, 'base123');
   assert.equal(states[0].sandboxId, `id-${sandboxName}`);
   assert.equal(states[1].checkpoint?.checkpoint.commit, 'checkpoint456');
+});
+
+test('prepares a descendant from multiple parent checkpoints without mutating the host worktree', async () => {
+  const scenario = sandboxScenario({ changedFiles: ['join.ts'], diff: 'diff' });
+  let merge = 0;
+  const fake = fakeExecutor(request => {
+    if (request.command === 'git' && request.args.join(' ') === 'show -s --format=%cI base123') return result('2026-01-01T00:00:00Z\n');
+    if (request.command === 'git' && request.args[0] === 'merge-base') return result();
+    if (request.command === 'git' && request.args[0] === 'merge-tree') return result(`tree-${++merge}\n`);
+    if (request.command === 'git' && request.args[0] === 'commit-tree') return result(`composed-${merge}\n`);
+    return scenario.respond(request);
+  });
+  const runtime = new DockerSandboxRuntime(fake.execute);
+  const dependency = (nodeId: string) => ({
+    checkpointStatus: 'checkpointed' as const,
+    checkpoint: { runId: 'run-join', nodeId, attempt: 1, sandboxName: `sandbox-${nodeId}`, baseCommit: 'base123', commit: `commit-${nodeId}`, remote: `remote-${nodeId}`, ref: `refs/checkpoints/${nodeId}` },
+    preview: { baseCommit: 'base123', checkpointCommit: `commit-${nodeId}`, fileCount: 1, files: [`${nodeId}.ts`], diff: 'diff' },
+  });
+
+  await runtime.runCodex({ workspaceCwd: '/repo', runId: 'run-join', nodeId: 'join', attempt: 1, prompt: 'Join', model: 'model', dependencyCheckpoints: [dependency('left'), dependency('right')] });
+
+  assert.deepEqual(fake.calls.filter(call => call.command === 'git' && call.args[0] === 'merge-tree').map(call => call.args.at(-1)), ['refs/checkpoints/left', 'refs/checkpoints/right']);
+  assert.equal(fake.calls.some(call => call.command === 'git' && call.args[0] === 'reset'), false);
+  assert.equal(fake.calls.some(call => call.command === 'sbx' && call.args.includes('reset') && call.args.includes('--hard')), true);
+});
+
+test('reports a real Integration Conflict before launching the descendant agent', async () => {
+  const scenario = sandboxScenario();
+  const fake = fakeExecutor(request => request.command === 'git' && request.args[0] === 'merge-tree'
+    ? result('CONFLICT (content): Merge conflict in shared.ts\n', '', 1)
+    : request.command === 'git' && request.args.join(' ') === 'show -s --format=%cI base123'
+      ? result('2026-01-01T00:00:00Z\n')
+      : scenario.respond(request));
+  const dependency = {
+    checkpointStatus: 'checkpointed' as const,
+    checkpoint: { runId: 'run-conflict', nodeId: 'parent', attempt: 1, sandboxName: 'sandbox-parent', baseCommit: 'base123', commit: 'commit-parent', remote: 'remote-parent', ref: 'refs/checkpoints/parent' },
+    preview: { baseCommit: 'base123', checkpointCommit: 'commit-parent', fileCount: 1, files: ['shared.ts'], diff: 'diff' },
+  };
+
+  await assert.rejects(
+    new DockerSandboxRuntime(fake.execute).runCodex({ workspaceCwd: '/repo', runId: 'run-conflict', nodeId: 'join', attempt: 1, prompt: 'Join', model: 'model', dependencyCheckpoints: [dependency] }),
+    (error: unknown) => error instanceof IntegrationConflictError && error.conflict.files.includes('shared.ts'),
+  );
+  assert.equal(fake.calls.some(call => call.command === 'sbx' && call.args[0] === 'exec' && call.args[2] === 'codex'), false);
+  assert.equal(hostMutatingGitCalls(fake.calls).length, 0);
 });
 
 test('creates an empty technical checkpoint and returns no_changes when its preview is empty', async () => {

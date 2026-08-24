@@ -294,6 +294,7 @@ export interface PipelineDependencyCheckpoint {
   runId: string;
   nodeId: string;
   attempt: number;
+  sandboxName: string;
   baseCommit: string;
   checkpoint: PipelineSandboxCheckpointSnapshot;
 }

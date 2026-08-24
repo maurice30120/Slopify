@@ -146,14 +146,7 @@ export function createWorkspaceRuntime(options: CreateWorkspaceRuntimeOptions): 
       if (!acpResult.finalization.ok) {
         const failure = acpResult.finalization.error;
         if (failure.code === 'integration_conflict' && failure.conflict) {
-          throw new PipelineIntegrationConflictError({
-            runId: failure.conflict.runId,
-            retryNodeId: input.nodeId ?? input.agentName,
-            checkpoints: failure.conflict.checkpoints.map(checkpoint => ({
-              nodeId: checkpoint.nodeId, attempt: checkpoint.attempt, commit: checkpoint.commit, ref: checkpoint.ref,
-            })),
-            files: failure.conflict.files,
-          });
+          throw toPipelineIntegrationConflict(failure.conflict, input.nodeId ?? input.agentName);
         }
         if (failure.code === 'sandbox_resume_divergence' && input.resumeSandboxRun) {
           throw new PipelineSandboxResumeDivergenceError({
@@ -244,7 +237,7 @@ function toAgentCheckpointResult(dependency: NonNullable<PipelineAgentRunInput['
       runId: dependency.runId,
       nodeId: dependency.nodeId,
       attempt: dependency.attempt,
-      sandboxName: dependency.checkpoint.remote.replace(/^sandbox-/u, ''),
+      sandboxName: dependency.sandboxName,
       baseCommit: dependency.baseCommit,
       commit: dependency.checkpoint.commit,
       remote: dependency.checkpoint.remote,
@@ -365,23 +358,30 @@ async function finalizePipelineChangeSet(
     return result;
   } catch (error: unknown) {
     if (error instanceof IntegrationConflictError) {
-      throw new PipelineIntegrationConflictError({
-        runId: error.conflict.runId,
-        retryNodeId: error.conflict.incomingCheckpoint.nodeId,
-        checkpoints: error.conflict.checkpoints.map(checkpoint => ({
-          nodeId: checkpoint.nodeId,
-          attempt: checkpoint.attempt,
-          commit: checkpoint.commit,
-          ref: checkpoint.ref,
-        })),
-        files: error.conflict.files,
-      });
+      throw toPipelineIntegrationConflict(error.conflict, error.conflict.incomingCheckpoint.nodeId);
     }
     // Drop only volatile state. Durable refs and snapshot checkpoints remain
     // available for deterministic recovery after a process restart.
     if (input.snapshot) options.checkpointsByRunId.delete(input.runId);
     throw error;
   }
+}
+
+function toPipelineIntegrationConflict(
+  conflict: IntegrationConflict,
+  retryNodeId: string,
+): PipelineIntegrationConflictError {
+  return new PipelineIntegrationConflictError({
+    runId: conflict.runId,
+    retryNodeId,
+    checkpoints: conflict.checkpoints.map(checkpoint => ({
+      nodeId: checkpoint.nodeId,
+      attempt: checkpoint.attempt,
+      commit: checkpoint.commit,
+      ref: checkpoint.ref,
+    })),
+    files: conflict.files,
+  });
 }
 
 function createSandboxExtensionHandler(

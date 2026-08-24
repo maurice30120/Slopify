@@ -182,17 +182,7 @@ export class PipelineRuntime extends CorePipelineRuntime {
 
   private async suspendIntegrationConflict(error: PipelineIntegrationConflictError): Promise<PipelineRuntimeResult> {
     const pause = integrationConflictPause(error);
-    return this.suspendRecoveredRun(error.conflict.runId, pause, snapshot => {
-      for (const checkpoint of error.conflict.checkpoints) {
-        const sandboxRun = Object.values(snapshot.sandboxRuns ?? {}).find(run =>
-          run.nodeId === checkpoint.nodeId && run.attempt === checkpoint.attempt
-        );
-        if (sandboxRun) {
-          sandboxRun.integrationState = "integration_conflict";
-          sandboxRun.integrationDiagnostic = { files: [...error.conflict.files] };
-        }
-      }
-    });
+    return this.suspendRecoveredRun(error.conflict.runId, pause, snapshot => annotateIntegrationConflict(snapshot, error));
   }
 
   private async finalizeTerminalResult(
@@ -275,15 +265,7 @@ export class PipelineRuntime extends CorePipelineRuntime {
         snapshot.status = "paused";
         snapshot.pendingPause = pause;
         snapshot.updatedAt = new Date().toISOString();
-        for (const checkpoint of error.conflict.checkpoints) {
-          const sandboxRun = Object.values(snapshot.sandboxRuns ?? {}).find(run =>
-            run.nodeId === checkpoint.nodeId && run.attempt === checkpoint.attempt
-          );
-          if (sandboxRun) {
-            sandboxRun.integrationState = "integration_conflict";
-            sandboxRun.integrationDiagnostic = { files: [...error.conflict.files] };
-          }
-        }
+        annotateIntegrationConflict(snapshot, error);
         await this.completionBuffer.pause(result.runId, snapshot, pause);
         return {
           status: "paused",
@@ -313,6 +295,21 @@ export class PipelineRuntime extends CorePipelineRuntime {
 
   private cleanupRun(runId: string): void {
     this.programsByRunId.delete(runId);
+  }
+}
+
+function annotateIntegrationConflict(
+  snapshot: PipelineRuntimeSnapshot,
+  error: PipelineIntegrationConflictError,
+): void {
+  for (const checkpoint of error.conflict.checkpoints) {
+    const sandboxRun = Object.values(snapshot.sandboxRuns ?? {}).find(run =>
+      run.nodeId === checkpoint.nodeId && run.attempt === checkpoint.attempt
+    );
+    if (sandboxRun) {
+      sandboxRun.integrationState = "integration_conflict";
+      sandboxRun.integrationDiagnostic = { files: [...error.conflict.files] };
+    }
   }
 }
 

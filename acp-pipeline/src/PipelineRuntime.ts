@@ -1136,7 +1136,7 @@ export class PipelineRuntime {
 
 function dependencyCheckpoints(active: ActiveRun, node: CompiledPipelineNode) {
   const dependencies = new Set(node.needs);
-  return active.program.nodes.filter(candidate => dependencies.has(candidate.id)).flatMap(dependency => {
+  const checkpoints = active.program.nodes.filter(candidate => dependencies.has(candidate.id)).flatMap(dependency => {
     const dependencyNodeId = dependency.id;
     const latest = Object.values(active.snapshot.sandboxRuns ?? {})
       .filter(run => run.nodeId === dependencyNodeId && run.checkpoint)
@@ -1145,10 +1145,17 @@ function dependencyCheckpoints(active: ActiveRun, node: CompiledPipelineNode) {
       runId: latest.runId,
       nodeId: latest.nodeId,
       attempt: latest.attempt,
+      sandboxName: latest.sandboxName,
       baseCommit: latest.baseCommit,
       checkpoint: structuredClone(latest.checkpoint),
     }] : [];
   });
+  if (checkpoints.length > 0 && checkpoints.length !== dependencies.size) {
+    const retained = new Set(checkpoints.map(checkpoint => checkpoint.nodeId));
+    const missing = [...dependencies].filter(nodeId => !retained.has(nodeId));
+    throw new Error(`Cannot prepare node "${node.id}": satisfied dependencies lack retained Agent Checkpoints: ${missing.join(", ")}.`);
+  }
+  return checkpoints;
 }
 
 function executionPlanNodes(plan: ExecutionPlan): CompiledPipelineNode[] {

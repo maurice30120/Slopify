@@ -238,6 +238,31 @@ test("an incompatible descendant composition suspends inspectably and resumes on
   assert.deepEqual(attempts.filter(value => !value.startsWith("join#")).sort(), ["a#1", "b#1", "c#1"]);
 });
 
+test("a descendant refuses a partial retained checkpoint set", async () => {
+  const program = multiAgentProgram();
+  const runtime = new PipelineRuntime({
+    async createSession({ runId, node }) {
+      return {
+        runId, nodeId: node.id,
+        async send(input): Promise<PipelineNodeExecutionResult> {
+          if (node.id !== "b") await input.onSandboxRunState?.({
+            sandboxName: `sandbox-${node.id}`, runId, nodeId: node.id, attempt: 1,
+            baseCommit: "base", integrationState: "checkpointed", resourceState: "removed",
+            checkpoint: {
+              status: "checkpointed", commit: `commit-${node.id}`, remote: `remote-${node.id}`, ref: `refs/checkpoints/${node.id}`,
+              preview: { baseCommit: "base", checkpointCommit: `commit-${node.id}`, fileCount: 1, files: [`${node.id}.ts`], diff: "diff" },
+            },
+          });
+          return { artifact: { name: "out", type: "note", format: "text", value: node.id } };
+        },
+        async cancel() {}, async close() {},
+      };
+    },
+  }, { runIdFactory: () => "run-partial-checkpoints" });
+
+  await assert.rejects(runtime.start(program, { maxConcurrency: 2 }), /satisfied dependencies lack retained Agent Checkpoints: b/);
+});
+
 test("persists sandbox identity, base, checkpoint, integration state, and diagnostics before finalization", async () => {
   const program = compilePipelineV3Definition({
     version: 3,
