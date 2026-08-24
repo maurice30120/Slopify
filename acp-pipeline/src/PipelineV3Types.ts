@@ -207,10 +207,19 @@ export interface PipelineSandboxRunSnapshot {
 }
 
 export interface PipelineRuntimeNodeSnapshot {
-  status: "pending" | "running" | "paused" | "completed" | "failed" | "cancelled";
+  status: "pending" | "running" | "paused" | "completed" | "failed" | "blocked" | "cancelled";
   attempts: number;
+  attemptResults?: PipelineNodeAttemptSnapshot[];
   startedAt?: string;
   completedAt?: string;
+}
+
+export interface PipelineNodeAttemptSnapshot {
+  attempt: number;
+  status: "running" | "completed" | "failed";
+  startedAt: string;
+  completedAt?: string;
+  diagnostic?: PipelineRuntimeDiagnostic;
 }
 
 export interface PipelinePauseSnapshot {
