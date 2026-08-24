@@ -8,7 +8,9 @@ import type {
   PipelinePauseSnapshot,
   PipelineResumeDecision,
   PipelineRuntimeResult,
+  TicketGraphArtifact,
 } from '@acp-client/pipeline';
+import { validateMultiAgentArtifact } from '@acp-client/pipeline';
 
 export const SEQUENTIAL_DELIVERY_ARTIFACT_TYPE = 'acp.sequential-delivery/v1';
 
@@ -215,24 +217,26 @@ export function createWorkspaceRunPolicy(options: WorkspaceRunPolicyOptions): Wo
       }
       let plan;
       try {
-        plan = prepareSequentialDelivery(options.workspaceCwd, result.artifact);
+        plan = prepareSequentialDelivery(options.workspaceCwd, result);
       } catch (error: unknown) {
         throw new WorkspaceRunPolicyError('invalid_sequential_delivery', error instanceof Error ? error.message : String(error));
       }
       try {
-        for (const [index, ticketPath] of plan.ticketPaths.entries()) {
-          options.onDeliveryProgress?.(`Starting ticket ${index + 1}/${plan.ticketPaths.length}: ${ticketPath}`);
+        for (const [index, ticket] of plan.tickets.entries()) {
+          options.onDeliveryProgress?.(`Starting ticket ${index + 1}/${plan.tickets.length}: ${ticket.id}`);
           const ticketResult = await options.start('implement-ticket', [
             'User request:', userPrompt, '',
             `Specification: \`${plan.specificationPath}\``,
-            `Ticket: \`${ticketPath}\``,
+            `Ticket ID: ${ticket.id}`,
+            `Dependencies: ${ticket.needs.length > 0 ? ticket.needs.join(', ') : 'None'}`,
+            `Ticket: \`${ticket.markdownPath}\``,
           ].join('\n'));
           if (ticketResult.status === 'paused') {
             throw new Error(`implement-ticket paused unexpectedly at node "${ticketResult.pause.nodeId}".`);
           }
           if (ticketResult.status !== 'completed') return ticketResult;
         }
-        options.onDeliveryProgress?.(`Completed ${plan.ticketPaths.length} ticket pipeline(s); starting review.`);
+        options.onDeliveryProgress?.(`Completed ${plan.tickets.length} ticket pipeline(s); starting review.`);
         const review = await options.start('review-delivery', [
           'User request:', userPrompt, '', 'Approved delivery files:',
           `- \`${plan.specificationPath}\``, `- \`${plan.issuesDirectory}/\``,
@@ -302,7 +306,9 @@ function expandWorkspaceMarkdownReferences(workspaceCwd: string, content: string
   )].join('\n\n');
 }
 
-function prepareSequentialDelivery(workspaceCwd: string, artifact: PipelineArtifact) {
+function prepareSequentialDelivery(workspaceCwd: string, result: Extract<PipelineRuntimeResult, { status: 'completed' }>) {
+  const artifact = result.artifact;
+  if (!artifact) throw new Error('Sequential delivery result must contain a handoff artifact.');
   if (typeof artifact.value !== 'string') throw new Error('Sequential delivery artifact must contain a Markdown handoff string.');
   const references = collectScratchReferences(artifact.value).map(normalizeReference);
   const specs = [...new Set(references.filter(reference => /\/spec\.md$/.test(reference)))];
@@ -318,17 +324,38 @@ function prepareSequentialDelivery(workspaceCwd: string, artifact: PipelineArtif
   const issuesAbsolute = resolveScratchPath(workspaceCwd, issuesDirectory);
   if (!fs.statSync(specificationAbsolute).isFile()) throw new Error(`Sequential delivery specification is not a file: ${specificationPath}`);
   if (!fs.statSync(issuesAbsolute).isDirectory()) throw new Error(`Sequential delivery issues path is not a directory: ${issuesDirectory}`);
-  const ticketNames = fs.readdirSync(issuesAbsolute, { withFileTypes: true })
-    .filter(entry => entry.isFile() && entry.name.endsWith('.md')).map(entry => entry.name).sort();
-  if (ticketNames.length === 0) throw new Error(`Sequential delivery issues directory contains no Markdown tickets: ${issuesDirectory}`);
-  for (const [index, ticketName] of ticketNames.entries()) {
-    const match = /^(\d{2})-.+\.md$/.exec(ticketName);
-    const expected = index + 1;
-    if (!match || Number.parseInt(match[1], 10) !== expected) {
-      throw new Error(`Sequential delivery tickets must be contiguous from 01; expected ${String(expected).padStart(2, '0')}-*.md but found ${ticketName}.`);
-    }
+  const ticketGraph = readTicketGraph(result);
+  const markdownByTicketId = indexTicketMarkdown(issuesAbsolute, issuesDirectory);
+  const tickets = ticketGraph.tickets.map(ticket => {
+    const markdownPath = markdownByTicketId.get(ticket.id);
+    if (!markdownPath) throw new Error(`Ticket Graph node "${ticket.id}" has no Markdown adapter in ${issuesDirectory}.`);
+    return { id: ticket.id, needs: ticket.needs, markdownPath };
+  });
+  return { specificationPath, issuesDirectory, tickets };
+}
+
+function readTicketGraph(result: Extract<PipelineRuntimeResult, { status: 'completed' }>): TicketGraphArtifact {
+  const artifact = Object.values(result.snapshot.artifacts).reverse()
+    .find(candidate => candidate.type === 'acp.ticket-graph/v1');
+  if (!artifact) throw new Error('Sequential delivery requires an acp.ticket-graph/v1 artifact in the run snapshot.');
+  const validation = validateMultiAgentArtifact('acp.ticket-graph/v1', artifact.value);
+  if (!validation.ok || validation.value?.contract !== 'acp.ticket-graph/v1') {
+    throw new Error(`Invalid Ticket Graph: ${validation.errors.join(' ')}`);
   }
-  return { specificationPath, issuesDirectory, ticketPaths: ticketNames.map(name => `${issuesDirectory}/${name}`) };
+  return validation.value;
+}
+
+function indexTicketMarkdown(issuesAbsolute: string, issuesDirectory: string): Map<string, string> {
+  const indexed = new Map<string, string>();
+  for (const entry of fs.readdirSync(issuesAbsolute, { withFileTypes: true })) {
+    if (!entry.isFile() || !entry.name.endsWith('.md')) continue;
+    const matches = [...fs.readFileSync(path.join(issuesAbsolute, entry.name), 'utf8').matchAll(/^\*\*Ticket ID:\*\*\s*(\S+)\s*$/gm)];
+    if (matches.length !== 1) continue;
+    const id = matches[0][1];
+    if (indexed.has(id)) throw new Error(`Markdown adapter duplicates Ticket Graph node "${id}".`);
+    indexed.set(id, `${issuesDirectory}/${entry.name}`);
+  }
+  return indexed;
 }
 
 function collectScratchReferences(content: string): string[] {
