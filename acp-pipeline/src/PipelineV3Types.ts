@@ -156,6 +156,8 @@ export interface PipelineRuntimeSnapshot {
   nodeInterviewHistories?: Record<string, PipelineInterviewSnapshot>;
   finalArtifact?: PipelineArtifact;
   diagnostics: PipelineRuntimeDiagnostic[];
+  /** Maximum number of agent nodes that may be active in this run. */
+  maxConcurrency?: number;
   /** Durable adapter state required to resume isolated workspace effects. */
   sandboxRuns?: Record<string, PipelineSandboxRunSnapshot>;
   /** Frozen dynamic plan and durable proof of whether it has already expanded. */

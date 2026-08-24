@@ -1,5 +1,9 @@
 import { parseArtifactProducer } from "./PipelineV3Compiler";
-import { validateAdapterSupportsPolicy } from "./PipelinePolicy";
+import {
+  READ_ONLY_PIPELINE_POLICY,
+  WORKSPACE_WRITE_PIPELINE_POLICY,
+  validateAdapterSupportsPolicy,
+} from "./PipelinePolicy";
 import { getPipelineInterviewProtocol } from "./PipelineInterviewProtocol";
 import {
   compileExecutionPlan,
@@ -63,6 +67,7 @@ export interface PipelineRuntimeEvent {
 export interface PipelineRuntimeStartOptions {
   inputs?: Record<string, unknown>;
   executionPlan?: ExecutionPlan;
+  maxConcurrency?: number;
 }
 
 export interface PipelineRunStore {
@@ -127,6 +132,10 @@ export class PipelineRuntime {
     program: CompiledPipelineProgram,
     options: PipelineRuntimeStartOptions = {},
   ): Promise<PipelineRuntimeResult> {
+    if (options.maxConcurrency !== undefined
+      && (!Number.isInteger(options.maxConcurrency) || options.maxConcurrency < 1)) {
+      throw new Error("maxConcurrency must be an integer greater than or equal to 1.");
+    }
     this.programsById.set(program.id, program);
     const runId = this.runIdFactory();
     const at = this.isoNow();
@@ -142,6 +151,7 @@ export class PipelineRuntime {
       nodeStates: Object.fromEntries(program.nodes.map(node => [node.id, { status: "pending", attempts: 0 }])),
       artifacts: {},
       diagnostics: [],
+      ...(options.maxConcurrency === undefined ? {} : { maxConcurrency: options.maxConcurrency }),
       ...(executionPlan?.plan ? {
         executionPlan: markExecutionPlanExpanded(
           { plan: executionPlan.plan, expansion: { status: "pending", expandedNodeIds: [] } },
@@ -387,6 +397,8 @@ export class PipelineRuntime {
 
   private async advance(active: ActiveRun): Promise<PipelineRuntimeResult> {
     while (active.snapshot.status === "running") {
+      const expansionError = await this.expandExecutionPlan(active);
+      if (expansionError) return this.fail(active, expansionError);
       const ready = this.readyNodes(active);
       if (ready.length === 0 && active.nodeTasks.size === 0) {
         if (this.isComplete(active)) {
@@ -406,7 +418,8 @@ export class PipelineRuntime {
         node.kind === "agent"
         && (!node.interaction || node.id === firstInterview?.id)
       );
-      for (const node of batch) {
+      const available = (active.snapshot.maxConcurrency ?? Number.POSITIVE_INFINITY) - active.nodeTasks.size;
+      for (const node of batch.slice(0, Math.max(0, available))) {
         this.startNodeTask(active, node);
       }
       if (active.nodeTasks.size === 0) {
@@ -468,6 +481,40 @@ export class PipelineRuntime {
     return active.program.nodes
       .filter(node => active.snapshot.nodeStates[node.id]?.status === "pending")
       .filter(node => node.needs.every(dependency => active.snapshot.nodeStates[dependency]?.status === "completed"));
+  }
+
+  private async expandExecutionPlan(active: ActiveRun): Promise<PipelineRuntimeDiagnostic | undefined> {
+    const snapshot = active.snapshot.executionPlan;
+    if (!snapshot) return undefined;
+    const dynamicNodes = executionPlanNodes(snapshot.plan);
+    if (snapshot.expansion.status === "expanded") {
+      if (!dynamicNodes.every(node => active.program.nodesById.has(node.id))) {
+        active.program = appendProgramNodes(active.program, dynamicNodes);
+      }
+      for (const node of dynamicNodes) {
+        active.snapshot.nodeStates[node.id] ??= { status: "pending", attempts: 0 };
+      }
+      return undefined;
+    }
+    const collisions = dynamicNodes.filter(node => active.program.nodesById.has(node.id));
+    if (collisions.length > 0) {
+      return {
+        code: "execution_plan_node_collision",
+        message: `Execution Plan node identities collide with pipeline nodes: ${collisions.map(node => node.id).sort().join(", ")}.`,
+      };
+    }
+    active.program = appendProgramNodes(active.program, dynamicNodes);
+    for (const node of dynamicNodes) {
+      active.snapshot.nodeStates[node.id] = { status: "pending", attempts: 0 };
+    }
+    active.snapshot.executionPlan = markExecutionPlanExpanded(
+      snapshot,
+      dynamicNodes.map(node => node.id),
+      this.isoNow(),
+    );
+    active.snapshot.updatedAt = this.isoNow();
+    await this.persist(active.snapshot);
+    return undefined;
   }
 
   private async executeNode(active: ActiveRun, node: CompiledPipelineNode): Promise<PipelineRuntimeDiagnostic | { ok: true } | { paused: PipelineRuntimeResult }> {
@@ -1086,6 +1133,56 @@ export class PipelineRuntime {
   private isoNow(): string {
     return this.now().toISOString();
   }
+}
+
+function executionPlanNodes(plan: ExecutionPlan): CompiledPipelineNode[] {
+  const implementationNodes = plan.nodes.map(node => ({
+    id: node.id,
+    kind: "agent" as const,
+    agent: node.ticket.agent ?? "Codex Sandbox",
+    prompt: `Implement the approved ticket from the immutable Execution Plan:\n${JSON.stringify(node.ticket, null, 2)}`,
+    skills: ["implement"],
+    needs: [...node.needs],
+    inputs: [],
+    output: { name: "result", type: "acp.implementation-result/v1", format: "json" as const },
+    retry: { maxAttempts: 1, backoffMs: 0 },
+    policy: WORKSPACE_WRITE_PIPELINE_POLICY,
+  }));
+  return [...implementationNodes, {
+    id: plan.finalReview.id,
+    kind: "agent" as const,
+    agent: "Codex Sandbox",
+    prompt: "Review the complete integrated result produced by the immutable Execution Plan.",
+    skills: ["code-review"],
+    needs: [...plan.finalReview.needs],
+    inputs: [],
+    output: { name: "review", type: "acp.verification-report/v1", format: "json" as const },
+    retry: { maxAttempts: 1, backoffMs: 0 },
+    policy: READ_ONLY_PIPELINE_POLICY,
+  }];
+}
+
+function appendProgramNodes(
+  program: CompiledPipelineProgram,
+  candidates: readonly CompiledPipelineNode[],
+): CompiledPipelineProgram {
+  const appended = candidates.filter(node => !program.nodesById.has(node.id));
+  if (appended.length === 0) return program;
+  const nodes = [...program.nodes, ...appended];
+  const nodesById = new Map(nodes.map(node => [node.id, node]));
+  const dependentsById = new Map<string, string[]>(nodes.map(node => [node.id, []]));
+  for (const node of nodes) {
+    for (const dependency of node.needs) dependentsById.get(dependency)?.push(node.id);
+  }
+  for (const dependents of dependentsById.values()) dependents.sort();
+  return {
+    ...program,
+    nodes,
+    nodesById,
+    dependentsById,
+    rootNodeIds: nodes.filter(node => node.needs.length === 0).map(node => node.id).sort(),
+    terminalNodeIds: nodes.filter(node => dependentsById.get(node.id)?.length === 0).map(node => node.id).sort(),
+  };
 }
 
 function resolveInputs(node: CompiledPipelineNode, artifacts: Record<string, PipelineArtifact>): Record<string, PipelineArtifact> {
