@@ -299,6 +299,7 @@ export class PipelineRuntime {
     active.snapshot.nodeStates[nodeId] = {
       status: "pending",
       attempts: state.attempts,
+      attemptResults: state.attemptResults,
     };
     active.snapshot.pendingPause = undefined;
     active.snapshot.status = "running";
@@ -620,10 +621,16 @@ export class PipelineRuntime {
         }
         if ("artifact" in result) {
           const checkpointError = requiredCheckpointDiagnostic(active, node, attempt);
-          if (checkpointError) return checkpointError;
+          if (checkpointError) {
+            this.failNodeAttempt(active, node.id, attempt, checkpointError);
+            return checkpointError;
+          }
           const artifact = assertArtifact(node, result);
           const planError = this.acceptArtifact(active, artifact);
-          if (planError) return planError;
+          if (planError) {
+            this.failNodeAttempt(active, node.id, attempt, planError);
+            return planError;
+          }
           active.snapshot.nodeStates[node.id] = {
             ...active.snapshot.nodeStates[node.id],
             status: "completed",
@@ -803,10 +810,16 @@ export class PipelineRuntime {
             },
           };
           const checkpointError = requiredCheckpointDiagnostic(active, node, attempt);
-          if (checkpointError) return checkpointError;
+          if (checkpointError) {
+            this.failNodeAttempt(active, node.id, attempt, checkpointError);
+            return checkpointError;
+          }
           const artifact = assertArtifact(node, finalResult);
           const planError = this.acceptArtifact(active, artifact);
-          if (planError) return planError;
+          if (planError) {
+            this.failNodeAttempt(active, node.id, attempt, planError);
+            return planError;
+          }
           this.recordInterviewHistory(active, interview);
           active.snapshot.activeInterview = undefined;
           active.snapshot.nodeStates[node.id] = {
@@ -1014,6 +1027,20 @@ export class PipelineRuntime {
       ...(diagnostic ? { diagnostic } : {}),
     };
     active.snapshot.nodeStates[nodeId] = { ...state, attemptResults };
+  }
+
+  private failNodeAttempt(
+    active: ActiveRun,
+    nodeId: string,
+    attempt: number,
+    diagnostic: PipelineRuntimeDiagnostic,
+  ): void {
+    active.snapshot.nodeStates[nodeId] = {
+      ...active.snapshot.nodeStates[nodeId],
+      status: "failed",
+      completedAt: this.isoNow(),
+    };
+    this.finishAttempt(active, nodeId, attempt, "failed", diagnostic);
   }
 
   private startAttempt(active: ActiveRun, nodeId: string, attempt: number): void {

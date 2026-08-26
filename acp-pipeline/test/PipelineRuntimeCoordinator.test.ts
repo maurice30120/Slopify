@@ -751,6 +751,16 @@ test("an Integration Conflict pauses finalization and approval retries only the 
   assert.equal(completed.status, "completed");
   assert.deepEqual(attempts.filter(attempt => attempt.startsWith("a#")), ["a#1"]);
   assert.deepEqual(attempts.filter(attempt => attempt.startsWith("b#")), ["b#1", "b#2"]);
+  assert.deepEqual(
+    completed.snapshot.nodeStates.b.attemptResults?.map(result => ({
+      attempt: result.attempt,
+      status: result.status,
+    })),
+    [
+      { attempt: 1, status: "completed" },
+      { attempt: 2, status: "completed" },
+    ],
+  );
   assert.deepEqual(attempts.filter(attempt => attempt.startsWith("c#")), ["c#1"]);
   assert.deepEqual(attempts.filter(attempt => attempt.startsWith("join#")), ["join#1"]);
   assert.equal(finalization, 2);

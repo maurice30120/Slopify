@@ -147,6 +147,15 @@ test("PipelineRuntime fails a terminal workspace-writing node that completes wit
   assert.equal(failed.status, "failed");
   assert.equal(failed.status === "failed" ? failed.error.code : undefined, "missing_agent_checkpoint");
   assert.match(failed.status === "failed" ? failed.error.message : "", /writer.*attempt 1/i);
+  assert.equal(failed.snapshot.nodeStates.writer.status, "failed");
+  assert.deepEqual(
+    failed.snapshot.nodeStates.writer.attemptResults?.map(result => ({
+      attempt: result.attempt,
+      status: result.status,
+      code: result.diagnostic?.code,
+    })),
+    [{ attempt: 1, status: "failed", code: "missing_agent_checkpoint" }],
+  );
 });
 
 test("PipelineRuntime renders node prompts from start inputs and typed artifacts", async () => {
