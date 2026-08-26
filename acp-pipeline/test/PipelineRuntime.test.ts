@@ -152,10 +152,10 @@ test("PipelineRuntime persists one immutable Execution Plan and restores its exp
 
   const paused = await firstRuntime.start(program, { executionPlan: plan });
   assert.equal(paused.status, "paused");
-  assert.deepEqual(paused.snapshot.executionPlan, {
-    plan,
-    expansion: { status: "pending", expandedNodeIds: [] },
-  });
+  assert.equal(paused.snapshot.executionPlan?.expansion.status, "expanded");
+  assert.deepEqual(paused.snapshot.executionPlan?.expansion.expandedNodeIds, ["T01", "final-review"]);
+  assert.ok(paused.snapshot.executionPlan?.expansion.status === "expanded"
+    && !Number.isNaN(Date.parse(paused.snapshot.executionPlan.expansion.expandedAt)));
 
   const restoredRuntime = new PipelineRuntime(sessionAdapter(async () => {
     throw new Error("pause nodes do not execute through the adapter");
@@ -199,7 +199,8 @@ test("PipelineRuntime compiles and persists a Ticket Graph before the first impl
     }
     const durable = await store.load("run-auto-plan");
     assert.equal(durable?.executionPlan?.plan.nodes[0].id, "T01");
-    assert.equal(durable?.executionPlan?.expansion.status, "pending");
+    assert.equal(durable?.executionPlan?.expansion.status, "expanded");
+    assert.deepEqual(durable?.executionPlan?.expansion.expandedNodeIds, ["T01", "final-review"]);
     return { artifact: { name: "out", type: "text-note", format: "text", value: "done" } };
   }), { runIdFactory: () => "run-auto-plan", store });
 
