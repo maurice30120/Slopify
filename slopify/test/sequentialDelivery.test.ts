@@ -4,7 +4,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import test from 'node:test';
 
-import type { PipelineRuntimeResult } from '@acp-client/pipeline';
+import type { PipelineRuntimeResult, PipelineRuntimeSnapshot } from '@acp-client/pipeline';
 
 import type { CliRunCommand } from '../src/args.js';
 import { runPipelineInteractive } from '../src/run.js';
@@ -24,7 +24,10 @@ class FakeTerminal implements CliTerminal {
 }
 
 test('dispatches one implement-ticket run per ticket before review', async () => {
-  const cwd = createDeliveryWorkspace(['02-second.md', '01-first.md']);
+  const cwd = createDeliveryWorkspace([
+    { name: '01-second.md', id: 'T02' },
+    { name: '99-first.md', id: 'T01' },
+  ]);
   const handoff = deliveryHandoff();
   const starts: Array<{ pipelineName: string; prompt: string }> = [];
 
@@ -47,6 +50,7 @@ test('dispatches one implement-ticket run per ticket before review', async () =>
       'acp.sequential-delivery/v1',
       handoff,
       'run-main',
+      ticketGraph(),
     ),
   };
   const terminal = new FakeTerminal();
@@ -61,15 +65,17 @@ test('dispatches one implement-ticket run per ticket before review', async () =>
     'implement-ticket',
     'review-delivery',
   ]);
-  assert.match(starts[1].prompt, /Ticket: `\.scratch\/feature\/issues\/01-first\.md`/);
-  assert.match(starts[2].prompt, /Ticket: `\.scratch\/feature\/issues\/02-second\.md`/);
+  assert.match(starts[1].prompt, /Ticket ID: T01/);
+  assert.match(starts[1].prompt, /Human-readable ticket: `\.scratch\/feature\/issues\/99-first\.md`/);
+  assert.match(starts[2].prompt, /Dependencies: T01/);
+  assert.match(starts[2].prompt, /Human-readable ticket: `\.scratch\/feature\/issues\/01-second\.md`/);
   assert.match(starts[3].prompt, /Approved delivery files:/);
   assert.match(terminal.errors.join('\n'), /Starting ticket 1\/2/);
   assert.match(terminal.errors.join('\n'), /starting review/);
 });
 
-test('fails before child execution when ticket numbering has a gap', async () => {
-  const cwd = createDeliveryWorkspace(['02-second.md']);
+test('fails before child execution when a Ticket Graph node has no Markdown adapter', async () => {
+  const cwd = createDeliveryWorkspace([{ name: '02-second.md', id: 'T02' }]);
   const handoff = deliveryHandoff();
   const starts: string[] = [];
 
@@ -83,6 +89,7 @@ test('fails before child execution when ticket numbering has a gap', async () =>
       'acp.sequential-delivery/v1',
       handoff,
       'run-main',
+      ticketGraph(),
     ),
   };
   const terminal = new FakeTerminal();
@@ -91,18 +98,18 @@ test('fails before child execution when ticket numbering has a gap', async () =>
 
   assert.equal(result.status, 'failed');
   assert.equal(result.error?.code, 'invalid_sequential_delivery');
-  assert.match(result.error?.message ?? '', /expected 01-\*\.md but found 02-second\.md/);
+  assert.match(result.error?.message ?? '', /node "T01" has no Markdown adapter/);
   assert.deepEqual(starts, ['grill-spec-tickets-implement-review']);
 });
 
-function createDeliveryWorkspace(ticketNames: string[]): string {
+function createDeliveryWorkspace(tickets: Array<{ name: string; id: string }>): string {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'acp-sequential-delivery-'));
   const featureDir = path.join(cwd, '.scratch', 'feature');
   const issuesDir = path.join(featureDir, 'issues');
   fs.mkdirSync(issuesDir, { recursive: true });
   fs.writeFileSync(path.join(featureDir, 'spec.md'), '# Specification\n');
-  for (const ticketName of ticketNames) {
-    fs.writeFileSync(path.join(issuesDir, ticketName), `# ${ticketName}\n`);
+  for (const ticket of tickets) {
+    fs.writeFileSync(path.join(issuesDir, ticket.name), `# ${ticket.name}\n\n**Ticket ID:** ${ticket.id}\n`);
   }
   return cwd;
 }
@@ -140,7 +147,14 @@ function completedResult(
   type: string,
   value: string,
   runId = `run-${producerNodeId}`,
+  graph?: unknown,
 ): PipelineRuntimeResult {
+  const completedSnapshot = snapshot('completed', runId);
+  if (graph !== undefined) {
+    completedSnapshot.artifacts['tasks.ticketGraph'] = {
+      name: 'ticketGraph', type: 'acp.ticket-graph/v1', format: 'json', value: graph, producerNodeId: 'tasks',
+    };
+  }
   return {
     status: 'completed',
     runId,
@@ -151,7 +165,17 @@ function completedResult(
       value,
       producerNodeId,
     },
-    snapshot: snapshot('completed', runId),
+    snapshot: completedSnapshot,
+  };
+}
+
+function ticketGraph() {
+  return {
+    contract: 'acp.ticket-graph/v1',
+    tickets: [
+      { id: 'T02', title: 'Second', scope: ['second'], needs: ['T01'], validation: ['second passes'] },
+      { id: 'T01', title: 'First', scope: ['first'], needs: [], validation: ['first passes'] },
+    ],
   };
 }
 
@@ -167,7 +191,7 @@ function command(cwd: string): CliRunCommand {
   };
 }
 
-function snapshot(status: 'paused' | 'completed', runId: string) {
+function snapshot(status: 'paused' | 'completed', runId: string): PipelineRuntimeSnapshot {
   return {
     runId,
     pipelineId: 'test',

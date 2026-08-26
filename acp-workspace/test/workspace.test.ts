@@ -196,19 +196,25 @@ test('low-level runtime has no workspace, Pipeline V3, or isolated-runtime owner
   }
 });
 
-test('WorkspaceRun validates a typed delivery handoff and runs tickets sequentially', async () => {
+test('WorkspaceRun uses Ticket Graph identities and dependencies regardless of Markdown file order', async () => {
   const cwd = workspace();
   const feature = path.join(cwd, '.scratch', 'feature');
   fs.mkdirSync(path.join(feature, 'issues'), { recursive: true });
   fs.writeFileSync(path.join(feature, 'spec.md'), '# Spec\n');
-  fs.writeFileSync(path.join(feature, 'issues', '01-first.md'), '# First\n');
-  fs.writeFileSync(path.join(feature, 'issues', '02-second.md'), '# Second\n');
+  fs.writeFileSync(path.join(feature, 'issues', '01-second.md'), '# Second\n\n**Ticket ID:** T02\n');
+  fs.writeFileSync(path.join(feature, 'issues', '99-first.md'), '# First\n\n**Ticket ID:** T01\n');
   const starts: Array<{ pipelineName: string; prompt: string }> = [];
   const run = createWorkspaceRun({
     workspaceCwd: cwd,
     start: async (pipelineName, prompt) => {
       starts.push({ pipelineName, prompt });
-      if (pipelineName === 'delivery') return completedResult(content, 'acp.sequential-delivery/v1');
+      if (pipelineName === 'delivery') return completedDeliveryResult(content, {
+        contract: 'acp.ticket-graph/v1',
+        tickets: [
+          { id: 'T02', title: 'Second', scope: ['second'], needs: ['T01'], validation: ['second passes'] },
+          { id: 'T01', title: 'First', scope: ['first'], needs: [], validation: ['first passes'] },
+        ],
+      });
       return completedResult(pipelineName === 'review-delivery' ? 'review complete' : 'ticket complete');
     },
     resume: async () => { throw new Error('not paused'); },
@@ -219,6 +225,13 @@ test('WorkspaceRun validates a typed delivery handoff and runs tickets sequentia
   assert.deepEqual(starts.map(start => start.pipelineName), [
     'delivery', 'implement-ticket', 'implement-ticket', 'review-delivery',
   ]);
+  assert.match(starts[1].prompt, /Ticket ID: T01/);
+  assert.match(starts[1].prompt, /Human-readable ticket: `\.scratch\/feature\/issues\/99-first\.md`/);
+  assert.match(starts[1].prompt, /Dependencies: None/);
+  assert.match(starts[1].prompt, /"scope": \[\s*"first"\s*\]/);
+  assert.match(starts[2].prompt, /Ticket ID: T02/);
+  assert.match(starts[2].prompt, /Human-readable ticket: `\.scratch\/feature\/issues\/01-second\.md`/);
+  assert.match(starts[2].prompt, /Dependencies: T01/);
   assert.equal(final.status, 'completed');
   assert.equal(final.status === 'completed' ? final.artifact?.value : undefined, 'review complete');
 });
@@ -327,6 +340,14 @@ function completedResult(value: string, type = 'acp.result/v1'): PipelineRuntime
       createdAt: '2026-07-23T00:00:00.000Z', updatedAt: '2026-07-23T00:00:00.000Z',
     },
   };
+}
+
+function completedDeliveryResult(value: string, ticketGraph: unknown): PipelineRuntimeResult {
+  const result = completedResult(value, 'acp.sequential-delivery/v1');
+  result.snapshot.artifacts['tasks.ticketGraph'] = {
+    name: 'ticketGraph', type: 'acp.ticket-graph/v1', format: 'json', value: ticketGraph, producerNodeId: 'tasks',
+  };
+  return result;
 }
 
 function runtimeSnapshot(status: 'paused' | 'completed') {
