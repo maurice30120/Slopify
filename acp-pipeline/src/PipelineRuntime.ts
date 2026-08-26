@@ -2,6 +2,7 @@ import { appendCompiledPipelineNodes, parseArtifactProducer } from "./PipelineV3
 import {
   READ_ONLY_PIPELINE_POLICY,
   WORKSPACE_WRITE_PIPELINE_POLICY,
+  canMutateWorkspace,
   validateAdapterSupportsPolicy,
 } from "./PipelinePolicy";
 import { getPipelineInterviewProtocol } from "./PipelineInterviewProtocol";
@@ -589,6 +590,8 @@ export class PipelineRuntime {
           return { ok: true };
         }
         if ("artifact" in result) {
+          const checkpointError = requiredCheckpointDiagnostic(active, node, attempt);
+          if (checkpointError) return checkpointError;
           const artifact = assertArtifact(node, result);
           const planError = this.acceptArtifact(active, artifact);
           if (planError) return planError;
@@ -703,6 +706,7 @@ export class PipelineRuntime {
         }
         const result = await session.send({
           runId: active.snapshot.runId,
+          attempt,
           node,
           prompt,
           inputs,
@@ -757,6 +761,8 @@ export class PipelineRuntime {
               value: parsed.artifact,
             },
           };
+          const checkpointError = requiredCheckpointDiagnostic(active, node, attempt);
+          if (checkpointError) return checkpointError;
           const artifact = assertArtifact(node, finalResult);
           const planError = this.acceptArtifact(active, artifact);
           if (planError) return planError;
@@ -1135,8 +1141,12 @@ export class PipelineRuntime {
 }
 
 function dependencyCheckpoints(active: ActiveRun, node: CompiledPipelineNode) {
-  const dependencies = new Set(node.needs);
-  const checkpoints = active.program.nodes.filter(candidate => dependencies.has(candidate.id)).flatMap(dependency => {
+  const dependencies = active.program.nodes.filter(candidate =>
+    node.needs.includes(candidate.id)
+    && candidate.kind === "agent"
+    && canMutateWorkspace(candidate.policy)
+  );
+  const checkpoints = dependencies.flatMap(dependency => {
     const dependencyNodeId = dependency.id;
     const latest = Object.values(active.snapshot.sandboxRuns ?? {})
       .filter(run => run.nodeId === dependencyNodeId && run.checkpoint)
@@ -1150,12 +1160,32 @@ function dependencyCheckpoints(active: ActiveRun, node: CompiledPipelineNode) {
       checkpoint: structuredClone(latest.checkpoint),
     }] : [];
   });
-  if (checkpoints.length > 0 && checkpoints.length !== dependencies.size) {
+  if (checkpoints.length !== dependencies.length) {
     const retained = new Set(checkpoints.map(checkpoint => checkpoint.nodeId));
-    const missing = [...dependencies].filter(nodeId => !retained.has(nodeId));
+    const missing = dependencies.map(dependency => dependency.id).filter(nodeId => !retained.has(nodeId));
     throw new Error(`Cannot prepare node "${node.id}": satisfied dependencies lack retained Agent Checkpoints: ${missing.join(", ")}.`);
   }
   return checkpoints;
+}
+
+function requiredCheckpointDiagnostic(
+  active: ActiveRun,
+  node: CompiledPipelineNode,
+  attempt: number,
+): PipelineRuntimeDiagnostic | undefined {
+  if (!canMutateWorkspace(node.policy)) return undefined;
+  const retained = Object.values(active.snapshot.sandboxRuns ?? {}).some(run =>
+    run.runId === active.snapshot.runId
+    && run.nodeId === node.id
+    && run.attempt === attempt
+    && Boolean(run.checkpoint)
+  );
+  return retained ? undefined : {
+    nodeId: node.id,
+    attempt,
+    code: "missing_agent_checkpoint",
+    message: `Workspace-writing node "${node.id}" completed attempt ${attempt} without retaining an Agent Checkpoint.`,
+  };
 }
 
 function executionPlanNodes(plan: ExecutionPlan): CompiledPipelineNode[] {

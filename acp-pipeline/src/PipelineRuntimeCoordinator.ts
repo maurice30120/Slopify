@@ -60,14 +60,14 @@ export class PipelineRuntime extends CorePipelineRuntime {
     options: PipelineRuntimeOptions = {},
   ) {
     const completionBuffer = new PipelineCompletionBuffer(options.store, options.onEvent);
+    const adapterFinalizer = (adapter as PipelineChangeSetFinalizingAdapter).finalizePipelineChangeSet;
+    const factoryFinalizer = (adapter.createSession as unknown as PipelineChangeSetFinalizingSessionFactory).finalizePipelineChangeSet;
     super(adapter, {
       ...options,
       store: completionBuffer.store,
       onEvent: event => completionBuffer.captureEvent(event),
     });
     this.completionBuffer = completionBuffer;
-    const adapterFinalizer = (adapter as PipelineChangeSetFinalizingAdapter).finalizePipelineChangeSet;
-    const factoryFinalizer = (adapter.createSession as unknown as PipelineChangeSetFinalizingSessionFactory).finalizePipelineChangeSet;
     this.finalizer = adapterFinalizer?.bind(adapter) ?? factoryFinalizer?.bind(adapter.createSession);
     for (const program of options.programs ?? []) {
       this.coordinatedProgramsById.set(program.id, program);
@@ -168,6 +168,9 @@ export class PipelineRuntime extends CorePipelineRuntime {
       const result = await attempt();
       return program ? this.finalizeTerminalResult(result, program) : result;
     } catch (error: unknown) {
+      if (error instanceof PipelineIntegrationConflictError) {
+        return this.suspendIntegrationConflict(error);
+      }
       if (!(error instanceof PipelineSandboxResumeDivergenceError)) throw error;
       const pause = sandboxResumeDivergencePause(error);
       return this.suspendRecoveredRun(runId, pause, snapshot => {

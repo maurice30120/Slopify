@@ -23,15 +23,38 @@ const agents = { Codex: {} };
 function sessionAdapter(
   execute: (input: PipelineNodeExecutionInput) => Promise<PipelineNodeExecutionResult>,
 ): PipelineRuntimeAdapter {
+  const executeWithCheckpoint = async (input: PipelineNodeExecutionInput): Promise<PipelineNodeExecutionResult> => {
+    const result = await execute(input);
+    if (input.node.policy.filesystem === "workspace-write" || input.node.policy.terminal === "workspace-write") {
+      const attempt = input.attempt ?? 1;
+      await input.onSandboxRunState?.({
+        sandboxName: `sandbox-${input.node.id}-${attempt}`,
+        runId: input.runId,
+        nodeId: input.node.id,
+        attempt,
+        baseCommit: "base",
+        integrationState: "checkpointed",
+        resourceState: "removed",
+        checkpoint: {
+          status: "no_changes",
+          commit: `checkpoint-${input.node.id}-${attempt}`,
+          remote: `remote-${input.node.id}`,
+          ref: `refs/checkpoints/${input.node.id}-${attempt}`,
+          preview: { baseCommit: "base", checkpointCommit: `checkpoint-${input.node.id}-${attempt}`, fileCount: 0, files: [], diff: "" },
+        },
+      });
+    }
+    return result;
+  };
   return {
     async execute(input) {
-      return execute(input);
+      return executeWithCheckpoint(input);
     },
     async createSession({ runId, node }) {
       return {
         runId,
         nodeId: node.id,
-        send: execute,
+        send: executeWithCheckpoint,
         async cancel() {},
         async close() {},
       };
@@ -92,6 +115,38 @@ test("PipelineRuntime completes a linear pipeline with strict inputs and final a
   assert.equal(result.artifact?.value, "two:one");
   assert.equal(result.snapshot.nodeStates.first.status, "completed");
   assert.equal(result.snapshot.nodeStates.second.status, "completed");
+});
+
+test("PipelineRuntime fails a terminal workspace-writing node that completes without a checkpoint", async () => {
+  const program = compilePipelineV3Definition({
+    version: 3,
+    id: "terminal-writer-checkpoint",
+    title: "Terminal writer checkpoint",
+    nodes: [{
+      id: "writer",
+      agent: "Codex",
+      prompt: "Write",
+      policy: { filesystem: "workspace-write" },
+      output: { name: "out", type: "text-note", format: "text" },
+    }],
+  }, agents).program!;
+  const runtime = new PipelineRuntime({
+    async createSession({ runId, node }) {
+      return {
+        runId, nodeId: node.id,
+        async send() {
+          return { artifact: { name: "out", type: "text-note", format: "text", value: "done" } };
+        },
+        async cancel() {}, async close() {},
+      };
+    },
+  }, { runIdFactory: () => "run-terminal-writer-checkpoint" });
+
+  const failed = await runtime.start(program);
+
+  assert.equal(failed.status, "failed");
+  assert.equal(failed.status === "failed" ? failed.error.code : undefined, "missing_agent_checkpoint");
+  assert.match(failed.status === "failed" ? failed.error.message : "", /writer.*attempt 1/i);
 });
 
 test("PipelineRuntime renders node prompts from start inputs and typed artifacts", async () => {

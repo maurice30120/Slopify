@@ -16,7 +16,7 @@ import {
 
 const agents = { Codex: {} };
 
-function multiAgentProgram() {
+function multiAgentProgram(workspaceWrites = false) {
   return compilePipelineV3Definition({
     version: 3,
     id: "deterministic-checkpoints",
@@ -26,7 +26,7 @@ function multiAgentProgram() {
         id: "a",
         agent: "Codex",
         prompt: "A",
-        policy: { filesystem: "workspace-write", terminal: "workspace-write", promotion: "ask" },
+        policy: workspaceWrites ? { filesystem: "workspace-write", terminal: "workspace-write", promotion: "ask" } : undefined,
         output: { name: "out", type: "note", format: "text" },
       },
       {
@@ -34,7 +34,7 @@ function multiAgentProgram() {
         agent: "Codex",
         prompt: "C",
         needs: ["a"],
-        policy: { filesystem: "workspace-write", terminal: "workspace-write", promotion: "ask" },
+        policy: workspaceWrites ? { filesystem: "workspace-write", terminal: "workspace-write", promotion: "ask" } : undefined,
         output: { name: "out", type: "note", format: "text" },
       },
       {
@@ -42,7 +42,7 @@ function multiAgentProgram() {
         agent: "Codex",
         prompt: "B",
         retry: { maxAttempts: 1 },
-        policy: { filesystem: "workspace-write", terminal: "workspace-write", promotion: "ask" },
+        policy: workspaceWrites ? { filesystem: "workspace-write", terminal: "workspace-write", promotion: "ask" } : undefined,
         output: { name: "out", type: "note", format: "text" },
       },
       {
@@ -152,7 +152,7 @@ test("parallel agents may finish in opposite orders while finalization stays uni
 });
 
 test("a multi-parent descendant receives every satisfied dependency checkpoint in stable declaration order", async () => {
-  const program = multiAgentProgram();
+  const program = multiAgentProgram(true);
   const received: Array<{ nodeId: string; dependencies: string[] }> = [];
   const adapter: PipelineRuntimeAdapter = {
     async createSession({ runId, node }) {
@@ -197,7 +197,7 @@ test("a multi-parent descendant receives every satisfied dependency checkpoint i
 });
 
 test("an incompatible descendant composition suspends inspectably and resumes only that descendant", async () => {
-  const program = multiAgentProgram();
+  const program = multiAgentProgram(true);
   const attempts: string[] = [];
   let conflict = true;
   const runtime = new PipelineRuntime({
@@ -217,6 +217,14 @@ test("an incompatible descendant composition suspends inspectably and resumes on
               files: ["src/shared.ts"],
             });
           }
+          if (node.id !== "join") await input.onSandboxRunState?.({
+            sandboxName: `sandbox-${node.id}`, runId, nodeId: node.id, attempt: input.attempt ?? 1,
+            baseCommit: "base", integrationState: "checkpointed", resourceState: "removed",
+            checkpoint: {
+              status: "checkpointed", commit: `commit-${node.id}`, remote: `remote-${node.id}`, ref: `refs/checkpoints/${node.id}`,
+              preview: { baseCommit: "base", checkpointCommit: `commit-${node.id}`, fileCount: 1, files: [`${node.id}.ts`], diff: "diff" },
+            },
+          });
           return { artifact: { name: "out", type: "note", format: "text", value: node.id } };
         },
         async cancel() {}, async close() {},
@@ -238,29 +246,45 @@ test("an incompatible descendant composition suspends inspectably and resumes on
   assert.deepEqual(attempts.filter(value => !value.startsWith("join#")).sort(), ["a#1", "b#1", "c#1"]);
 });
 
-test("a descendant refuses a partial retained checkpoint set", async () => {
-  const program = multiAgentProgram();
+test("a descendant requires checkpoints only from workspace-writing dependencies", async () => {
+  const program = compilePipelineV3Definition({
+    version: 3,
+    id: "mixed-checkpoint-dependencies",
+    title: "Mixed checkpoint dependencies",
+    nodes: [
+      { id: "writer", agent: "Codex", prompt: "Write", policy: { filesystem: "workspace-write" }, output: { name: "result", type: "text", format: "text" } },
+      { id: "reader", agent: "Codex", prompt: "Read", output: { name: "result", type: "text", format: "text" } },
+      { id: "join", agent: "Codex", prompt: "Join", needs: ["writer", "reader"], output: { name: "result", type: "text", format: "text" } },
+    ],
+  }, agents).program!;
+  let receivedDependencies: string[] = [];
   const runtime = new PipelineRuntime({
     async createSession({ runId, node }) {
       return {
         runId, nodeId: node.id,
         async send(input): Promise<PipelineNodeExecutionResult> {
-          if (node.id !== "b") await input.onSandboxRunState?.({
-            sandboxName: `sandbox-${node.id}`, runId, nodeId: node.id, attempt: 1,
+          if (node.id === "writer") await input.onSandboxRunState?.({
+            sandboxName: "sandbox-writer", runId, nodeId: node.id, attempt: 1,
             baseCommit: "base", integrationState: "checkpointed", resourceState: "removed",
             checkpoint: {
-              status: "checkpointed", commit: `commit-${node.id}`, remote: `remote-${node.id}`, ref: `refs/checkpoints/${node.id}`,
-              preview: { baseCommit: "base", checkpointCommit: `commit-${node.id}`, fileCount: 1, files: [`${node.id}.ts`], diff: "diff" },
+              status: "checkpointed", commit: "writer-1", remote: "remote-writer", ref: "refs/checkpoints/writer-1",
+              preview: { baseCommit: "base", checkpointCommit: "writer-1", fileCount: 1, files: ["writer.ts"], diff: "diff" },
             },
           });
-          return { artifact: { name: "out", type: "note", format: "text", value: node.id } };
+          if (node.id === "join") {
+            receivedDependencies = (input.dependencyCheckpoints ?? []).map(checkpoint => checkpoint.nodeId);
+          }
+          return { artifact: { name: "result", type: "text", format: "text", value: node.id } };
         },
         async cancel() {}, async close() {},
       };
     },
-  }, { runIdFactory: () => "run-partial-checkpoints" });
+  }, { runIdFactory: () => "run-mixed-checkpoints" });
 
-  await assert.rejects(runtime.start(program, { maxConcurrency: 2 }), /satisfied dependencies lack retained Agent Checkpoints: b/);
+  const completed = await runtime.start(program, { maxConcurrency: 2 });
+
+  assert.equal(completed.status, "completed");
+  assert.deepEqual(receivedDependencies, ["writer"]);
 });
 
 test("persists sandbox identity, base, checkpoint, integration state, and diagnostics before finalization", async () => {
@@ -842,6 +866,57 @@ test("an Integration Conflict remains retryable without a persistent run store",
 
   assert.equal(completed.status, "completed");
   assert.equal(finalization, 2);
+});
+
+test("a persistent Integration Conflict pauses again after approval", async () => {
+  const program = multiAgentProgram(true);
+  let joinAttempts = 0;
+  const adapter: PipelineRuntimeAdapter = {
+    async createSession({ runId, node }) {
+      return {
+        runId, nodeId: node.id,
+        async send(input): Promise<PipelineNodeExecutionResult> {
+          if (node.id === "join") {
+            joinAttempts += 1;
+            throw new PipelineIntegrationConflictError({
+              runId,
+              retryNodeId: "join",
+              checkpoints: [
+                { nodeId: "b", attempt: 1, commit: "b-1", ref: "refs/checkpoints/b-1" },
+                { nodeId: "c", attempt: 1, commit: "c-1", ref: "refs/checkpoints/c-1" },
+              ],
+              files: ["src/shared.ts"],
+            });
+          }
+          await input.onSandboxRunState?.({
+            sandboxName: `sandbox-${node.id}`, runId, nodeId: node.id, attempt: 1,
+            baseCommit: "base", integrationState: "checkpointed", resourceState: "removed",
+            checkpoint: {
+              status: "checkpointed", commit: `${node.id}-1`, remote: `remote-${node.id}`, ref: `refs/checkpoints/${node.id}-1`,
+              preview: { baseCommit: "base", checkpointCommit: `${node.id}-1`, fileCount: 1, files: [`${node.id}.ts`], diff: "diff" },
+            },
+          });
+          return { artifact: { name: "out", type: "note", format: "text", value: node.id } };
+        },
+        async cancel() {}, async close() {},
+      };
+    },
+  };
+  const runtime = new PipelineRuntime(adapter, {
+    runIdFactory: () => "run-persistent-integration-conflict",
+  });
+
+  const firstPause = await runtime.start(program);
+  assert.equal(firstPause.status, "paused");
+
+  const secondPause = await runtime.resume(firstPause.runId, {
+    pauseId: firstPause.status === "paused" ? firstPause.pause.id : "unreachable",
+    kind: "approve",
+  });
+
+  assert.equal(secondPause.status, "paused");
+  assert.equal(secondPause.snapshot.pendingPause?.integrationConflict?.retryNodeId, "join");
+  assert.equal(joinAttempts, 2);
 });
 
 test("completed runs do not remain retained by the fallback store", async () => {
