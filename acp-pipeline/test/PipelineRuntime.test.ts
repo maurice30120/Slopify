@@ -15,6 +15,7 @@ import {
   type PipelineRuntimeEvent,
   type PipelineRuntimeSnapshot,
   type PipelineRuntimeAdapter,
+  compileExecutionPlan,
 } from "../dist/index.js";
 
 const agents = { Codex: {} };
@@ -126,6 +127,111 @@ test("PipelineRuntime renders node prompts from start inputs and typed artifacts
     "Implement approved plan for ship feature",
   ]);
   assert.equal(result.snapshot.inputVariables?.userPrompt, "ship feature");
+});
+
+test("PipelineRuntime persists one immutable Execution Plan and restores its expansion state", async () => {
+  const program = compilePipelineV3Definition({
+    version: 3,
+    id: "execution-plan-snapshot",
+    title: "Execution plan snapshot",
+    nodes: [{
+      id: "approval",
+      type: "pause",
+      pause: "approval",
+      content: "Continue?",
+    }],
+  }, agents).program!;
+  const plan = compileExecutionPlan({
+    contract: "acp.ticket-graph/v1",
+    tickets: [{ id: "T01", title: "One", scope: [], needs: [], validation: [] }],
+  }).plan!;
+  const store = new InMemoryPipelineRunStore();
+  const firstRuntime = new PipelineRuntime(sessionAdapter(async () => {
+    throw new Error("pause nodes do not execute through the adapter");
+  }), { runIdFactory: () => "run-plan", store });
+
+  const paused = await firstRuntime.start(program, { executionPlan: plan });
+  assert.equal(paused.status, "paused");
+  assert.equal(paused.snapshot.executionPlan?.expansion.status, "expanded");
+  assert.deepEqual(paused.snapshot.executionPlan?.expansion.expandedNodeIds, ["T01", "final-review"]);
+  assert.ok(paused.snapshot.executionPlan?.expansion.status === "expanded"
+    && !Number.isNaN(Date.parse(paused.snapshot.executionPlan.expansion.expandedAt)));
+
+  const restoredRuntime = new PipelineRuntime(sessionAdapter(async () => {
+    throw new Error("pause nodes do not execute through the adapter");
+  }), { store, programs: [program] });
+  const completed = await restoredRuntime.resume("run-plan", {
+    pauseId: paused.pause.id,
+    kind: "approve",
+  });
+  assert.equal(completed.status, "completed");
+  assert.deepEqual(completed.snapshot.executionPlan, paused.snapshot.executionPlan);
+});
+
+test("PipelineRuntime compiles and persists a Ticket Graph before the first implementation starts", async () => {
+  const program = compilePipelineV3Definition({
+    version: 3,
+    id: "compile-ticket-graph",
+    title: "Compile ticket graph",
+    nodes: [
+      {
+        id: "tasks",
+        agent: "Codex",
+        prompt: "Create tasks",
+        output: { name: "graph", type: "acp.ticket-graph/v1", format: "json" },
+      },
+      {
+        id: "implement",
+        agent: "Codex",
+        prompt: "Implement",
+        needs: ["tasks"],
+        output: { name: "out", type: "text-note", format: "text" },
+      },
+    ],
+  }, agents).program!;
+  const store = new InMemoryPipelineRunStore();
+  const runtime = new PipelineRuntime(sessionAdapter(async ({ node }) => {
+    if (node.id === "tasks") {
+      return { artifact: { name: "graph", type: "acp.ticket-graph/v1", format: "json", value: {
+        contract: "acp.ticket-graph/v1",
+        tickets: [{ id: "T01", title: "One", scope: [], needs: [], validation: [] }],
+      } } };
+    }
+    const durable = await store.load("run-auto-plan");
+    assert.equal(durable?.executionPlan?.plan.nodes[0].id, "T01");
+    assert.equal(durable?.executionPlan?.expansion.status, "expanded");
+    assert.deepEqual(durable?.executionPlan?.expansion.expandedNodeIds, ["T01", "final-review"]);
+    return { artifact: { name: "out", type: "text-note", format: "text", value: "done" } };
+  }), { runIdFactory: () => "run-auto-plan", store });
+
+  const result = await runtime.start(program);
+  assert.equal(result.status, "completed");
+  assert.equal(result.snapshot.executionPlan?.plan.contract, "acp.execution-plan/v1");
+});
+
+test("PipelineRuntime rejects an unsupported structured Ticket Graph version", async () => {
+  const program = compilePipelineV3Definition({
+    version: 3,
+    id: "unsupported-ticket-graph",
+    title: "Unsupported ticket graph",
+    nodes: [{
+      id: "tasks",
+      agent: "Codex",
+      prompt: "Create tasks",
+      output: { name: "graph", type: "acp.ticket-graph/v2", format: "json" },
+    }],
+  }, agents).program!;
+  const runtime = new PipelineRuntime(sessionAdapter(async () => ({
+    artifact: { name: "graph", type: "acp.ticket-graph/v2", format: "json", value: {
+      contract: "acp.ticket-graph/v2",
+      tickets: [],
+    } },
+  })));
+
+  const result = await runtime.start(program);
+  assert.equal(result.status, "failed");
+  assert.equal(result.error.code, "unsupported_ticket_graph_version");
+  assert.match(result.error.message, /acp\.ticket-graph\/v2/);
 });
 
 test("PipelineRuntime renders pause content from typed inputs", async () => {

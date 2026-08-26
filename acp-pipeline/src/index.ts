@@ -22,6 +22,7 @@ export * from './PipelineRuntimeAgentAdapter';
 export * from './PipelineRunStore';
 export * from './PipelineInterviewProtocol';
 export * from './MultiAgentArtifacts';
+export * from './ExecutionPlan';
 export * from './PipelineArtifactPublisher';
 export * from './PipelinePolicy';
 export * from './PipelineSkillResolution';
