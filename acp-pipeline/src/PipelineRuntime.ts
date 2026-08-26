@@ -153,11 +153,10 @@ export class PipelineRuntime {
       diagnostics: [],
       ...(options.maxConcurrency === undefined ? {} : { maxConcurrency: options.maxConcurrency }),
       ...(executionPlan?.plan ? {
-        executionPlan: markExecutionPlanExpanded(
-          { plan: executionPlan.plan, expansion: { status: "pending", expandedNodeIds: [] } },
-          [...executionPlan.plan.nodes.map(node => node.id), executionPlan.plan.finalReview.id],
-          at,
-        ),
+        executionPlan: {
+          plan: executionPlan.plan,
+          expansion: { status: "pending", expandedNodeIds: [] },
+        },
       } : {}),
       createdAt: at,
       updatedAt: at,
@@ -978,11 +977,10 @@ export class PipelineRuntime {
         message: "A different Ticket Graph requires a new Execution Plan version; the active plan is frozen.",
       };
     }
-    active.snapshot.executionPlan = markExecutionPlanExpanded(
-      { plan: compiled.plan, expansion: { status: "pending", expandedNodeIds: [] } },
-      [...compiled.plan.nodes.map(node => node.id), compiled.plan.finalReview.id],
-      this.isoNow(),
-    );
+    active.snapshot.executionPlan = {
+      plan: compiled.plan,
+      expansion: { status: "pending", expandedNodeIds: [] },
+    };
     return undefined;
   }
 

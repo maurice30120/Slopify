@@ -180,6 +180,35 @@ test("PipelineRuntime persists one immutable Execution Plan and restores its exp
   assert.deepEqual(completed.snapshot.executionPlan, paused.snapshot.executionPlan);
 });
 
+test("PipelineRuntime rejects Execution Plan node identities that collide with static nodes", async () => {
+  const program = compilePipelineV3Definition({
+    version: 3,
+    id: "execution-plan-collision",
+    title: "Execution plan collision",
+    nodes: [{
+      id: "T01",
+      agent: "Codex",
+      prompt: "Static node must not replace the approved ticket",
+      output: { name: "out", type: "text-note", format: "text" },
+    }],
+  }, agents).program!;
+  const plan = compileExecutionPlan({
+    contract: "acp.ticket-graph/v1",
+    tickets: [{ id: "T01", title: "Approved ticket", scope: [], needs: [], validation: [] }],
+  }).plan!;
+  let executionCount = 0;
+  const runtime = new PipelineRuntime(sessionAdapter(async () => {
+    executionCount += 1;
+    return { artifact: { name: "out", type: "text-note", format: "text", value: "wrong node" } };
+  }), { runIdFactory: () => "run-plan-collision" });
+
+  const result = await runtime.start(program, { executionPlan: plan });
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.error.code, "execution_plan_node_collision");
+  assert.equal(executionCount, 0);
+});
+
 test("PipelineRuntime compiles and persists a Ticket Graph before the first implementation starts", async () => {
   const program = compilePipelineV3Definition({
     version: 3,
