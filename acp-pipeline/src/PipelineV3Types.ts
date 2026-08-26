@@ -207,10 +207,19 @@ export interface PipelineSandboxRunSnapshot {
 }
 
 export interface PipelineRuntimeNodeSnapshot {
-  status: "pending" | "running" | "paused" | "completed" | "failed" | "cancelled";
+  status: "pending" | "running" | "paused" | "completed" | "failed" | "blocked" | "cancelled";
   attempts: number;
+  attemptResults?: PipelineNodeAttemptSnapshot[];
   startedAt?: string;
   completedAt?: string;
+}
+
+export interface PipelineNodeAttemptSnapshot {
+  attempt: number;
+  status: "running" | "completed" | "failed";
+  startedAt: string;
+  completedAt?: string;
+  diagnostic?: PipelineRuntimeDiagnostic;
 }
 
 export interface PipelinePauseSnapshot {
@@ -286,6 +295,17 @@ export interface PipelineNodeExecutionInput {
   signal: AbortSignal;
   onSandboxRunState?: (state: PipelineSandboxRunSnapshot) => void | Promise<void>;
   resumeSandboxRun?: PipelineSandboxRunSnapshot;
+  /** Latest retained Agent Checkpoint for each satisfied direct dependency. */
+  dependencyCheckpoints?: PipelineDependencyCheckpoint[];
+}
+
+export interface PipelineDependencyCheckpoint {
+  runId: string;
+  nodeId: string;
+  attempt: number;
+  sandboxName: string;
+  baseCommit: string;
+  checkpoint: PipelineSandboxCheckpointSnapshot;
 }
 
 export interface AgentNodeSessionTurnInput extends PipelineNodeExecutionInput {

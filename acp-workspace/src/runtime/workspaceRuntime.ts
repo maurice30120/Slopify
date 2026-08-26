@@ -128,6 +128,9 @@ export function createWorkspaceRuntime(options: CreateWorkspaceRuntimeOptions): 
           onSandboxRetained: options.onSandboxRetained,
           onStateChange: state => input.onSandboxRunState?.(toPipelineSandboxRunSnapshot(state)),
           ...(input.resumeSandboxRun ? { resumeState: toSandboxRunState(input.resumeSandboxRun) } : {}),
+          ...(input.dependencyCheckpoints?.length ? {
+            dependencyCheckpoints: input.dependencyCheckpoints.map(toAgentCheckpointResult),
+          } : {}),
           },
         )),
         getPermissionContext: options.host.permissionContext,
@@ -142,6 +145,9 @@ export function createWorkspaceRuntime(options: CreateWorkspaceRuntimeOptions): 
       });
       if (!acpResult.finalization.ok) {
         const failure = acpResult.finalization.error;
+        if (failure.code === 'integration_conflict' && failure.conflict) {
+          throw toPipelineIntegrationConflict(failure.conflict, input.nodeId ?? input.agentName);
+        }
         if (failure.code === 'sandbox_resume_divergence' && input.resumeSandboxRun) {
           throw new PipelineSandboxResumeDivergenceError({
             runId: input.runId ?? 'run',
@@ -221,6 +227,23 @@ export function createWorkspaceRuntime(options: CreateWorkspaceRuntimeOptions): 
       }
     },
     clearRunLogs: () => fs.rmSync(path.join(options.workspaceCwd, '.acp', 'logs', 'sandboxes'), { recursive: true, force: true }),
+  };
+}
+
+function toAgentCheckpointResult(dependency: NonNullable<PipelineAgentRunInput['dependencyCheckpoints']>[number]): AgentCheckpointResult {
+  return {
+    checkpointStatus: dependency.checkpoint.status,
+    checkpoint: {
+      runId: dependency.runId,
+      nodeId: dependency.nodeId,
+      attempt: dependency.attempt,
+      sandboxName: dependency.sandboxName,
+      baseCommit: dependency.baseCommit,
+      commit: dependency.checkpoint.commit,
+      remote: dependency.checkpoint.remote,
+      ref: dependency.checkpoint.ref,
+    },
+    preview: dependency.checkpoint.preview,
   };
 }
 
@@ -335,23 +358,30 @@ async function finalizePipelineChangeSet(
     return result;
   } catch (error: unknown) {
     if (error instanceof IntegrationConflictError) {
-      throw new PipelineIntegrationConflictError({
-        runId: error.conflict.runId,
-        retryNodeId: error.conflict.incomingCheckpoint.nodeId,
-        checkpoints: error.conflict.checkpoints.map(checkpoint => ({
-          nodeId: checkpoint.nodeId,
-          attempt: checkpoint.attempt,
-          commit: checkpoint.commit,
-          ref: checkpoint.ref,
-        })),
-        files: error.conflict.files,
-      });
+      throw toPipelineIntegrationConflict(error.conflict, error.conflict.incomingCheckpoint.nodeId);
     }
     // Drop only volatile state. Durable refs and snapshot checkpoints remain
     // available for deterministic recovery after a process restart.
     if (input.snapshot) options.checkpointsByRunId.delete(input.runId);
     throw error;
   }
+}
+
+function toPipelineIntegrationConflict(
+  conflict: IntegrationConflict,
+  retryNodeId: string,
+): PipelineIntegrationConflictError {
+  return new PipelineIntegrationConflictError({
+    runId: conflict.runId,
+    retryNodeId,
+    checkpoints: conflict.checkpoints.map(checkpoint => ({
+      nodeId: checkpoint.nodeId,
+      attempt: checkpoint.attempt,
+      commit: checkpoint.commit,
+      ref: checkpoint.ref,
+    })),
+    files: conflict.files,
+  });
 }
 
 function createSandboxExtensionHandler(

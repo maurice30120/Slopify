@@ -2,6 +2,7 @@ import { appendCompiledPipelineNodes, parseArtifactProducer } from "./PipelineV3
 import {
   READ_ONLY_PIPELINE_POLICY,
   WORKSPACE_WRITE_PIPELINE_POLICY,
+  canMutateWorkspace,
   validateAdapterSupportsPolicy,
 } from "./PipelinePolicy";
 import { getPipelineInterviewProtocol } from "./PipelineInterviewProtocol";
@@ -87,6 +88,7 @@ interface ActiveRun {
   closedSessions: WeakSet<AgentNodeSession>;
   nodeTasks: Map<string, Promise<NodeTaskResult>>;
   explicitRetryNodes: Set<string>;
+  terminalFailure?: PipelineRuntimeDiagnostic;
 }
 
 type NodeTaskResult =
@@ -297,6 +299,7 @@ export class PipelineRuntime {
     active.snapshot.nodeStates[nodeId] = {
       status: "pending",
       attempts: state.attempts,
+      attemptResults: state.attemptResults,
     };
     active.snapshot.pendingPause = undefined;
     active.snapshot.status = "running";
@@ -396,10 +399,13 @@ export class PipelineRuntime {
 
   private async advance(active: ActiveRun): Promise<PipelineRuntimeResult> {
     while (active.snapshot.status === "running") {
-      const expansionError = await this.expandExecutionPlan(active);
+      const expansionError = active.terminalFailure ? undefined : await this.expandExecutionPlan(active);
       if (expansionError) return this.fail(active, expansionError);
-      const ready = this.readyNodes(active);
+      const ready = active.terminalFailure ? [] : this.readyNodes(active);
       if (ready.length === 0 && active.nodeTasks.size === 0) {
+        if (active.terminalFailure) {
+          return this.fail(active, active.terminalFailure);
+        }
         if (this.isComplete(active)) {
           return this.complete(active);
         }
@@ -438,10 +444,20 @@ export class PipelineRuntime {
       const result = completed.result;
       const failure = "code" in result ? result : undefined;
       if (failure) {
-        active.controller.abort();
-        return this.fail(active, failure);
+        active.terminalFailure ??= failure;
+        this.blockPendingNodes(active);
+        active.snapshot.status = "running";
+        active.snapshot.updatedAt = this.isoNow();
+        await this.persist(active.snapshot);
+        continue;
       }
       if ("paused" in result) {
+        if (active.terminalFailure) {
+          this.blockPausedNode(active);
+          active.snapshot.updatedAt = this.isoNow();
+          await this.persist(active.snapshot);
+          continue;
+        }
         return result.paused;
       }
       const pendingPause = active.snapshot.pendingPause;
@@ -522,17 +538,21 @@ export class PipelineRuntime {
     const prompt = renderRuntimeTemplate(node.prompt ?? "", active.snapshot.inputVariables ?? {}, inputs);
     const skillErrors = this.resolveNodeSkills ? await this.resolveNodeSkills(node) : [];
     if (skillErrors.length > 0) {
+      const attempt = state.attempts + 1;
+      this.startAttempt(active, node.id, attempt);
       active.snapshot.nodeStates[node.id] = {
-        ...state,
+        ...active.snapshot.nodeStates[node.id],
         status: "failed",
-        attempts: state.attempts + 1,
         completedAt: this.isoNow(),
       };
+      this.finishAttempt(active, node.id, attempt, "failed", {
+        nodeId: node.id, attempt, code: "skill_resolution_failed", message: skillErrors.join("; "),
+      });
       active.snapshot.updatedAt = this.isoNow();
       await this.persist(active.snapshot);
       return {
         nodeId: node.id,
-        attempt: state.attempts + 1,
+        attempt,
         code: "skill_resolution_failed",
         message: skillErrors.join("; "),
       };
@@ -541,17 +561,21 @@ export class PipelineRuntime {
       ? validateAdapterSupportsPolicy(this.adapterName, this.adapterCapabilities, node.policy)[0]
       : undefined;
     if (unsupportedPolicy) {
+      const attempt = state.attempts + 1;
+      this.startAttempt(active, node.id, attempt);
       active.snapshot.nodeStates[node.id] = {
-        ...state,
+        ...active.snapshot.nodeStates[node.id],
         status: "failed",
-        attempts: state.attempts + 1,
         completedAt: this.isoNow(),
       };
+      this.finishAttempt(active, node.id, attempt, "failed", {
+        nodeId: node.id, attempt, code: unsupportedPolicy.code, message: unsupportedPolicy.message,
+      });
       active.snapshot.updatedAt = this.isoNow();
       await this.persist(active.snapshot);
       return {
         nodeId: node.id,
-        attempt: state.attempts + 1,
+        attempt,
         code: unsupportedPolicy.code,
         message: unsupportedPolicy.message,
       };
@@ -562,7 +586,7 @@ export class PipelineRuntime {
       return this.executeInterviewNode(active, node, prompt, inputs, undefined, maximumAttempt);
     }
     for (let attempt = state.attempts + 1; attempt <= maximumAttempt; attempt++) {
-      active.snapshot.nodeStates[node.id] = { ...state, status: "running", attempts: attempt, startedAt: state.startedAt ?? this.isoNow() };
+      this.startAttempt(active, node.id, attempt);
       active.snapshot.updatedAt = this.isoNow();
       await this.persist(active.snapshot);
       await this.emitRuntimeEvent({ runId: active.snapshot.runId, type: "node_started", nodeId: node.id, at: active.snapshot.updatedAt });
@@ -571,7 +595,14 @@ export class PipelineRuntime {
       try {
         session = await this.openAttemptSession(active, node);
       } catch (error: unknown) {
-        return sessionBoundaryDiagnostic(active, node, state.attempts + 1, error);
+        const diagnostic = sessionBoundaryDiagnostic(active, node, attempt, error);
+        this.finishAttempt(active, node.id, attempt, "failed", diagnostic);
+        active.snapshot.nodeStates[node.id] = {
+          ...active.snapshot.nodeStates[node.id], status: "failed", completedAt: this.isoNow(),
+        };
+        active.snapshot.updatedAt = this.isoNow();
+        await this.persist(active.snapshot);
+        return diagnostic;
       }
       try {
         const result = await session.send({
@@ -583,19 +614,29 @@ export class PipelineRuntime {
           signal: active.controller.signal,
           onSandboxRunState: state => this.persistSandboxRunState(active, state),
           resumeSandboxRun: this.resumeSandboxRun(active, node.id, attempt),
+          dependencyCheckpoints: dependencyCheckpoints(active, node),
         });
         if (active.controller.signal.aborted) {
           return { ok: true };
         }
         if ("artifact" in result) {
+          const checkpointError = requiredCheckpointDiagnostic(active, node, attempt);
+          if (checkpointError) {
+            this.failNodeAttempt(active, node.id, attempt, checkpointError);
+            return checkpointError;
+          }
           const artifact = assertArtifact(node, result);
           const planError = this.acceptArtifact(active, artifact);
-          if (planError) return planError;
+          if (planError) {
+            this.failNodeAttempt(active, node.id, attempt, planError);
+            return planError;
+          }
           active.snapshot.nodeStates[node.id] = {
             ...active.snapshot.nodeStates[node.id],
             status: "completed",
             completedAt: this.isoNow(),
           };
+          this.finishAttempt(active, node.id, attempt, "completed");
           active.snapshot.updatedAt = this.isoNow();
           await this.persist(active.snapshot);
           await this.emitRuntimeEvent({ runId: active.snapshot.runId, type: "node_completed", nodeId: node.id, at: active.snapshot.updatedAt });
@@ -603,6 +644,9 @@ export class PipelineRuntime {
         }
 
         active.snapshot.diagnostics.push({ nodeId: node.id, attempt, code: result.code, message: result.message });
+        this.finishAttempt(active, node.id, attempt, "failed", {
+          nodeId: node.id, attempt, code: result.code, message: result.message,
+        });
         if (!result.retryable || attempt >= maximumAttempt) {
           active.snapshot.nodeStates[node.id] = {
             ...active.snapshot.nodeStates[node.id],
@@ -677,12 +721,7 @@ export class PipelineRuntime {
     let replayNextAttempt = Boolean(existing) && !active.sessions.has(node.id);
 
     for (let attempt = firstAttempt; attempt <= maximumAttempt; attempt++) {
-      active.snapshot.nodeStates[node.id] = {
-        ...active.snapshot.nodeStates[node.id],
-        status: "running",
-        attempts: attempt,
-        startedAt: active.snapshot.nodeStates[node.id].startedAt ?? this.isoNow(),
-      };
+      this.startAttempt(active, node.id, attempt);
       active.snapshot.updatedAt = this.isoNow();
       await this.persist(active.snapshot);
       const isReplay = replayNextAttempt;
@@ -698,10 +737,18 @@ export class PipelineRuntime {
         try {
           session = await this.openInterviewSession(active, node);
         } catch (error: unknown) {
-          return sessionBoundaryDiagnostic(active, node, attempt, error);
+          const diagnostic = sessionBoundaryDiagnostic(active, node, attempt, error);
+          this.finishAttempt(active, node.id, attempt, "failed", diagnostic);
+          active.snapshot.nodeStates[node.id] = {
+            ...active.snapshot.nodeStates[node.id], status: "failed", completedAt: this.isoNow(),
+          };
+          active.snapshot.updatedAt = this.isoNow();
+          await this.persist(active.snapshot);
+          return diagnostic;
         }
         const result = await session.send({
           runId: active.snapshot.runId,
+          attempt,
           node,
           prompt,
           inputs,
@@ -719,6 +766,9 @@ export class PipelineRuntime {
               completedAt: this.isoNow(),
             };
             active.snapshot.updatedAt = this.isoNow();
+            this.finishAttempt(active, node.id, attempt, "failed", {
+              nodeId: node.id, attempt, code: result.code, message: result.message,
+            });
             await this.persist(active.snapshot);
             return { nodeId: node.id, attempt, code: result.code, message: result.message };
           }
@@ -726,6 +776,9 @@ export class PipelineRuntime {
           // été perdue. Une autre erreur retryable relance la tentative sans
           // dupliquer dans l'agent les tours déjà présents dans la session.
           const shouldReplayTransportLoss = isInterviewTransportLoss(result);
+          this.finishAttempt(active, node.id, attempt, "failed", {
+            nodeId: node.id, attempt, code: result.code, message: result.message,
+          });
           await this.closeInterviewSession(active, node.id);
           replayNextAttempt = shouldReplayTransportLoss;
           await sleep(node.retry.backoffMs ?? 0);
@@ -756,9 +809,17 @@ export class PipelineRuntime {
               value: parsed.artifact,
             },
           };
+          const checkpointError = requiredCheckpointDiagnostic(active, node, attempt);
+          if (checkpointError) {
+            this.failNodeAttempt(active, node.id, attempt, checkpointError);
+            return checkpointError;
+          }
           const artifact = assertArtifact(node, finalResult);
           const planError = this.acceptArtifact(active, artifact);
-          if (planError) return planError;
+          if (planError) {
+            this.failNodeAttempt(active, node.id, attempt, planError);
+            return planError;
+          }
           this.recordInterviewHistory(active, interview);
           active.snapshot.activeInterview = undefined;
           active.snapshot.nodeStates[node.id] = {
@@ -766,6 +827,7 @@ export class PipelineRuntime {
             status: "completed",
             completedAt: this.isoNow(),
           };
+          this.finishAttempt(active, node.id, attempt, "completed");
           active.snapshot.updatedAt = this.isoNow();
           await this.persist(active.snapshot);
           await this.emitRuntimeEvent({ runId: active.snapshot.runId, type: "node_completed", nodeId: node.id, at: active.snapshot.updatedAt });
@@ -792,6 +854,9 @@ export class PipelineRuntime {
               status: "failed",
               completedAt: this.isoNow(),
             };
+            this.finishAttempt(active, node.id, attempt, "failed", {
+              nodeId: node.id, attempt, code: "malformed_interview_output", message,
+            });
             active.snapshot.updatedAt = this.isoNow();
             this.recordInterviewHistory(active, interview);
             await this.persist(active.snapshot);
@@ -816,6 +881,9 @@ export class PipelineRuntime {
             status: "failed",
             completedAt: this.isoNow(),
           };
+          this.finishAttempt(active, node.id, attempt, "failed", {
+            nodeId: node.id, attempt, code: "malformed_interview_output", message,
+          });
           active.snapshot.updatedAt = this.isoNow();
           await this.persist(active.snapshot);
           return { nodeId: node.id, attempt, code: "malformed_interview_output", message };
@@ -900,7 +968,9 @@ export class PipelineRuntime {
     active.snapshot.status = "failed";
     active.snapshot.diagnostics.push(diagnostic);
     for (const [nodeId, state] of Object.entries(active.snapshot.nodeStates)) {
-      if (state.status === "pending" || state.status === "running") {
+      if (state.status === "pending") {
+        active.snapshot.nodeStates[nodeId] = { ...state, status: "blocked" };
+      } else if (state.status === "running") {
         active.snapshot.nodeStates[nodeId] = { ...state, status: "cancelled" };
       }
     }
@@ -914,6 +984,79 @@ export class PipelineRuntime {
 
   private isComplete(active: ActiveRun): boolean {
     return active.program.nodes.every(node => active.snapshot.nodeStates[node.id]?.status === "completed");
+  }
+
+  private blockPendingNodes(active: ActiveRun): void {
+    for (const [nodeId, state] of Object.entries(active.snapshot.nodeStates)) {
+      if (state.status === "pending") {
+        active.snapshot.nodeStates[nodeId] = { ...state, status: "blocked" };
+      }
+    }
+    if (active.snapshot.pendingPause) {
+      this.blockPausedNode(active);
+    }
+  }
+
+  private blockPausedNode(active: ActiveRun): void {
+    const nodeId = active.snapshot.pendingPause?.nodeId;
+    if (nodeId) {
+      const state = active.snapshot.nodeStates[nodeId];
+      if (state?.status === "paused") {
+        active.snapshot.nodeStates[nodeId] = { ...state, status: "blocked" };
+      }
+    }
+    active.snapshot.pendingPause = undefined;
+    active.snapshot.activeInterview = undefined;
+  }
+
+  private finishAttempt(
+    active: ActiveRun,
+    nodeId: string,
+    attempt: number,
+    status: "completed" | "failed",
+    diagnostic?: PipelineRuntimeDiagnostic,
+  ): void {
+    const state = active.snapshot.nodeStates[nodeId];
+    const attemptResults = [...(state.attemptResults ?? [])];
+    const index = attemptResults.findIndex(item => item.attempt === attempt);
+    const current = attemptResults[index] ?? { attempt, status: "running" as const, startedAt: state.startedAt ?? this.isoNow() };
+    attemptResults[index < 0 ? attemptResults.length : index] = {
+      ...current,
+      status,
+      completedAt: this.isoNow(),
+      ...(diagnostic ? { diagnostic } : {}),
+    };
+    active.snapshot.nodeStates[nodeId] = { ...state, attemptResults };
+  }
+
+  private failNodeAttempt(
+    active: ActiveRun,
+    nodeId: string,
+    attempt: number,
+    diagnostic: PipelineRuntimeDiagnostic,
+  ): void {
+    active.snapshot.nodeStates[nodeId] = {
+      ...active.snapshot.nodeStates[nodeId],
+      status: "failed",
+      completedAt: this.isoNow(),
+    };
+    this.finishAttempt(active, nodeId, attempt, "failed", diagnostic);
+  }
+
+  private startAttempt(active: ActiveRun, nodeId: string, attempt: number): void {
+    const state = active.snapshot.nodeStates[nodeId];
+    if (state.attemptResults?.some(item => item.attempt === attempt)) {
+      active.snapshot.nodeStates[nodeId] = { ...state, status: "running", attempts: attempt };
+      return;
+    }
+    const startedAt = this.isoNow();
+    active.snapshot.nodeStates[nodeId] = {
+      ...state,
+      status: "running",
+      attempts: attempt,
+      startedAt: state.startedAt ?? startedAt,
+      attemptResults: [...(state.attemptResults ?? []), { attempt, status: "running", startedAt }],
+    };
   }
 
   private async requireActiveRun(runId: string): Promise<ActiveRun> {
@@ -940,6 +1083,7 @@ export class PipelineRuntime {
         closedSessions: new WeakSet<AgentNodeSession>(),
         nodeTasks: new Map<string, Promise<NodeTaskResult>>(),
         explicitRetryNodes: new Set<string>(),
+        terminalFailure: terminalFailureFromSnapshot(snapshot),
       };
       this.runs.set(runId, restored);
       return restored;
@@ -1133,6 +1277,54 @@ export class PipelineRuntime {
   }
 }
 
+function dependencyCheckpoints(active: ActiveRun, node: CompiledPipelineNode) {
+  const dependencies = active.program.nodes.filter(candidate =>
+    node.needs.includes(candidate.id)
+    && candidate.kind === "agent"
+    && canMutateWorkspace(candidate.policy)
+  );
+  const checkpoints = dependencies.flatMap(dependency => {
+    const dependencyNodeId = dependency.id;
+    const latest = Object.values(active.snapshot.sandboxRuns ?? {})
+      .filter(run => run.nodeId === dependencyNodeId && run.checkpoint)
+      .sort((left, right) => right.attempt - left.attempt)[0];
+    return latest?.checkpoint ? [{
+      runId: latest.runId,
+      nodeId: latest.nodeId,
+      attempt: latest.attempt,
+      sandboxName: latest.sandboxName,
+      baseCommit: latest.baseCommit,
+      checkpoint: structuredClone(latest.checkpoint),
+    }] : [];
+  });
+  if (checkpoints.length !== dependencies.length) {
+    const retained = new Set(checkpoints.map(checkpoint => checkpoint.nodeId));
+    const missing = dependencies.map(dependency => dependency.id).filter(nodeId => !retained.has(nodeId));
+    throw new Error(`Cannot prepare node "${node.id}": satisfied dependencies lack retained Agent Checkpoints: ${missing.join(", ")}.`);
+  }
+  return checkpoints;
+}
+
+function requiredCheckpointDiagnostic(
+  active: ActiveRun,
+  node: CompiledPipelineNode,
+  attempt: number,
+): PipelineRuntimeDiagnostic | undefined {
+  if (!canMutateWorkspace(node.policy)) return undefined;
+  const retained = Object.values(active.snapshot.sandboxRuns ?? {}).some(run =>
+    run.runId === active.snapshot.runId
+    && run.nodeId === node.id
+    && run.attempt === attempt
+    && Boolean(run.checkpoint)
+  );
+  return retained ? undefined : {
+    nodeId: node.id,
+    attempt,
+    code: "missing_agent_checkpoint",
+    message: `Workspace-writing node "${node.id}" completed attempt ${attempt} without retaining an Agent Checkpoint.`,
+  };
+}
+
 function executionPlanNodes(plan: ExecutionPlan): CompiledPipelineNode[] {
   const implementationNodes = plan.nodes.map(node => ({
     id: node.id,
@@ -1250,6 +1442,16 @@ function sessionBoundaryDiagnostic(
 
 function cloneSnapshot(snapshot: PipelineRuntimeSnapshot): PipelineRuntimeSnapshot {
   return cloneJson(snapshot);
+}
+
+function terminalFailureFromSnapshot(snapshot: PipelineRuntimeSnapshot): PipelineRuntimeDiagnostic | undefined {
+  const failedNodeIds = new Set(
+    Object.entries(snapshot.nodeStates)
+      .filter(([, state]) => state.status === "failed")
+      .map(([nodeId]) => nodeId),
+  );
+  return [...snapshot.diagnostics].reverse()
+    .find(diagnostic => diagnostic.nodeId !== undefined && failedNodeIds.has(diagnostic.nodeId));
 }
 
 function cloneJson<T>(value: T): T {

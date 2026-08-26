@@ -23,15 +23,38 @@ const agents = { Codex: {} };
 function sessionAdapter(
   execute: (input: PipelineNodeExecutionInput) => Promise<PipelineNodeExecutionResult>,
 ): PipelineRuntimeAdapter {
+  const executeWithCheckpoint = async (input: PipelineNodeExecutionInput): Promise<PipelineNodeExecutionResult> => {
+    const result = await execute(input);
+    if (input.node.policy.filesystem === "workspace-write" || input.node.policy.terminal === "workspace-write") {
+      const attempt = input.attempt ?? 1;
+      await input.onSandboxRunState?.({
+        sandboxName: `sandbox-${input.node.id}-${attempt}`,
+        runId: input.runId,
+        nodeId: input.node.id,
+        attempt,
+        baseCommit: "base",
+        integrationState: "checkpointed",
+        resourceState: "removed",
+        checkpoint: {
+          status: "no_changes",
+          commit: `checkpoint-${input.node.id}-${attempt}`,
+          remote: `remote-${input.node.id}`,
+          ref: `refs/checkpoints/${input.node.id}-${attempt}`,
+          preview: { baseCommit: "base", checkpointCommit: `checkpoint-${input.node.id}-${attempt}`, fileCount: 0, files: [], diff: "" },
+        },
+      });
+    }
+    return result;
+  };
   return {
     async execute(input) {
-      return execute(input);
+      return executeWithCheckpoint(input);
     },
     async createSession({ runId, node }) {
       return {
         runId,
         nodeId: node.id,
-        send: execute,
+        send: executeWithCheckpoint,
         async cancel() {},
         async close() {},
       };
@@ -92,6 +115,47 @@ test("PipelineRuntime completes a linear pipeline with strict inputs and final a
   assert.equal(result.artifact?.value, "two:one");
   assert.equal(result.snapshot.nodeStates.first.status, "completed");
   assert.equal(result.snapshot.nodeStates.second.status, "completed");
+});
+
+test("PipelineRuntime fails a terminal workspace-writing node that completes without a checkpoint", async () => {
+  const program = compilePipelineV3Definition({
+    version: 3,
+    id: "terminal-writer-checkpoint",
+    title: "Terminal writer checkpoint",
+    nodes: [{
+      id: "writer",
+      agent: "Codex",
+      prompt: "Write",
+      policy: { filesystem: "workspace-write" },
+      output: { name: "out", type: "text-note", format: "text" },
+    }],
+  }, agents).program!;
+  const runtime = new PipelineRuntime({
+    async createSession({ runId, node }) {
+      return {
+        runId, nodeId: node.id,
+        async send() {
+          return { artifact: { name: "out", type: "text-note", format: "text", value: "done" } };
+        },
+        async cancel() {}, async close() {},
+      };
+    },
+  }, { runIdFactory: () => "run-terminal-writer-checkpoint" });
+
+  const failed = await runtime.start(program);
+
+  assert.equal(failed.status, "failed");
+  assert.equal(failed.status === "failed" ? failed.error.code : undefined, "missing_agent_checkpoint");
+  assert.match(failed.status === "failed" ? failed.error.message : "", /writer.*attempt 1/i);
+  assert.equal(failed.snapshot.nodeStates.writer.status, "failed");
+  assert.deepEqual(
+    failed.snapshot.nodeStates.writer.attemptResults?.map(result => ({
+      attempt: result.attempt,
+      status: result.status,
+      code: result.diagnostic?.code,
+    })),
+    [{ attempt: 1, status: "failed", code: "missing_agent_checkpoint" }],
+  );
 });
 
 test("PipelineRuntime renders node prompts from start inputs and typed artifacts", async () => {
@@ -660,7 +724,7 @@ test("PipelineRuntime recovers a partially executed dynamic plan without restart
   assert.deepEqual(Object.keys(completed.snapshot.nodeStates).sort(), ["final-review", "join", "left", "right", "tasks"]);
 });
 
-test("PipelineRuntime fail-fast result preserves diagnostics and cancels pending nodes", async () => {
+test("PipelineRuntime failure result preserves diagnostics and blocks pending descendants", async () => {
   const program = compilePipelineV3Definition({
     version: 3,
     id: "fail",
@@ -691,9 +755,107 @@ test("PipelineRuntime fail-fast result preserves diagnostics and cancels pending
 
   assert.equal(result.status, "failed");
   assert.equal(result.error.nodeId, "failer");
-  assert.equal(result.snapshot.nodeStates.after.status, "cancelled");
+  assert.equal(result.snapshot.nodeStates.after.status, "blocked");
   assert.ok(await store.load("run-fail"));
   assert.equal((await store.readEvents("run-fail")).at(-1)?.type, "failed");
+});
+
+test("PipelineRuntime drains active graph branches, records retries, and blocks descendants after a definitive failure", async () => {
+  const program = compilePipelineV3Definition({
+    version: 3,
+    id: "graph-failure",
+    title: "Graph failure",
+    nodes: [
+      { id: "fails", agent: "Codex", prompt: "fail", retry: { maxAttempts: 2, backoffMs: 0 }, output: { name: "out", type: "note", format: "text" } },
+      { id: "active", agent: "Codex", prompt: "active", output: { name: "out", type: "note", format: "text" } },
+      { id: "blocked", agent: "Codex", prompt: "blocked", needs: ["fails"], output: { name: "out", type: "note", format: "text" } },
+      { id: "unrelated", agent: "Codex", prompt: "unrelated", needs: ["active"], output: { name: "out", type: "note", format: "text" } },
+      { id: "join", agent: "Codex", prompt: "join", needs: ["blocked", "unrelated"], output: { name: "out", type: "note", format: "text" } },
+    ],
+  }, agents).program!;
+  const starts: Array<{ nodeId: string; attempt: number }> = [];
+  let releaseActive!: () => void;
+  const activeFinishes = new Promise<void>(resolve => { releaseActive = resolve; });
+  let failureAttempts = 0;
+  const store = new InMemoryPipelineRunStore();
+  const runtime = new PipelineRuntime(sessionAdapter(async ({ node, attempt }) => {
+    starts.push({ nodeId: node.id, attempt: attempt ?? 0 });
+    if (node.id === "fails") {
+      failureAttempts += 1;
+      return { code: "agent_failed", message: `failure ${failureAttempts}`, retryable: true };
+    }
+    if (node.id === "active") await activeFinishes;
+    return { artifact: { name: "out", type: "note", format: "text", value: node.id } };
+  }), { runIdFactory: () => "run-graph-failure", store });
+
+  const completion = runtime.start(program, { maxConcurrency: 2 });
+  while (failureAttempts < 2) await new Promise(resolve => setImmediate(resolve));
+  releaseActive();
+  const result = await completion;
+
+  assert.equal(result.status, "failed");
+  assert.deepEqual(starts, [
+    { nodeId: "fails", attempt: 1 },
+    { nodeId: "active", attempt: 1 },
+    { nodeId: "fails", attempt: 2 },
+  ]);
+  assert.equal(result.snapshot.nodeStates.fails.status, "failed");
+  assert.equal(result.snapshot.nodeStates.blocked.status, "blocked");
+  assert.equal(result.snapshot.nodeStates.active.status, "completed");
+  assert.equal(result.snapshot.nodeStates.unrelated.status, "blocked");
+  assert.equal(result.snapshot.nodeStates.join.status, "blocked");
+  assert.deepEqual(result.snapshot.nodeStates.fails.attemptResults?.map(item => ({ attempt: item.attempt, status: item.status, code: item.diagnostic?.code })), [
+    { attempt: 1, status: "failed", code: "agent_failed" },
+    { attempt: 2, status: "failed", code: "agent_failed" },
+  ]);
+  assert.deepEqual(result.snapshot.nodeStates.active.attemptResults?.map(item => ({ attempt: item.attempt, status: item.status })), [
+    { attempt: 1, status: "completed" },
+  ]);
+  assert.equal((await store.load("run-graph-failure"))?.nodeStates.active.status, "completed");
+});
+
+test("PipelineRuntime recovery preserves failed, blocked, and completed graph nodes without replay", async () => {
+  const program = compilePipelineV3Definition({
+    version: 3,
+    id: "recover-graph-failure",
+    title: "Recover graph failure",
+    nodes: [
+      { id: "done", agent: "Codex", prompt: "done", output: { name: "out", type: "note", format: "text" } },
+      { id: "fails", agent: "Codex", prompt: "fails", needs: ["done"], output: { name: "out", type: "note", format: "text" } },
+      { id: "blocked", agent: "Codex", prompt: "blocked", needs: ["fails"], output: { name: "out", type: "note", format: "text" } },
+    ],
+  }, agents).program!;
+  const store = new InMemoryPipelineRunStore();
+  const snapshot: PipelineRuntimeSnapshot = {
+    runId: "run-recover-graph-failure",
+    pipelineId: program.id,
+    status: "running",
+    nodeStates: {
+      done: { status: "completed", attempts: 1, attemptResults: [{ attempt: 1, status: "completed", startedAt: "2026-08-24T10:00:00.000Z", completedAt: "2026-08-24T10:01:00.000Z" }] },
+      fails: { status: "failed", attempts: 1, attemptResults: [{ attempt: 1, status: "failed", startedAt: "2026-08-24T10:01:00.000Z", completedAt: "2026-08-24T10:02:00.000Z", diagnostic: { nodeId: "fails", attempt: 1, code: "boom", message: "failed" } }] },
+      blocked: { status: "blocked", attempts: 0 },
+    },
+    artifacts: { "done.out": { name: "out", type: "note", format: "text", value: "done", producerNodeId: "done" } },
+    diagnostics: [{ nodeId: "fails", attempt: 1, code: "boom", message: "failed" }],
+    createdAt: "2026-08-24T10:00:00.000Z",
+    updatedAt: "2026-08-24T10:02:00.000Z",
+  };
+  await store.create(snapshot);
+  const starts: string[] = [];
+  const runtime = new PipelineRuntime(sessionAdapter(async ({ node }) => {
+    starts.push(node.id);
+    return { artifact: { name: "out", type: "note", format: "text", value: node.id } };
+  }), { store, programs: [program] });
+
+  const recovered = await runtime.recover(snapshot.runId);
+
+  assert.equal(recovered.status, "failed");
+  assert.deepEqual(starts, []);
+  assert.equal(recovered.snapshot.nodeStates.done.status, "completed");
+  assert.equal(recovered.snapshot.nodeStates.fails.status, "failed");
+  assert.equal(recovered.snapshot.nodeStates.blocked.status, "blocked");
+  assert.deepEqual(recovered.snapshot.nodeStates.done.attemptResults, snapshot.nodeStates.done.attemptResults);
+  assert.deepEqual(recovered.snapshot.nodeStates.fails.attemptResults, snapshot.nodeStates.fails.attemptResults);
 });
 
 test("PipelineRuntime refuses unsupported adapter policies before sending prompts", async () => {
