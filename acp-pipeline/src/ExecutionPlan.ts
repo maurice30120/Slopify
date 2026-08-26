@@ -251,7 +251,9 @@ function detectCycles(dependencies: ReadonlyMap<string, readonly string[]>): str
 }
 
 function sameIds(actual: readonly string[], expected: readonly string[]): boolean {
-  return actual.length === expected.length && [...actual].sort().every((id, index) => id === expected[index]);
+  const sortedExpected = [...expected].sort();
+  return actual.length === sortedExpected.length
+    && [...actual].sort().every((id, index) => id === sortedExpected[index]);
 }
 
 function isStringArray(value: unknown): value is string[] {

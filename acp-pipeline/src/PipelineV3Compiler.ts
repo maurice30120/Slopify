@@ -47,6 +47,23 @@ export function compilePipelineV3Definition(
     return { errors };
   }
 
+  return { program: createCompiledProgram({ version: 3, id, title, promotion }, nodes), errors: [] };
+}
+
+export function appendCompiledPipelineNodes(
+  program: CompiledPipelineProgram,
+  candidates: readonly CompiledPipelineNode[],
+): CompiledPipelineProgram {
+  const appended = candidates.filter(node => !program.nodesById.has(node.id));
+  return appended.length === 0
+    ? program
+    : createCompiledProgram(program, [...program.nodes, ...appended]);
+}
+
+function createCompiledProgram(
+  metadata: Pick<CompiledPipelineProgram, "version" | "id" | "title" | "promotion">,
+  nodes: readonly CompiledPipelineNode[],
+): CompiledPipelineProgram {
   const nodesById = new Map(nodes.map(node => [node.id, node] as const));
   const dependents = new Map<string, string[]>();
   for (const node of nodes) {
@@ -62,17 +79,14 @@ export function compilePipelineV3Definition(
   }
 
   const program: CompiledPipelineProgram = deepFreeze({
-    version: 3 as const,
-    id,
-    title,
-    promotion,
+    ...metadata,
     nodes,
     nodesById: new ImmutableMap(nodesById),
     dependentsById: new ImmutableMap(dependents),
     rootNodeIds: nodes.filter(node => node.needs.length === 0).map(node => node.id).sort(),
     terminalNodeIds: nodes.filter(node => (dependents.get(node.id) ?? []).length === 0).map(node => node.id).sort(),
   });
-  return { program, errors: [] };
+  return program;
 }
 
 function readPipelinePromotion(value: unknown, errors: string[]): NormalizedPromotionPolicy {
