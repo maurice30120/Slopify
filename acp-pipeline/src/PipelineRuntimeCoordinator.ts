@@ -60,14 +60,14 @@ export class PipelineRuntime extends CorePipelineRuntime {
     options: PipelineRuntimeOptions = {},
   ) {
     const completionBuffer = new PipelineCompletionBuffer(options.store, options.onEvent);
+    const adapterFinalizer = (adapter as PipelineChangeSetFinalizingAdapter).finalizePipelineChangeSet;
+    const factoryFinalizer = (adapter.createSession as unknown as PipelineChangeSetFinalizingSessionFactory).finalizePipelineChangeSet;
     super(adapter, {
       ...options,
       store: completionBuffer.store,
       onEvent: event => completionBuffer.captureEvent(event),
     });
     this.completionBuffer = completionBuffer;
-    const adapterFinalizer = (adapter as PipelineChangeSetFinalizingAdapter).finalizePipelineChangeSet;
-    const factoryFinalizer = (adapter.createSession as unknown as PipelineChangeSetFinalizingSessionFactory).finalizePipelineChangeSet;
     this.finalizer = adapterFinalizer?.bind(adapter) ?? factoryFinalizer?.bind(adapter.createSession);
     for (const program of options.programs ?? []) {
       this.coordinatedProgramsById.set(program.id, program);
@@ -79,9 +79,15 @@ export class PipelineRuntime extends CorePipelineRuntime {
     options: PipelineRuntimeStartOptions = {},
   ): Promise<PipelineRuntimeResult> {
     this.coordinatedProgramsById.set(program.id, program);
-    const result = await super.start(program, options);
-    this.programsByRunId.set(result.runId, program);
-    return this.finalizeTerminalResult(result, program);
+    try {
+      const result = await super.start(program, options);
+      this.programsByRunId.set(result.runId, program);
+      return this.finalizeTerminalResult(result, program);
+    } catch (error: unknown) {
+      if (!(error instanceof PipelineIntegrationConflictError)) throw error;
+      this.programsByRunId.set(error.conflict.runId, program);
+      return this.suspendIntegrationConflict(error);
+    }
   }
 
   override async resume(
@@ -118,6 +124,9 @@ export class PipelineRuntime extends CorePipelineRuntime {
     ) {
       const program = this.programsByRunId.get(runId)
         ?? this.coordinatedProgramsById.get(snapshot.pipelineId);
+      if (snapshot.nodeStates[conflict.retryNodeId]?.status !== "completed") {
+        return this.runRecoveryAttempt(runId, program, () => this.retryRecoveredRun(runId));
+      }
       const result = await super.retryNode(runId, conflict.retryNodeId, decision.pauseId);
       return program ? this.finalizeTerminalResult(result, program) : result;
     }
@@ -159,6 +168,9 @@ export class PipelineRuntime extends CorePipelineRuntime {
       const result = await attempt();
       return program ? this.finalizeTerminalResult(result, program) : result;
     } catch (error: unknown) {
+      if (error instanceof PipelineIntegrationConflictError) {
+        return this.suspendIntegrationConflict(error);
+      }
       if (!(error instanceof PipelineSandboxResumeDivergenceError)) throw error;
       const pause = sandboxResumeDivergencePause(error);
       return this.suspendRecoveredRun(runId, pause, snapshot => {
@@ -169,6 +181,11 @@ export class PipelineRuntime extends CorePipelineRuntime {
         }
       });
     }
+  }
+
+  private async suspendIntegrationConflict(error: PipelineIntegrationConflictError): Promise<PipelineRuntimeResult> {
+    const pause = integrationConflictPause(error);
+    return this.suspendRecoveredRun(error.conflict.runId, pause, snapshot => annotateIntegrationConflict(snapshot, error));
   }
 
   private async finalizeTerminalResult(
@@ -251,15 +268,7 @@ export class PipelineRuntime extends CorePipelineRuntime {
         snapshot.status = "paused";
         snapshot.pendingPause = pause;
         snapshot.updatedAt = new Date().toISOString();
-        for (const checkpoint of error.conflict.checkpoints) {
-          const sandboxRun = Object.values(snapshot.sandboxRuns ?? {}).find(run =>
-            run.nodeId === checkpoint.nodeId && run.attempt === checkpoint.attempt
-          );
-          if (sandboxRun) {
-            sandboxRun.integrationState = "integration_conflict";
-            sandboxRun.integrationDiagnostic = { files: [...error.conflict.files] };
-          }
-        }
+        annotateIntegrationConflict(snapshot, error);
         await this.completionBuffer.pause(result.runId, snapshot, pause);
         return {
           status: "paused",
@@ -289,6 +298,21 @@ export class PipelineRuntime extends CorePipelineRuntime {
 
   private cleanupRun(runId: string): void {
     this.programsByRunId.delete(runId);
+  }
+}
+
+function annotateIntegrationConflict(
+  snapshot: PipelineRuntimeSnapshot,
+  error: PipelineIntegrationConflictError,
+): void {
+  for (const checkpoint of error.conflict.checkpoints) {
+    const sandboxRun = Object.values(snapshot.sandboxRuns ?? {}).find(run =>
+      run.nodeId === checkpoint.nodeId && run.attempt === checkpoint.attempt
+    );
+    if (sandboxRun) {
+      sandboxRun.integrationState = "integration_conflict";
+      sandboxRun.integrationDiagnostic = { files: [...error.conflict.files] };
+    }
   }
 }
 

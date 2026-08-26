@@ -140,9 +140,13 @@ export function evaluateToolPermissionForPolicy(
 }
 
 export function mapPolicyToLegacySideEffects(policy: NormalizedPipelinePolicy): "none" | "workspace" {
-  return policy.filesystem === "workspace-write" || policy.terminal === "workspace-write"
+  return canMutateWorkspace(policy)
     ? "workspace"
     : "none";
+}
+
+export function canMutateWorkspace(policy: NormalizedPipelinePolicy): boolean {
+  return policy.filesystem === "workspace-write" || policy.terminal === "workspace-write";
 }
 
 export function mapPolicyToLegacyPermissions(_policy: NormalizedPipelinePolicy): "ask" | "allowAll" {

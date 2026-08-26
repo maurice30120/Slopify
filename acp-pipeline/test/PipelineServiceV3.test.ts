@@ -320,6 +320,25 @@ function createFakeSessionFactory(
     runId,
     nodeId: node.id,
     async send(input) {
+      if (input.node.policy.filesystem === "workspace-write" || input.node.policy.terminal === "workspace-write") {
+        const attempt = input.attempt ?? 1;
+        await input.onSandboxRunState?.({
+          sandboxName: `sandbox-${input.node.id}-${attempt}`,
+          runId: input.runId,
+          nodeId: input.node.id,
+          attempt,
+          baseCommit: "base",
+          integrationState: "checkpointed",
+          resourceState: "removed",
+          checkpoint: {
+            status: "no_changes",
+            commit: `checkpoint-${input.node.id}-${attempt}`,
+            remote: `remote-${input.node.id}`,
+            ref: `refs/checkpoints/${input.node.id}-${attempt}`,
+            preview: { baseCommit: "base", checkpointCommit: `checkpoint-${input.node.id}-${attempt}`, fileCount: 0, files: [], diff: "" },
+          },
+        });
+      }
       return {
         artifact: {
           name: input.node.output!.name,

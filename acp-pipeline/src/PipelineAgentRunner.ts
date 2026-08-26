@@ -97,6 +97,7 @@ export interface PipelineAgentRunInput {
 	skills?: string[];
 	onSandboxRunState?: (state: PipelineSandboxRunSnapshot) => void | Promise<void>;
 	resumeSandboxRun?: PipelineSandboxRunSnapshot;
+	dependencyCheckpoints?: import("./PipelineV3Types").PipelineDependencyCheckpoint[];
 }
 
 export interface PipelineChangeSetPreview {

@@ -58,6 +58,7 @@ export interface SandboxRunInput {
   onSandboxRetained?: (sandbox: RetainedSandbox) => void | Promise<void>;
   onStateChange?: (state: SandboxRunState) => void | Promise<void>;
   resumeState?: SandboxRunState;
+  dependencyCheckpoints?: readonly AgentCheckpointResult[];
 }
 
 export interface SandboxRunState {
@@ -266,6 +267,24 @@ export class DockerSandboxRuntime {
           signal: execution.signal,
         }, 'create the Docker Sandbox');
         created = true;
+        if (input.dependencyCheckpoints?.length) {
+          const composed = await new GitPromotion(this.execute).integrateAgentCheckpoints({
+            workspaceCwd: input.workspaceCwd,
+            runId: input.runId,
+            checkpoints: input.dependencyCheckpoints,
+            signal: execution.signal,
+          });
+          const remote = `sandbox-${sandboxName}`;
+          const dependencyRef = `refs/slopify/dependencies/${input.runId}/${input.nodeId}/${input.attempt}`;
+          await this.requireSuccess({
+            command: 'git', args: ['push', '--force', remote, `${composed.changeSet.commit}:${dependencyRef}`],
+            cwd: input.workspaceCwd, stdin: 'ignore', signal: execution.signal,
+          }, 'publish dependency checkpoints to the descendant sandbox');
+          await this.requireSuccess({
+            command: 'sbx', args: ['exec', sandboxName, 'git', 'reset', '--hard', dependencyRef],
+            cwd: input.workspaceCwd, stdin: 'ignore', signal: execution.signal,
+          }, 'prepare the descendant sandbox from dependency checkpoints');
+        }
         const sandboxId = await this.readSandboxId(input.workspaceCwd, sandboxName, execution.signal);
         durableState = {
           sandboxName,

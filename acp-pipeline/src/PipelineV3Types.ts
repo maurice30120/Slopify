@@ -286,6 +286,17 @@ export interface PipelineNodeExecutionInput {
   signal: AbortSignal;
   onSandboxRunState?: (state: PipelineSandboxRunSnapshot) => void | Promise<void>;
   resumeSandboxRun?: PipelineSandboxRunSnapshot;
+  /** Latest retained Agent Checkpoint for each satisfied direct dependency. */
+  dependencyCheckpoints?: PipelineDependencyCheckpoint[];
+}
+
+export interface PipelineDependencyCheckpoint {
+  runId: string;
+  nodeId: string;
+  attempt: number;
+  sandboxName: string;
+  baseCommit: string;
+  checkpoint: PipelineSandboxCheckpointSnapshot;
 }
 
 export interface AgentNodeSessionTurnInput extends PipelineNodeExecutionInput {
