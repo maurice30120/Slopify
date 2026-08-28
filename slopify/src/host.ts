@@ -299,6 +299,12 @@ export class CliPipelineHost {
     loggedRunner.finalizePipelineChangeSet = runner.finalizePipelineChangeSet
       ? input => runner.finalizePipelineChangeSet!(input)
       : undefined;
+    loggedRunner.preparePipelineChangeSet = runner.preparePipelineChangeSet
+      ? input => runner.preparePipelineChangeSet!(input)
+      : undefined;
+    loggedRunner.invalidatePipelineChangeSet = runner.invalidatePipelineChangeSet
+      ? input => runner.invalidatePipelineChangeSet!(input)
+      : undefined;
 
     return new PipelineRuntimeAgentAdapter({
       workspaceCwd: () => this.workspaceCwd,

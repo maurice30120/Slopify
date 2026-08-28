@@ -490,6 +490,15 @@ export class GitPromotion {
     return { ...request, status: 'applied' };
   }
 
+  async invalidatePipelineChangeSet(workspaceCwd: string, changeSetRef: string): Promise<void> {
+    await this.requireSuccess({
+      command: 'git',
+      args: ['update-ref', '-d', changeSetRef],
+      cwd: workspaceCwd,
+      stdin: 'ignore',
+    }, 'invalidate the rejected Pipeline Change Set');
+  }
+
   private async resolveDecision(
     input: PromotePipelineChangeSetInput,
     request: PromotionRequest,

@@ -10,6 +10,7 @@ import {
   orderPipelineNodeIdsForIntegration,
   type PipelineChangeSetFinalizationInput,
   type PipelineChangeSetFinalizationResult,
+  type PipelineChangeSetPreparationResult,
   type PipelineNodeExecutionResult,
   type PipelineRuntimeAdapter,
 } from "../dist/index.js";
@@ -751,6 +752,16 @@ test("an Integration Conflict pauses finalization and approval retries only the 
   assert.equal(completed.status, "completed");
   assert.deepEqual(attempts.filter(attempt => attempt.startsWith("a#")), ["a#1"]);
   assert.deepEqual(attempts.filter(attempt => attempt.startsWith("b#")), ["b#1", "b#2"]);
+  assert.deepEqual(
+    completed.snapshot.nodeStates.b.attemptResults?.map(result => ({
+      attempt: result.attempt,
+      status: result.status,
+    })),
+    [
+      { attempt: 1, status: "completed" },
+      { attempt: 2, status: "completed" },
+    ],
+  );
   assert.deepEqual(attempts.filter(attempt => attempt.startsWith("c#")), ["c#1"]);
   assert.deepEqual(attempts.filter(attempt => attempt.startsWith("join#")), ["join#1"]);
   assert.equal(finalization, 2);
@@ -1075,4 +1086,148 @@ test("a cancelled Promotion cancels the run without emitting completed", async (
       .filter(type => type === "completed" || type === "cancelled"),
     ["cancelled"],
   );
+});
+
+test("final review observes the complete provisional Pipeline Change Set before one Promotion", async () => {
+  const program = compilePipelineV3Definition({
+    version: 3,
+    id: "review-complete-change-set",
+    title: "Review complete change set",
+    nodes: [{
+      id: "tasks", agent: "Codex", prompt: "Plan", output: { name: "graph", type: "acp.ticket-graph/v1", format: "json" },
+    }],
+  }, agents).program!;
+  const preparation: PipelineChangeSetPreparationResult = {
+    preview: { baseCommit: "base", changeSetCommit: "combined", fileCount: 2, files: ["left.ts", "right.ts"], diff: "combined interaction" },
+    changeSetRef: "refs/slopify/runs/run-reviewed/change-set",
+    changeSetCommit: "combined",
+    integratedNodeIds: ["left", "right"],
+  };
+  let reviewPrompt = "";
+  let promotions = 0;
+  const runtime = new PipelineRuntime({
+    async preparePipelineChangeSet() {
+      return preparation;
+    },
+    async createSession({ runId, node }) {
+      return { runId, nodeId: node.id, async send(input): Promise<PipelineNodeExecutionResult> {
+        if (node.id === "tasks") return { artifact: { name: "graph", type: "acp.ticket-graph/v1", format: "json", value: {
+          contract: "acp.ticket-graph/v1", tickets: [
+            { id: "left", title: "Left", scope: [], needs: [], validation: [] },
+            { id: "right", title: "Right", scope: [], needs: [], validation: [] },
+          ],
+        } } };
+        if (node.id === "final-review") {
+          reviewPrompt = input.prompt;
+          return { artifact: { name: "review", type: "acp.verification-report/v1", format: "json", value: {
+            contract: "acp.verification-report/v1", verdict: "passed", categories: [
+              { name: "interactions", required: true, status: "passed", details: "combined result is coherent" },
+            ],
+          } } };
+        }
+        await input.onSandboxRunState?.({ sandboxName: `sandbox-${node.id}`, runId, nodeId: node.id, attempt: 1,
+          baseCommit: "base", integrationState: "checkpointed", resourceState: "removed", checkpoint: {
+            status: "checkpointed", commit: `commit-${node.id}`, remote: `remote-${node.id}`, ref: `refs/checkpoints/${node.id}`,
+            preview: { baseCommit: "base", checkpointCommit: `commit-${node.id}`, fileCount: 1, files: [`${node.id}.ts`], diff: node.id },
+          } });
+        return { artifact: { name: "result", type: "acp.implementation-result/v1", format: "json", value: {
+          contract: "acp.implementation-result/v1", ticketId: node.id, branch: node.id, commits: [`commit-${node.id}`], summary: node.id, validations: [],
+        } } };
+      }, async cancel() {}, async close() {} };
+    },
+    async finalizePipelineChangeSet(input) {
+      promotions += 1;
+      assert.equal(input.snapshot?.pipelineChangeSet?.changeSetCommit, "combined");
+      return { ...preparation, promotion: "applied" };
+    },
+  }, { runIdFactory: () => "run-reviewed" });
+
+  const result = await runtime.start(program, { maxConcurrency: 2 });
+
+  assert.equal(result.status, "completed");
+  assert.equal(promotions, 1);
+  assert.match(reviewPrompt, /left\.ts/);
+  assert.match(reviewPrompt, /right\.ts/);
+  assert.match(reviewPrompt, /combined interaction/);
+});
+
+test("a failed final review invalidates the provisional result and forbids Promotion", async () => {
+  const program = compilePipelineV3Definition({
+    version: 3, id: "reject-change-set", title: "Reject change set",
+    nodes: [{ id: "tasks", agent: "Codex", prompt: "Plan", output: { name: "graph", type: "acp.ticket-graph/v1", format: "json" } }],
+  }, agents).program!;
+  let promotions = 0;
+  let invalidations = 0;
+  const runtime = new PipelineRuntime({
+    async preparePipelineChangeSet() {
+      return { preview: { baseCommit: "base", changeSetCommit: "combined", fileCount: 1, files: ["bad.ts"], diff: "bad interaction" },
+        changeSetRef: "refs/change-set", changeSetCommit: "combined", integratedNodeIds: ["work"] };
+    },
+    async createSession({ runId, node }) { return { runId, nodeId: node.id, async send(input): Promise<PipelineNodeExecutionResult> {
+      if (node.id === "tasks") return { artifact: { name: "graph", type: "acp.ticket-graph/v1", format: "json", value: {
+        contract: "acp.ticket-graph/v1", tickets: [{ id: "work", title: "Work", scope: [], needs: [], validation: [] }],
+      } } };
+      if (node.id === "final-review") return { artifact: { name: "review", type: "acp.verification-report/v1", format: "json", value: {
+        contract: "acp.verification-report/v1", verdict: "failed", categories: [
+          { name: "interaction", required: true, status: "failed", details: "incompatible" },
+        ],
+      } } };
+      await input.onSandboxRunState?.({ sandboxName: `sandbox-${node.id}`, runId, nodeId: node.id, attempt: 1,
+        baseCommit: "base", integrationState: "checkpointed", resourceState: "removed", checkpoint: {
+          status: "checkpointed", commit: `commit-${node.id}`, remote: `remote-${node.id}`, ref: `refs/checkpoints/${node.id}`,
+          preview: { baseCommit: "base", checkpointCommit: `commit-${node.id}`, fileCount: 1, files: [`${node.id}.ts`], diff: node.id },
+        } });
+      return { artifact: { name: "result", type: "acp.implementation-result/v1", format: "json", value: {
+        contract: "acp.implementation-result/v1", ticketId: node.id, branch: node.id, commits: [node.id], summary: node.id, validations: [],
+      } } };
+    }, async cancel() {}, async close() {} }; },
+    async finalizePipelineChangeSet(input) { promotions += 1; return { promotion: "applied", ...input.snapshot!.pipelineChangeSet! }; },
+    async invalidatePipelineChangeSet() { invalidations += 1; },
+  }, { runIdFactory: () => "run-rejected-review" });
+
+  const result = await runtime.start(program);
+
+  assert.equal(result.status, "cancelled");
+  assert.equal(promotions, 0);
+  assert.equal(invalidations, 1);
+  assert.equal(result.snapshot.pipelineChangeSet, undefined);
+});
+
+test("a provisional integration failure fails durably and invalidates without Promotion", async () => {
+  const program = compilePipelineV3Definition({
+    version: 3, id: "failed-preparation", title: "Failed preparation",
+    nodes: [{ id: "tasks", agent: "Codex", prompt: "Plan", output: { name: "graph", type: "acp.ticket-graph/v1", format: "json" } }],
+  }, agents).program!;
+  let invalidations = 0;
+  let promotions = 0;
+  const runtime = new PipelineRuntime({
+    async preparePipelineChangeSet() { throw new Error("cannot construct provisional result"); },
+    async invalidatePipelineChangeSet() { invalidations += 1; },
+    async finalizePipelineChangeSet() { promotions += 1; throw new Error("must not promote"); },
+    async createSession({ runId, node }) { return { runId, nodeId: node.id, async send(input): Promise<PipelineNodeExecutionResult> {
+      if (node.id === "tasks") return { artifact: { name: "graph", type: "acp.ticket-graph/v1", format: "json", value: {
+        contract: "acp.ticket-graph/v1", tickets: [{ id: "work", title: "Work", scope: [], needs: [], validation: [] }],
+      } } };
+      await input.onSandboxRunState?.({ sandboxName: `sandbox-${node.id}`, runId, nodeId: node.id, attempt: 1,
+        baseCommit: "base", integrationState: "checkpointed", resourceState: "removed", checkpoint: {
+          status: "checkpointed", commit: `commit-${node.id}`, remote: `remote-${node.id}`, ref: `refs/checkpoints/${node.id}`,
+          preview: { baseCommit: "base", checkpointCommit: `commit-${node.id}`, fileCount: 1, files: [`${node.id}.ts`], diff: node.id },
+        } });
+      return { artifact: { name: "result", type: "acp.implementation-result/v1", format: "json", value: {
+        contract: "acp.implementation-result/v1", ticketId: node.id, branch: node.id, commits: [node.id], summary: node.id, validations: [],
+      } } };
+    }, async cancel() {}, async close() {} }; },
+  }, { runIdFactory: () => "run-failed-preparation" });
+
+  const result = await runtime.start(program);
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.status === "failed" ? result.error.code : "", "pipeline_change_set_preparation_failed");
+  assert.equal(result.snapshot.status, "failed");
+  assert.equal(result.snapshot.nodeStates["final-review"]?.status, "failed");
+  assert.equal(result.snapshot.nodeStates["final-review"]?.attempts, 1);
+  assert.deepEqual(result.snapshot.nodeStates["final-review"]?.attemptResults?.map(attempt => attempt.status), ["failed"]);
+  assert.equal(result.snapshot.diagnostics.filter(diagnostic => diagnostic.code === "pipeline_change_set_preparation_failed").length, 1);
+  assert.equal(invalidations, 1);
+  assert.equal(promotions, 0);
 });

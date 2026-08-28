@@ -53,6 +53,7 @@ export class PipelineRuntime extends CorePipelineRuntime {
   private readonly programsByRunId = new Map<string, CompiledPipelineProgram>();
   private readonly coordinatedProgramsById = new Map<string, CompiledPipelineProgram>();
   private readonly finalizer?: PipelineChangeSetFinalizingAdapter["finalizePipelineChangeSet"];
+  private readonly invalidator?: PipelineRuntimeAdapter["invalidatePipelineChangeSet"];
   private readonly completionBuffer: PipelineCompletionBuffer;
 
   constructor(
@@ -69,6 +70,7 @@ export class PipelineRuntime extends CorePipelineRuntime {
     });
     this.completionBuffer = completionBuffer;
     this.finalizer = adapterFinalizer?.bind(adapter) ?? factoryFinalizer?.bind(adapter.createSession);
+    this.invalidator = adapter.invalidatePipelineChangeSet?.bind(adapter);
     for (const program of options.programs ?? []) {
       this.coordinatedProgramsById.set(program.id, program);
     }
@@ -195,6 +197,7 @@ export class PipelineRuntime extends CorePipelineRuntime {
     let result = initialResult;
     if (result.status !== "completed") {
       if (result.status !== "paused") {
+        await this.invalidator?.({ runId: result.runId, program, snapshot: result.snapshot });
         await this.completionBuffer.releaseEphemeralRun(result.runId);
         this.cleanupRun(result.runId);
       }
@@ -205,6 +208,17 @@ export class PipelineRuntime extends CorePipelineRuntime {
       await this.completionBuffer.flush(result.runId);
       this.cleanupRun(result.runId);
       return result;
+    }
+
+    if (finalReviewRejected(result.snapshot)) {
+      await this.invalidator?.({ runId: result.runId, program, snapshot: result.snapshot });
+      const snapshot = structuredClone(result.snapshot);
+      snapshot.status = "cancelled";
+      snapshot.pipelineChangeSet = undefined;
+      snapshot.updatedAt = new Date().toISOString();
+      await this.completionBuffer.cancel(result.runId, snapshot, "Final review rejected the provisional Pipeline Change Set.");
+      this.cleanupRun(result.runId);
+      return { status: "cancelled", runId: result.runId, snapshot, promotion: "rejected" };
     }
 
     try {
@@ -299,6 +313,16 @@ export class PipelineRuntime extends CorePipelineRuntime {
   private cleanupRun(runId: string): void {
     this.programsByRunId.delete(runId);
   }
+}
+
+function finalReviewRejected(snapshot: PipelineRuntimeSnapshot): boolean {
+  const artifact = snapshot.finalArtifact?.type === "acp.verification-report/v1"
+    ? snapshot.finalArtifact
+    : Object.values(snapshot.artifacts).find(candidate => candidate.type === "acp.verification-report/v1");
+  if (artifact?.type !== "acp.verification-report/v1" || typeof artifact.value !== "object" || artifact.value === null) {
+    return false;
+  }
+  return (artifact.value as { verdict?: unknown }).verdict === "failed";
 }
 
 function annotateIntegrationConflict(

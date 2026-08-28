@@ -69,6 +69,16 @@ function mutatingWorkspaceCalls(calls: SubprocessRequest[]): SubprocessRequest[]
   return calls.filter(call => call.command === 'git' && mutating.has(call.args[0] ?? ''));
 }
 
+test('invalidating a rejected provisional Change Set deletes only its private ref', async () => {
+  const fake = integrationGit();
+  await new GitPromotion(fake.execute).invalidatePipelineChangeSet('/repo', 'refs/slopify/runs/run-1/change-set');
+
+  assert.deepEqual(fake.calls.map(call => [call.command, ...call.args]), [
+    ['git', 'update-ref', '-d', 'refs/slopify/runs/run-1/change-set'],
+  ]);
+  assert.deepEqual(mutatingWorkspaceCalls(fake.calls), []);
+});
+
 async function integratedChangeSet(fake = integrationGit()) {
   const output = await new GitPromotion(fake.execute).integrateAgentCheckpoints({
     workspaceCwd: '/repo',
