@@ -814,7 +814,7 @@ test("PipelineRuntime drains active graph branches, records retries, and blocks 
   assert.equal((await store.load("run-graph-failure"))?.nodeStates.active.status, "completed");
 });
 
-test("PipelineRuntime recovery preserves failed, blocked, and completed graph nodes without replay", async () => {
+test("PipelineRuntime recovery reconstructs a terminal failure from attempt history without replay", async () => {
   const program = compilePipelineV3Definition({
     version: 3,
     id: "recover-graph-failure",
@@ -836,7 +836,7 @@ test("PipelineRuntime recovery preserves failed, blocked, and completed graph no
       blocked: { status: "blocked", attempts: 0 },
     },
     artifacts: { "done.out": { name: "out", type: "note", format: "text", value: "done", producerNodeId: "done" } },
-    diagnostics: [{ nodeId: "fails", attempt: 1, code: "boom", message: "failed" }],
+    diagnostics: [],
     createdAt: "2026-08-24T10:00:00.000Z",
     updatedAt: "2026-08-24T10:02:00.000Z",
   };
@@ -850,6 +850,7 @@ test("PipelineRuntime recovery preserves failed, blocked, and completed graph no
   const recovered = await runtime.recover(snapshot.runId);
 
   assert.equal(recovered.status, "failed");
+  assert.equal(recovered.status === "failed" ? recovered.error.code : undefined, "boom");
   assert.deepEqual(starts, []);
   assert.equal(recovered.snapshot.nodeStates.done.status, "completed");
   assert.equal(recovered.snapshot.nodeStates.fails.status, "failed");

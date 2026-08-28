@@ -1163,7 +1163,7 @@ test("a failed final review invalidates the provisional result and forbids Promo
       return { preview: { baseCommit: "base", changeSetCommit: "combined", fileCount: 1, files: ["bad.ts"], diff: "bad interaction" },
         changeSetRef: "refs/change-set", changeSetCommit: "combined", integratedNodeIds: ["work"] };
     },
-    async createSession({ runId, node }) { return { runId, nodeId: node.id, async send(): Promise<PipelineNodeExecutionResult> {
+    async createSession({ runId, node }) { return { runId, nodeId: node.id, async send(input): Promise<PipelineNodeExecutionResult> {
       if (node.id === "tasks") return { artifact: { name: "graph", type: "acp.ticket-graph/v1", format: "json", value: {
         contract: "acp.ticket-graph/v1", tickets: [{ id: "work", title: "Work", scope: [], needs: [], validation: [] }],
       } } };
@@ -1172,6 +1172,11 @@ test("a failed final review invalidates the provisional result and forbids Promo
           { name: "interaction", required: true, status: "failed", details: "incompatible" },
         ],
       } } };
+      await input.onSandboxRunState?.({ sandboxName: `sandbox-${node.id}`, runId, nodeId: node.id, attempt: 1,
+        baseCommit: "base", integrationState: "checkpointed", resourceState: "removed", checkpoint: {
+          status: "checkpointed", commit: `commit-${node.id}`, remote: `remote-${node.id}`, ref: `refs/checkpoints/${node.id}`,
+          preview: { baseCommit: "base", checkpointCommit: `commit-${node.id}`, fileCount: 1, files: [`${node.id}.ts`], diff: node.id },
+        } });
       return { artifact: { name: "result", type: "acp.implementation-result/v1", format: "json", value: {
         contract: "acp.implementation-result/v1", ticketId: node.id, branch: node.id, commits: [node.id], summary: node.id, validations: [],
       } } };
@@ -1199,10 +1204,15 @@ test("a provisional integration failure fails durably and invalidates without Pr
     async preparePipelineChangeSet() { throw new Error("cannot construct provisional result"); },
     async invalidatePipelineChangeSet() { invalidations += 1; },
     async finalizePipelineChangeSet() { promotions += 1; throw new Error("must not promote"); },
-    async createSession({ runId, node }) { return { runId, nodeId: node.id, async send(): Promise<PipelineNodeExecutionResult> {
+    async createSession({ runId, node }) { return { runId, nodeId: node.id, async send(input): Promise<PipelineNodeExecutionResult> {
       if (node.id === "tasks") return { artifact: { name: "graph", type: "acp.ticket-graph/v1", format: "json", value: {
         contract: "acp.ticket-graph/v1", tickets: [{ id: "work", title: "Work", scope: [], needs: [], validation: [] }],
       } } };
+      await input.onSandboxRunState?.({ sandboxName: `sandbox-${node.id}`, runId, nodeId: node.id, attempt: 1,
+        baseCommit: "base", integrationState: "checkpointed", resourceState: "removed", checkpoint: {
+          status: "checkpointed", commit: `commit-${node.id}`, remote: `remote-${node.id}`, ref: `refs/checkpoints/${node.id}`,
+          preview: { baseCommit: "base", checkpointCommit: `commit-${node.id}`, fileCount: 1, files: [`${node.id}.ts`], diff: node.id },
+        } });
       return { artifact: { name: "result", type: "acp.implementation-result/v1", format: "json", value: {
         contract: "acp.implementation-result/v1", ticketId: node.id, branch: node.id, commits: [node.id], summary: node.id, validations: [],
       } } };
@@ -1214,6 +1224,10 @@ test("a provisional integration failure fails durably and invalidates without Pr
   assert.equal(result.status, "failed");
   assert.equal(result.status === "failed" ? result.error.code : "", "pipeline_change_set_preparation_failed");
   assert.equal(result.snapshot.status, "failed");
+  assert.equal(result.snapshot.nodeStates["final-review"]?.status, "failed");
+  assert.equal(result.snapshot.nodeStates["final-review"]?.attempts, 1);
+  assert.deepEqual(result.snapshot.nodeStates["final-review"]?.attemptResults?.map(attempt => attempt.status), ["failed"]);
+  assert.equal(result.snapshot.diagnostics.filter(diagnostic => diagnostic.code === "pipeline_change_set_preparation_failed").length, 1);
   assert.equal(invalidations, 1);
   assert.equal(promotions, 0);
 });

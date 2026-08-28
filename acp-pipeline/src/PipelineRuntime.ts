@@ -556,7 +556,11 @@ export class PipelineRuntime {
           message: error instanceof Error && error.message ? error.message : String(error),
         };
         this.startAttempt(active, node.id, attempt);
-        active.snapshot.nodeStates[node.id] = { ...state, status: "failed", completedAt: this.isoNow() };
+        active.snapshot.nodeStates[node.id] = {
+          ...active.snapshot.nodeStates[node.id],
+          status: "failed",
+          completedAt: this.isoNow(),
+        };
         this.finishAttempt(active, node.id, attempt, "failed", diagnostic);
         active.snapshot.diagnostics.push(diagnostic);
         active.snapshot.updatedAt = this.isoNow();
@@ -1000,7 +1004,14 @@ export class PipelineRuntime {
 
   private async fail(active: ActiveRun, diagnostic: PipelineRuntimeDiagnostic): Promise<PipelineRuntimeResult> {
     active.snapshot.status = "failed";
-    active.snapshot.diagnostics.push(diagnostic);
+    if (!active.snapshot.diagnostics.some(existing =>
+      existing.nodeId === diagnostic.nodeId
+      && existing.attempt === diagnostic.attempt
+      && existing.code === diagnostic.code
+      && existing.message === diagnostic.message
+    )) {
+      active.snapshot.diagnostics.push(diagnostic);
+    }
     for (const [nodeId, state] of Object.entries(active.snapshot.nodeStates)) {
       if (state.status === "pending") {
         active.snapshot.nodeStates[nodeId] = { ...state, status: "blocked" };
@@ -1484,8 +1495,16 @@ function terminalFailureFromSnapshot(snapshot: PipelineRuntimeSnapshot): Pipelin
       .filter(([, state]) => state.status === "failed")
       .map(([nodeId]) => nodeId),
   );
-  return [...snapshot.diagnostics].reverse()
+  const persistedDiagnostic = [...snapshot.diagnostics].reverse()
     .find(diagnostic => diagnostic.nodeId !== undefined && failedNodeIds.has(diagnostic.nodeId));
+  if (persistedDiagnostic) return persistedDiagnostic;
+
+  return Object.entries(snapshot.nodeStates)
+    .filter(([nodeId, state]) => failedNodeIds.has(nodeId) && state.attemptResults)
+    .flatMap(([, state]) => state.attemptResults ?? [])
+    .filter(attempt => attempt.status === "failed" && attempt.diagnostic)
+    .sort((left, right) => (left.completedAt ?? "").localeCompare(right.completedAt ?? ""))
+    .at(-1)?.diagnostic;
 }
 
 function cloneJson<T>(value: T): T {
