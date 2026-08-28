@@ -120,6 +120,28 @@ test('collects parallel sandbox checkpoints, previews once, and promotes one det
             }],
           } } };
         }
+        await input.onSandboxRunState?.({
+          sandboxName: `sandbox-${node.id}`,
+          runId,
+          nodeId: node.id,
+          attempt: 1,
+          baseCommit: 'base123',
+          integrationState: 'checkpointed',
+          resourceState: 'removed',
+          checkpoint: {
+            status: 'checkpointed',
+            commit: `checkpoint-${node.id}`,
+            remote: `remote-${node.id}`,
+            ref: `refs/slopify/checkpoints/${runId}-${node.id}-1`,
+            preview: {
+              baseCommit: 'base123',
+              checkpointCommit: `checkpoint-${node.id}`,
+              fileCount: 1,
+              files: [`src/${node.id}.ts`],
+              diff: 'checkpoint diff',
+            },
+          },
+        });
         return { artifact: { name: 'out', type: 'note', format: 'text', value: node.id } };
       }, async cancel() {}, async close() {} };
     },
@@ -129,7 +151,11 @@ test('collects parallel sandbox checkpoints, previews once, and promotes one det
     runIdFactory: () => 'run-e2e-accept',
   }).start(program, { maxConcurrency: 2 });
 
-  assert.equal(accepted.status, 'completed');
+  assert.equal(
+    accepted.status,
+    'completed',
+    accepted.status === 'failed' ? JSON.stringify(accepted.error) : undefined,
+  );
   const acceptedChangeSet = (accepted as typeof accepted & { changeSet?: { integratedNodeIds: string[]; changeSetRef?: string } }).changeSet;
   assert.deepEqual(acceptedChangeSet?.integratedNodeIds, ['a', 'b']);
   assert.match(reviewedPrompts[0], /global diff/);
