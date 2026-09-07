@@ -17,10 +17,13 @@ class FakeTerminal implements CliTerminal {
 
   write(message: string): void { this.output.push(message); }
   writeError(message: string): void { this.errors.push(message); }
+  writeErrorRaw(message: string): void { this.errors.push(message); }
   async ask(): Promise<string> { return ''; }
   async confirm(): Promise<boolean> { return this.confirmations.shift() ?? false; }
   async select(): Promise<string | undefined> { return undefined; }
   close(): void {}
+  readonly supportsAnsi = false;
+  readonly columns = 80;
 }
 
 test('dispatches one implement-ticket run per ticket before review', async () => {
@@ -186,7 +189,7 @@ function command(cwd: string): CliRunCommand {
     prompt: 'ship feature',
     cwd,
     json: false,
-    verbose: false,
+    logLevel: 'default',
     yes: false,
   };
 }

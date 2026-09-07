@@ -1,54 +1,26 @@
 import * as assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { assertSingleProposedPlan, extractQuestionRound, getProposedPlanInterviewState } from '../dist/index.js';
 
-import {
-  assertSingleProposedPlan,
-  extractClarificationQuestion,
-  extractRecommendedAnswer,
-  getProposedPlanInterviewState,
-  isProposedPlanAwaitingAnswer,
-} from '../dist/index.js';
+const round = `❓ **Q1** - Which public seam should own persistence?
 
-const QUESTION_PLAN = `<proposed_plan>
-<interview_state>question</interview_state>
-<clarification_question>Which public seam should own persistence?</clarification_question>
-<recommended_answer>Use a repository interface.</recommended_answer>
-</proposed_plan>`;
+➡️ Use a repository interface.
 
-const READY_PLAN = `<proposed_plan>
-<interview_state>ready</interview_state>
-## Plan
-Implement the approved skeleton.
-</proposed_plan>`;
+---
 
-test('interactive proposed plans expose their pending question', () => {
-  assert.equal(getProposedPlanInterviewState(QUESTION_PLAN), 'question');
-  assert.equal(isProposedPlanAwaitingAnswer(QUESTION_PLAN), true);
-  assert.equal(
-    extractClarificationQuestion(QUESTION_PLAN),
-    'Which public seam should own persistence?',
-  );
-  assert.equal(
-    extractRecommendedAnswer(QUESTION_PLAN),
-    'Use a repository interface.',
-  );
+❓ **Q2** - How are transactions bounded?
+
+➡️ Per-request unit of work.`;
+const question = `<proposed_plan><interview_state>question</interview_state>\n${round}\n</proposed_plan>`;
+const ready = '<proposed_plan><interview_state>ready</interview_state>Implement the approved skeleton.</proposed_plan>';
+
+test('question round preserves Markdown questions and recommendations together', () => {
+  assert.equal(getProposedPlanInterviewState(question), 'question');
+  assert.equal(extractQuestionRound(question), round);
+  assert.throws(() => assertSingleProposedPlan(question), /interview is not complete/i);
 });
 
-test('ready proposed plans can be approved', () => {
-  assert.equal(getProposedPlanInterviewState(READY_PLAN), 'ready');
-  assert.equal(isProposedPlanAwaitingAnswer(READY_PLAN), false);
-  assert.doesNotThrow(() => assertSingleProposedPlan(READY_PLAN));
-});
-
-test('question proposed plans cannot be approved', () => {
-  assert.throws(
-    () => assertSingleProposedPlan(QUESTION_PLAN),
-    /interview is not complete/i,
-  );
-});
-
-test('legacy proposed plans remain approvable', () => {
-  const legacy = '<proposed_plan>Implement the feature.</proposed_plan>';
-  assert.equal(getProposedPlanInterviewState(legacy), null);
-  assert.doesNotThrow(() => assertSingleProposedPlan(legacy));
+test('ready plans can be approved and contain no pending question round', () => {
+  assert.equal(extractQuestionRound(ready), null);
+  assert.doesNotThrow(() => assertSingleProposedPlan(ready));
 });

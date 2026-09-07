@@ -38,7 +38,7 @@ export function createInMemoryAcpConnector(factory: InMemoryAcpAgentFactory): Ac
     let client: AcpClient | null = null;
     const connection = new ClientSideConnection((_agent: Agent) => {
       client = new AcpClient(
-        new FileSystemHandler(input.workspaceCwd),
+        new FileSystemHandler(input.workspaceCwd, input.readOnlyRoots),
         new TerminalHandler(input.workspaceCwd),
         new PermissionHandler(input.getPermissionContext, {
           autoApproveAll: input.autoApprovePermissions,

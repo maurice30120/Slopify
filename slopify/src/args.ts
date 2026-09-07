@@ -1,9 +1,11 @@
 import * as path from 'node:path';
 
+export type LogLevel = 'quiet' | 'default' | 'verbose' | 'debug';
+
 export interface CliCommonOptions {
   cwd: string;
   json: boolean;
-  verbose: boolean;
+  logLevel: LogLevel;
 }
 
 export interface CliListCommand extends CliCommonOptions {
@@ -31,6 +33,8 @@ export interface CliHelpCommand {
 
 export type CliCommand = CliListCommand | CliRunCommand | CliResumeCommand | CliHelpCommand;
 
+export const DEFAULT_PIPELINE = 'grill-spec-tickets-implement-review';
+
 export function parseCliArgs(argv: string[], baseCwd = process.cwd()): CliCommand {
   if (argv.length === 0 || argv.includes('--help') || argv.includes('-h')) {
     return { kind: 'help' };
@@ -43,9 +47,10 @@ export function parseCliArgs(argv: string[], baseCwd = process.cwd()): CliComman
 
   let cwd = baseCwd;
   let json = false;
-  let verbose = false;
+  let logLevel: LogLevel = 'default';
   let yes = false;
   let keepSandboxes = false;
+  let pipelineOption: string | undefined;
   const positional: string[] = [];
   let positionalOnly = false;
 
@@ -59,7 +64,7 @@ export function parseCliArgs(argv: string[], baseCwd = process.cwd()): CliComman
       positionalOnly = true;
       continue;
     }
-    if (value === '--cwd') {
+    if (value === '--cwd' || value === '-c') {
       const next = argv[index + 1];
       if (!next) {
         throw new Error('--cwd requires a path.');
@@ -68,19 +73,36 @@ export function parseCliArgs(argv: string[], baseCwd = process.cwd()): CliComman
       index += 1;
       continue;
     }
-    if (value === '--json') {
+    if (value === '--pipeline' || value === '-p') {
+      const next = argv[index + 1];
+      if (!next) {
+        throw new Error('--pipeline requires a name.');
+      }
+      pipelineOption = next.trim();
+      index += 1;
+      continue;
+    }
+    if (value === '--json' || value === '-j') {
       json = true;
       continue;
     }
-    if (value === '--verbose') {
-      verbose = true;
+    if (value === '--quiet' || value === '-q') {
+      logLevel = 'quiet';
+      continue;
+    }
+    if (value === '--verbose' || value === '-v') {
+      logLevel = 'verbose';
+      continue;
+    }
+    if (value === '--debug') {
+      logLevel = 'debug';
       continue;
     }
     if (value === '--yes' || value === '-y') {
       yes = true;
       continue;
     }
-    if (value === '--keep-sandboxes') {
+    if (value === '--keep-sandboxes' || value === '-k') {
       keepSandboxes = true;
       continue;
     }
@@ -91,36 +113,34 @@ export function parseCliArgs(argv: string[], baseCwd = process.cwd()): CliComman
   }
 
   if (kind === 'list') {
-    if (positional.length > 0 || yes || keepSandboxes) {
+    if (positional.length > 0 || yes || keepSandboxes || pipelineOption !== undefined) {
       throw new Error('Usage: slopify list [--cwd <path>] [--json] [--verbose]');
     }
-    return { kind, cwd, json, verbose };
+    return { kind, cwd, json, logLevel };
   }
 
 
   if (kind === 'resume') {
     const runId = positional[0]?.trim();
-    if (!runId || positional.length !== 1) {
+    if (!runId || positional.length !== 1 || pipelineOption !== undefined) {
       throw new Error('Usage: slopify resume <run-id> [--cwd <path>] [--yes] [--keep-sandboxes] [--json] [--verbose]');
     }
-    return { kind, runId, cwd, json, verbose, yes, keepSandboxes };
+    return { kind, runId, cwd, json, logLevel, yes, keepSandboxes };
   }
 
-  const pipelineName = positional[0]?.trim();
-  const prompt = positional.slice(1).join(' ').trim();
-  if (!pipelineName || !prompt) {
-    throw new Error(
-      'Usage: slopify run <pipeline-name> <prompt> [--cwd <path>] [--yes] [--keep-sandboxes] [--json] [--verbose]',
-    );
+  const runUsage = 'Usage: slopify run <prompt> [--pipeline <name>] [--cwd <path>] [--yes] [--keep-sandboxes] [--json] [--quiet] [--verbose] [--debug]';
+  const prompt = positional.join(' ').trim();
+  if (!prompt) {
+    throw new Error(runUsage);
   }
 
   return {
     kind,
-    pipelineName,
+    pipelineName: pipelineOption ?? DEFAULT_PIPELINE,
     prompt,
     cwd,
     json,
-    verbose,
+    logLevel,
     yes,
     keepSandboxes,
   };
@@ -128,15 +148,41 @@ export function parseCliArgs(argv: string[], baseCwd = process.cwd()): CliComman
 
 export function formatHelp(): string {
   return [
-    'Slopify',
+    'slopify - run ACP v3 pipelines and Docker Sandbox agents (Codex, OpenCode) from a terminal.',
+    '',
+    'The pipeline selects every native ACP or Docker Sandbox agent used by its',
+    'nodes, based on the workspace configuration. There is intentionally no --agent option.',
     '',
     'Usage:',
-    '  slopify list [--cwd <path>] [--json] [--verbose]',
-    '  slopify run <pipeline-name> <prompt> [--cwd <path>] [--yes] [--keep-sandboxes] [--json] [--verbose]',
-    '  slopify resume <run-id> [--cwd <path>] [--yes] [--keep-sandboxes] [--json] [--verbose]',
+    '  slopify <command> [options] [--] [args...]',
     '',
-    'The pipeline selects every native ACP or Docker Sandbox Codex agent used by its nodes.',
-    'There is intentionally no --agent option.',
-    '--keep-sandboxes preserves every Docker Sandbox created by the run for local diagnostics.',
+    'Commands:',
+    '  list                 List the v3 pipelines available in the workspace.',
+    '  run <prompt>         Run a pipeline against a prompt.',
+    '  resume <run-id>      Resume an interrupted run by its persisted run id.',
+    '',
+    'Options:',
+    '  --pipeline, -p <name>  Pipeline to run (default: grill-spec-tickets-implement-review).',
+    '  --cwd, -c <path>       Workspace to use (default: current directory).',
+    '  --yes, -y              Approve approval pauses only; never approves a Promotion.',
+    '  --keep-sandboxes, -k   Keep Docker Sandboxes for local diagnostics.',
+    '  --quiet, -q            Suppress all status output (artifact only on stdout).',
+    '  --verbose, -v          Print runtime events and agent activity.',
+    '  --debug                Print everything, including raw agent traces and diffs.',
+    '  --json, -j             Serialize the pipeline list or the final result as JSON.',
+    '  --help, -h             Show this help.',
+    '',
+    'Notes:',
+    '  The pipeline is selected with --pipeline/-p and defaults to',
+    '  grill-spec-tickets-implement-review when omitted. All positional arguments form the',
+    '  prompt. --yes never approves a Promotion. The pipeline policy decides whether the',
+    '  Pipeline Change Set is rejected, presented, applied, or auto-rejected.',
+    '  --keep-sandboxes preserves every Docker Sandbox created by the run.',
+    '',
+    'Examples:',
+    '  slopify list -j',
+    '  slopify run "Add an export command" -y',
+    '  slopify run -p implement-ticket "Fix the bug"',
+    '  slopify resume run-42 -k -v',
   ].join('\n');
 }

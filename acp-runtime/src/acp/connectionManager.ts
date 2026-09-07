@@ -30,6 +30,7 @@ export interface ConnectionInfo {
 
 export interface ConnectionManagerOptions {
   logger?: Logger;
+  readOnlyRoots?: readonly string[];
   getPermissionContext: () => RuntimePermissionContext | undefined;
   autoApprovePermissions?: boolean;
   timeouts?: PartialAcpOperationTimeouts;
@@ -62,7 +63,7 @@ export class ConnectionManager {
     const connection = new ClientSideConnection(
       (_agent: Agent) => {
         client = new AcpClient(
-          new FileSystemHandler(workspaceCwd),
+          new FileSystemHandler(workspaceCwd, this.options.readOnlyRoots),
           new TerminalHandler(workspaceCwd),
           new PermissionHandler(this.options.getPermissionContext, {
             autoApproveAll: this.options.autoApprovePermissions,

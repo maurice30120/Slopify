@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { PassThrough } from 'node:stream';
+import { NodeCliTerminal } from '../src/terminal.js';
 
 import type { PipelineRuntimeResult } from '@acp-client/pipeline';
 
@@ -17,6 +19,7 @@ class FakeTerminal implements CliTerminal {
 
   write(message: string): void { this.output.push(message); }
   writeError(message: string): void { this.errors.push(message); }
+  writeErrorRaw(message: string): void { this.errors.push(message); }
   async ask(question: string): Promise<string> {
     this.questions.push(question);
     return this.answers.shift() ?? '';
@@ -24,6 +27,8 @@ class FakeTerminal implements CliTerminal {
   async confirm(): Promise<boolean> { return this.confirmations.shift() ?? false; }
   async select(): Promise<string | undefined> { return undefined; }
   close(): void {}
+  readonly supportsAnsi = false;
+  readonly columns = 80;
 }
 
 function command(overrides: Partial<CliRunCommand> = {}): CliRunCommand {
@@ -33,7 +38,7 @@ function command(overrides: Partial<CliRunCommand> = {}): CliRunCommand {
     prompt: 'build it',
     cwd: '/repo',
     json: false,
-    verbose: false,
+    logLevel: 'default',
     yes: false,
     ...overrides,
   };
@@ -51,6 +56,36 @@ function snapshot(status: 'paused' | 'completed' | 'cancelled' | 'failed') {
     updatedAt: '2026-07-20T00:00:00.000Z',
   };
 }
+
+test('renders question and final Markdown on stdout TTY, preserving redirected output', async () => {
+  for (const isTTY of [true, false]) {
+    const output = Object.assign(new PassThrough(), { isTTY, columns: 80 });
+    let text = '';
+    output.on('data', chunk => { text += String(chunk); });
+    const terminal = new NodeCliTerminal(new PassThrough(), output, new PassThrough());
+    terminal.ask = async () => 'yes';
+    const host = {
+      start: async (): Promise<PipelineRuntimeResult> => ({
+        status: 'paused', runId: 'run-1', snapshot: snapshot('paused'),
+        pause: { id: 'q1', nodeId: 'question', type: 'question', content: '**Which API?**', format: 'markdown' },
+      }),
+      resume: async (): Promise<PipelineRuntimeResult> => ({
+        status: 'completed', runId: 'run-1', snapshot: snapshot('completed'),
+        artifact: { name: 'result', type: 'text', format: 'markdown', value: '**Finished**', producerNodeId: 'finish' },
+      }),
+    };
+    try {
+      await runPipelineInteractive(host, terminal, command());
+      assert.ok(text.includes('Which API?'));
+      assert.ok(text.includes('Finished'));
+      assert.equal(text.includes('**Which API?**'), !isTTY);
+      assert.equal(text.includes('**Finished**'), !isTTY);
+      assert.equal(text.includes('\x1b['), isTTY);
+    } finally {
+      terminal.close();
+    }
+  }
+});
 
 test('answers a v3 question then approves the next pause', async () => {
   const terminal = new FakeTerminal();
@@ -114,7 +149,7 @@ test('recovers a persisted running pipeline instead of starting a new one', asyn
     resume: async (): Promise<PipelineRuntimeResult> => { throw new Error('must not resume'); },
   };
   const resumeCommand: CliResumeCommand = {
-    kind: 'resume', runId: 'run-42', cwd: '/repo', json: false, verbose: false, yes: false,
+    kind: 'resume', runId: 'run-42', cwd: '/repo', json: false, logLevel: 'default', yes: false,
   };
 
   const result = await runPipelineInteractive(host, terminal, resumeCommand);
@@ -272,7 +307,9 @@ test('reports failed and cancelled final results on stderr', async () => {
   const failed = await runPipelineInteractive(failedHost, failedTerminal, command());
 
   assert.equal(failed.status, 'failed');
-  assert.deepEqual(failedTerminal.errors, ['Pipeline failed [agent_failed]: Agent timed out']);
+  assert.equal(failedTerminal.errors.length, 2);
+  assert.match(failedTerminal.errors[0], /^Pipeline failed in /);
+  assert.equal(failedTerminal.errors[1], 'Pipeline failed [agent_failed]: Agent timed out');
 
   const cancelledTerminal = new FakeTerminal();
   const cancelledHost = {
@@ -329,7 +366,9 @@ test('reports failed final results with node and attempt context when available'
   const failed = await runPipelineInteractive(host, terminal, command());
 
   assert.equal(failed.status, 'failed');
-  assert.deepEqual(terminal.errors, ['Pipeline failed [agent_failed] at node "implementer" attempt 2: Internal error']);
+  assert.equal(terminal.errors.length, 2);
+  assert.match(terminal.errors[0], /^Pipeline failed in /);
+  assert.equal(terminal.errors[1], 'Pipeline failed [agent_failed] at node "implementer" attempt 2: Internal error');
 });
 
 test('keeps asking until a question receives a non-empty answer', async () => {
@@ -363,7 +402,9 @@ test('keeps asking until a question receives a non-empty answer', async () => {
     'Answer [/done to finish]:',
     'Answer [/done to finish]:',
   ]);
-  assert.deepEqual(terminal.errors, ['An answer is required to resume this pipeline question.']);
+  assert.equal(terminal.errors.length, 2);
+  assert.equal(terminal.errors[0], 'An answer is required to resume this pipeline question.');
+  assert.match(terminal.errors[1], /^Pipeline completed in /);
   assert.deepEqual(decisions, [{ pauseId: 'q1', kind: 'answer', value: 'Use retries' }]);
 });
 

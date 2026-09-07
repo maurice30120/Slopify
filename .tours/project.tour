@@ -1,0 +1,98 @@
+{
+  "$schema": "https://aka.ms/codetour-schema",
+  "title": "Tour complet de Slopify CLI et du pipeline par défaut",
+  "description": "Ce tour suit une commande `slopify run` depuis le parsing CLI jusqu'à l'exécution ACP v3, puis détaille le pipeline par défaut `grill-spec-tickets-implement-review` et son delivery séquentiel.\n\nLe runtime sépare l'orchestration du graphe, la configuration du workspace, les agents ACP natifs et les agents Docker Sandbox. Les runs sont persistés afin de permettre les pauses, les reprises et la récupération après interruption.\n\n**Diagram — parcours global**\n```mermaid\nflowchart TD\n    CLI[slopify run prompt] --> ARGS[parseCliArgs]\n    ARGS --> HOST[CliPipelineHost]\n    HOST --> BACKEND[createRuntimeCliBackend]\n    BACKEND --> CATALOG[Catalogue agents pipelines skills]\n    HOST --> RUNTIME[PipelineRuntime]\n    RUNTIME --> DEFAULT[Pipeline par défaut]\n    DEFAULT --> PLAN[Plan + approbation]\n    PLAN --> DOCS[Spec + tickets]\n    DOCS --> DELIVERY[Delivery séquentiel]\n    DELIVERY --> IMPLEMENT[implement-ticket par ticket]\n    IMPLEMENT --> REVIEW[review-delivery]\n```",
+  "steps": [
+    {
+      "title": "Architecture du dépôt",
+      "description": "Le dépôt est un monorepo composé de quatre bibliothèques et de la CLI : `slopify` expose les commandes, `acp-workspace` charge la configuration et applique les politiques workspace, `acp-pipeline` compile et orchestre les DAG ACP v3, `acp-runtime` parle le protocole ACP, et `acp-sandbox` fournit l'isolation Docker Sandbox.\n\nLe parcours à suivre dans ce tour est principalement `slopify` -> `acp-workspace` -> `acp-pipeline`.",
+      "directory": "."
+    },
+    {
+      "title": "Entrée de la CLI",
+      "description": "`main()` est le point d'entrée de l'exécutable. Il crée le terminal, parse la commande, construit `CliPipelineHost`, traite `list`, puis délègue `run` et `resume` à `runPipelineInteractive`.\n\nLes erreurs sont converties en message `Error: ...` et le terminal est toujours fermé dans `finally`.",
+      "file": "slopify/src/cli.ts",
+      "pattern": "export async function main"
+    },
+    {
+      "title": "Parsing des arguments",
+      "description": "Le parseur reconnaît `list`, `run` et `resume`. Pour `run`, les arguments positionnels sont concaténés dans le prompt et le pipeline vaut `grill-spec-tickets-implement-review` lorsqu'aucun `--pipeline` n'est fourni.\n\n`--yes` approuve uniquement les pauses `approval`. Il ne valide jamais une promotion de changements.",
+      "file": "slopify/src/args.ts",
+      "pattern": "export function parseCliArgs"
+    },
+    {
+      "title": "Adaptateur CLI du runtime",
+      "description": "`CliPipelineHost` relie la CLI à `PipelineRuntime`. Il sélectionne le programme compilé, crée le `runId`, lance le preflight, installe le store persistant et traduit les événements runtime en sorties terminal.\n\nLes runs en pause restent attachés à l'instance pour permettre `resume`; les résultats terminaux sont nettoyés.",
+      "file": "slopify/src/host.ts",
+      "pattern": "export class CliPipelineHost"
+    },
+    {
+      "title": "Backend workspace",
+      "description": "Le backend crée le runtime workspace avec les ressources embarquées de Slopify. Il expose les programmes compilés, la restauration d'un programme gelé, le preflight, le runner d'agents et la conservation optionnelle des Sandboxes.\n\nLa promotion d'un Pipeline Change Set est présentée comme un choix explicite avec aperçu des fichiers et du diff.",
+      "file": "slopify/src/runtimeBackend.ts",
+      "pattern": "export const createRuntimeCliBackend"
+    },
+    {
+      "title": "Catalogue et configuration",
+      "description": "`createWorkspaceRuntime` fusionne les ressources embarquées et celles du workspace, charge les agents, compile les pipelines v3 et choisit le runner.\n\nUn agent `OpenCode` utilise ACP natif. Un agent configuré avec `transport: sandbox` passe par Docker Sandbox. Les fichiers `.acp/acp-agents.json`, `.acp/pipelines/` et `.agents/skills/` permettent au projet de compléter ou remplacer les ressources embarquées.",
+      "file": "acp-workspace/src/runtime/workspaceRuntime.ts",
+      "pattern": "export function createWorkspaceRuntime"
+    },
+    {
+      "title": "Pipeline par défaut",
+      "description": "C'est le pipeline sélectionné par défaut. Son graphe est :\n\n1. `plan` : entretien de clarification avec `OpenCode`.\n2. `plan_approval` : approbation du plan.\n3. `spec` : écriture de `.scratch/<feature>/spec.md`.\n4. `tasks` : écriture des tickets sous `.scratch/<feature>/issues/`.\n5. `delivery_approval` : validation de la spécification et des tickets.\n\nLes artefacts et les champs `needs` transportent les décisions et les documents d'un nœud vers le suivant.",
+      "file": "slopify/dist/resources/.acp/pipelines/grill-spec-tickets-implement-review.yaml"
+    },
+    {
+      "title": "Entretien de planification",
+      "description": "L'agent de planification est décisionnel : il clarifie le besoin et produit un bloc `<proposed_plan>`. Il ne doit ni coder ni créer de fichier produit.\n\nLa CLI affiche les questions ACP, attend les réponses, puis envoie `[/done]` pour terminer l'entretien. Le résultat devient l'artefact consommé par `plan_approval` puis `spec`.",
+      "file": "slopify/dist/resources/.acp/agents/interactive-planner.md"
+    },
+    {
+      "title": "Delivery séquentiel",
+      "description": "Après la fin du pipeline documentaire, `WorkspaceRunPolicy.complete()` reconnaît l'artefact `acp.sequential-delivery/v1`. Il valide les références `.scratch`, récupère le Ticket Graph, associe les fichiers Markdown aux IDs, trie les tickets selon `needs`, puis lance un pipeline `implement-ticket` pour chaque ticket.\n\nLes tickets sont exécutés séquentiellement : un ticket bloqué par `T01` ne démarre qu'après la réussite de `T01`. Une fois tous les tickets terminés, `review-delivery` est lancé.",
+      "file": "acp-workspace/src/run/workspaceRunPolicy.ts",
+      "pattern": "export function createWorkspaceRunPolicy"
+    },
+    {
+      "title": "Implémentation isolée d'un ticket",
+      "description": "Chaque ticket est exécuté dans un pipeline enfant avec l'agent `OpenCode Sandbox` et la skill `slopify:implement`.\n\nLe prompt contient la demande utilisateur, la spécification, l'ID du ticket, ses dépendances et le chemin Markdown du ticket. L'agent peut modifier et tester le workspace isolé, mais la livraison passe par les checkpoints et la politique de promotion du runtime.",
+      "file": "slopify/dist/resources/.acp/pipelines/implement-ticket.yaml"
+    },
+    {
+      "title": "Review finale",
+      "description": "La review finale utilise `OpenCode` avec `slopify:code-review`. Elle reçoit les chemins de la spécification et du répertoire de tickets, puis inspecte l'état livré.\n\nSa politique est en lecture seule côté fichiers et `promotion: discard`, car cette étape produit un rapport de vérification, pas des changements.",
+      "file": "slopify/dist/resources/.acp/pipelines/review-delivery.yaml"
+    },
+    {
+      "title": "Orchestration du DAG",
+      "description": "`PipelineRuntime` calcule les nœuds prêts lorsque toutes leurs dépendances sont terminées. Il peut exécuter des nœuds indépendants, s'arrête lorsqu'une pause est prête, persiste les transitions et reprend après une décision utilisateur.\n\nLe runtime ne connaît pas Docker ni les détails ACP : il orchestre uniquement les nœuds, les artefacts, les pauses, les erreurs et les snapshots.",
+      "file": "acp-pipeline/src/PipelineRuntime.ts",
+      "pattern": "private async advance"
+    },
+    {
+      "title": "Politiques d'exécution",
+      "description": "Les politiques normalisent quatre dimensions : filesystem, terminal, network et promotion.\n\nUne politique `workspace-write` est convertie en effets workspace pour l'adaptateur. Les agents Sandbox produisent des checkpoints isolés ; l'intégration et la promotion globale sont traitées séparément de l'exécution du nœud.",
+      "file": "acp-pipeline/src/PipelinePolicy.ts",
+      "pattern": "export function mapPolicyToLegacySideEffects"
+    },
+    {
+      "title": "Persistance et reprise",
+      "description": "Les snapshots et événements d'un run sont stockés sous `.acp/runs-v3/`. Le snapshot contient les états de nœuds, les artefacts, les pauses, les diagnostics et les états Sandbox.\n\n`slopify resume <run-id>` recharge le programme gelé et reprend soit la pause courante, soit les nœuds interrompus.",
+      "file": "acp-pipeline/src/PipelineRunStore.ts",
+      "pattern": "export function workspacePipelineRunStore"
+    },
+    {
+      "title": "Ressources figées",
+      "description": "Au démarrage, les skills et le programme compilé sont copiés dans une ressource figée propre au run. Les hashes empêchent une reprise avec des ressources modifiées.\n\nCela garantit qu'un run reprend avec la même définition de pipeline et les mêmes instructions, même si Slopify ou les skills changent ensuite.",
+      "file": "acp-workspace/src/catalog/runResources.ts",
+      "pattern": "export class RunResources"
+    },
+    {
+      "title": "Test du delivery",
+      "description": "Ce test fixe le comportement clé du pipeline par défaut : le pipeline documentaire est lancé en premier, puis un `implement-ticket` est démarré pour chaque ticket dans l'ordre des dépendances, et enfin `review-delivery` est lancé.\n\nIl vérifie aussi que les prompts enfants contiennent l'ID du ticket, ses dépendances et le chemin Markdown associé.",
+      "file": "slopify/test/sequentialDelivery.test.ts",
+      "pattern": "dispatches one implement-ticket run per ticket before review"
+    }
+  ]
+}

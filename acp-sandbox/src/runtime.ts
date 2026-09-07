@@ -10,6 +10,8 @@ import {
   type AgentCheckpointResult,
 } from './gitPromotion.js';
 
+export type SandboxAgentKind = 'codex' | 'opencode';
+
 export const MINIMUM_SBX_VERSION = '0.35.0';
 export const DEFAULT_SANDBOX_CLEANUP_TIMEOUT_MS = 30_000;
 export const DOCKER_SANDBOX_NETWORK_POLICY_CHOICES = ['Open', 'Balanced', 'Locked Down'] as const;
@@ -48,7 +50,12 @@ export interface SandboxRunInput {
   nodeId: string;
   attempt: number;
   prompt: string;
+  resources?: {
+    root: string;
+    files: Array<{ relativePath: string; contentBase64: string; executable: boolean }>;
+  };
   model: string;
+  agent?: SandboxAgentKind;
   effort?: 'low' | 'medium' | 'high' | 'xhigh';
   signal?: AbortSignal;
   timeoutMs?: number;
@@ -178,7 +185,8 @@ export class SandboxRunTimeoutError extends Error {
 }
 
 /**
- * Orchestre l'exécution d'un nœud Codex dans un clone Docker Sandbox privé.
+ * Orchestre l'exécution d'un nœud d'agent (Codex ou OpenCode) dans un clone
+ * Docker Sandbox privé.
  *
  * Le runtime crée un Agent Checkpoint attribuable et le récupère côté hôte,
  * mais ne le promeut jamais. L'intégration et la Promotion appartiennent au
@@ -208,7 +216,30 @@ export class DockerSandboxRuntime {
       : cleanupTimeoutMsOrOptions;
   }
 
+  private async installResources(input: SandboxRunInput, sandboxName: string, signal?: AbortSignal): Promise<void> {
+    if (!input.resources) return;
+    const root = input.resources.root;
+    if (!/^\/tmp\/slopify-resources\/[a-f0-9]{64}$/.test(root)) throw new Error('Invalid sandbox resource root.');
+    const exec = (args: string[]) => this.requireSuccess({
+      command: 'sbx', args: ['exec', sandboxName, ...args], cwd: input.workspaceCwd,
+      stdin: 'ignore', signal,
+    }, 'install frozen run resources');
+    for (const file of input.resources.files) {
+      const target = path.posix.resolve(root, file.relativePath);
+      if (!target.startsWith(`${root}/`)) throw new Error(`Invalid resource path: ${file.relativePath}`);
+      await exec(['sh', '-c', 'mkdir -p -- "$1" && if [ -e "$2" ]; then chmod u+w -- "$2"; fi && : > "$2"',
+        'slopify-resource', path.posix.dirname(target), target]);
+      // Bound each argument below OS limits, including for binary templates.
+      for (let offset = 0; offset < file.contentBase64.length; offset += 32768) {
+        await exec(['sh', '-c', 'printf %s "$1" | base64 -d >> "$2"',
+          'slopify-resource', file.contentBase64.slice(offset, offset + 32768), target]);
+      }
+      await exec(['chmod', file.executable ? '555' : '444', target]);
+    }
+  }
+
   async runCodex(input: SandboxRunInput): Promise<SandboxRunResult> {
+    const agent = input.agent ?? 'codex';
     const sandboxName = input.resumeState?.sandboxName ?? stableSandboxName(input.runId, input.nodeId, input.attempt);
     const execution = createExecutionSignal(input.signal, input.timeoutMs);
     const startedAt = new Date().toISOString();
@@ -260,7 +291,7 @@ export class DockerSandboxRuntime {
         if (!baseCommit) throw new Error('Unable to read the host base commit: git returned an empty commit id.');
         await this.requireSuccess({
           command: 'sbx',
-          args: ['create', '--clone', '--name', sandboxName, 'codex', '.'],
+          args: ['create', '--clone', '--name', sandboxName, agent, '.'],
           cwd: input.workspaceCwd,
           stdin: 'ignore',
           signal: execution.signal,
@@ -294,21 +325,29 @@ export class DockerSandboxRuntime {
         };
       }
 
-      const codexArgs = ['exec', sandboxName, 'codex', 'exec', '--dangerously-bypass-approvals-and-sandbox', '--ephemeral', '--json'];
-      if (input.model) codexArgs.push('--model', input.model);
-      if (input.effort) codexArgs.push('--config', `model_reasoning_effort=${JSON.stringify(input.effort)}`);
-      codexArgs.push(input.prompt);
-      const codex = await this.execute({
+      await this.installResources(input, sandboxName, execution.signal);
+
+      const agentArgs = agent === 'opencode'
+        ? ['run', '--auto', '--format', 'json']
+        : ['exec', '--dangerously-bypass-approvals-and-sandbox', '--ephemeral', '--json'];
+      const execArgs = ['exec', sandboxName, agent, ...agentArgs];
+      if (input.model) execArgs.push('--model', input.model);
+      if (input.effort) {
+        execArgs.push(agent === 'opencode' ? '--variant' : '--config');
+        execArgs.push(agent === 'opencode' ? input.effort : `model_reasoning_effort=${JSON.stringify(input.effort)}`);
+      }
+      execArgs.push(input.prompt);
+      const agentRun = await this.execute({
         command: 'sbx',
-        args: codexArgs,
+        args: execArgs,
         cwd: input.workspaceCwd,
         stdin: 'ignore',
         observeOutput: true,
         signal: execution.signal,
       });
-      stdout = codex.stdout;
-      stderr = codex.stderr;
-      this.assertSuccess(codex, 'run Codex non-interactively');
+      stdout = agentRun.stdout;
+      stderr = agentRun.stderr;
+      this.assertSuccess(agentRun, `run ${agent === 'opencode' ? 'OpenCode' : 'Codex'} non-interactively`);
 
       const checkpoint = await new GitPromotion(this.execute).createAgentCheckpoint({
         workspaceCwd: input.workspaceCwd,

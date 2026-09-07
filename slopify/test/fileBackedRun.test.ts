@@ -17,10 +17,13 @@ class FakeTerminal implements CliTerminal {
 
   write(message: string): void { this.output.push(message); }
   writeError(message: string): void { this.errors.push(message); }
+  writeErrorRaw(message: string): void { this.errors.push(message); }
   async ask(): Promise<string> { return ''; }
   async confirm(): Promise<boolean> { return this.confirmations.shift() ?? false; }
   async select(): Promise<string | undefined> { return undefined; }
   close(): void {}
+  readonly supportsAnsi = false;
+  readonly columns = 80;
 }
 
 test('shows referenced spec and tickets but approves the compact handoff', async () => {
@@ -118,7 +121,7 @@ test('fails before approval when a required workspace handoff has no files', asy
   assert.equal(result.status, 'failed');
   assert.equal(result.error?.code, 'invalid_workspace_handoff');
   assert.equal(resumed, false);
-  assert.match(terminal.errors[0] ?? '', /requires at least 2 existing \.scratch Markdown reference/);
+  assert.match(terminal.errors.at(-1) ?? '', /requires at least 2 existing \.scratch Markdown reference/);
 });
 
 function command(cwd: string): CliRunCommand {
@@ -128,7 +131,7 @@ function command(cwd: string): CliRunCommand {
     prompt: 'simplify context',
     cwd,
     json: false,
-    verbose: false,
+    logLevel: 'default',
     yes: false,
   };
 }

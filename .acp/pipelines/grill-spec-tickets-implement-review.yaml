@@ -4,7 +4,7 @@ title: Grill with Docs → Spec Docs → Ticket Docs → Sequential Implement �
 
 nodes:
   - id: plan
-    agent: Codex CLI
+    agent: OpenCode
     skills: [grill-with-docs, grilling, domain-modeling]
     interaction:
       protocol: proposed-plan
@@ -42,7 +42,7 @@ nodes:
       format: markdown
 
   - id: spec
-    agent: Codex CLI
+    agent: OpenCode
     skills: [to-spec, domain-modeling]
     instructionsFile: ../agents/matt-spec-writer.md
     prompt: |
@@ -68,7 +68,7 @@ nodes:
       format: markdown
 
   - id: tasks
-    agent: Codex CLI
+    agent: OpenCode
     skills: [to-tickets]
     instructionsFile: ../agents/matt-ticket-planner.md
     prompt: |

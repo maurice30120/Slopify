@@ -161,8 +161,8 @@ function parseAgent(
   }
 
   if (value.transport === 'sandbox') {
-    if (value.agent !== 'codex') {
-      errors.push(`agents.${name}.agent must be "codex" for transport "sandbox"; other Docker Sandbox agents are not supported yet.`);
+    if (value.agent !== 'codex' && value.agent !== 'opencode') {
+      errors.push(`agents.${name}.agent must be "codex" or "opencode" for transport "sandbox"; other Docker Sandbox agents are not supported yet.`);
       return null;
     }
     const model = readNonEmptyString(value.model, `agents.${name}.model`, errors);
@@ -172,7 +172,7 @@ function parseAgent(
     if (!model || effort === null) return null;
     return {
       transport: 'sandbox',
-      agent: 'codex',
+      agent: value.agent,
       model,
       ...(effort === undefined ? {} : { effort }),
       ...(typeof value.displayName === 'string' ? { displayName: value.displayName } : {}),

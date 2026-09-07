@@ -1,5 +1,6 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { randomUUID } from 'node:crypto';
 
 import {
   mapPolicyToLegacySideEffects,
@@ -47,8 +48,8 @@ import {
   type SubprocessExecutor,
 } from '@acp-client/sandbox';
 
-import { getPipelinePrograms } from '../catalog/pipelineCatalog.js';
-import { loadSkillCatalog, renderSkillsCatalog } from '../catalog/skillCatalog.js';
+import { loadPipelineProgramsFromRoot } from '../catalog/pipelineCatalog.js';
+import { RunResources, type PreparedRunResources } from '../catalog/runResources.js';
 import { loadAgentCatalog } from '../config/config.js';
 import type {
   AgentCatalog,
@@ -61,6 +62,7 @@ export interface WorkspaceRuntime {
   readonly programs: readonly CompiledPipelineProgram[];
   readonly runAgent: PipelineAgentRunner;
   preflightPipeline(program: CompiledPipelineProgram, runId: string): Promise<void>;
+  restoreProgram(runId: string): CompiledPipelineProgram;
   clearRunLogs(): void;
 }
 
@@ -70,6 +72,8 @@ export interface WorkspaceConnectorOverrides {
 
 export interface CreateWorkspaceRuntimeOptions extends WorkspaceRuntimeOptions {
   connectorOverrides?: WorkspaceConnectorOverrides;
+  embeddedRoot?: string;
+  resourcesStateRoot?: string;
   /** Point d'injection interne et de test pour une configuration déjà chargée. */
   resolvedCatalog?: AgentCatalog;
   /** Point d'injection interne et de test pour exercer Docker Sandbox sans microVM. */
@@ -88,8 +92,21 @@ export interface CreateWorkspaceRuntimeOptions extends WorkspaceRuntimeOptions {
  * Voir `docs/adr/0003-keep-acp-as-the-sandbox-runtime-boundary.md`.
  */
 export function createWorkspaceRuntime(options: CreateWorkspaceRuntimeOptions): WorkspaceRuntime {
-  const catalog = options.resolvedCatalog ?? loadValidCatalog(options.workspaceCwd);
-  const programs = getPipelinePrograms(options.workspaceCwd, options.host.logger);
+  const catalog = options.resolvedCatalog ?? loadValidCatalog(options.workspaceCwd, options.embeddedRoot);
+  const loadPrograms = (configRoot: string) => loadPipelineProgramsFromRoot({
+    workspaceCwd: options.workspaceCwd, configRoot, agentConfigs: catalog.agents,
+    instructionsMaxBytes: catalog.config.pipeline.instructionsMaxBytes, logger: options.host.logger,
+  }).programs;
+  const programs = catalog.config.pipeline.enabled
+    ? [...new Map([
+        ...(options.embeddedRoot ? loadPrograms(options.embeddedRoot) : []),
+        ...loadPrograms(options.workspaceCwd),
+      ].map(program => [program.id, program])).values()]
+    : [];
+  const resources = new RunResources({
+    workspaceCwd: options.workspaceCwd, embeddedRoot: options.embeddedRoot,
+    stateRoot: options.resourcesStateRoot,
+  });
   const runner = new AcpRunner();
   const sandboxRuntime = new DockerSandboxRuntime(options.sandboxExecutor, {
     selectNetworkPolicy: choices => selectSandboxNetworkPolicy(options.host, choices),
@@ -103,7 +120,12 @@ export function createWorkspaceRuntime(options: CreateWorkspaceRuntimeOptions): 
   const runAgent = (async input => {
     const config = resolveAgent(catalog, input.agentName);
     const sandbox = config.transport === 'sandbox';
-    if (input.skills && input.skills.length > 0 && config.skills === false) {
+    const skillNames = input.prompt?.skills ?? input.skills ?? [];
+    const prepared = config.skills === false ? undefined
+      : input.resumeSandboxRun && input.runId ? resources.restore(input.runId)
+      : resources.prepare(input.runId ?? randomUUID());
+    const prompt = composePrompt(input, prepared, sandbox);
+    if (skillNames.length > 0 && config.skills === false) {
       throw new Error(`Pipeline node declares skills but agent "${input.agentName}" has skills disabled.`);
     }
     if (sandbox) {
@@ -111,7 +133,7 @@ export function createWorkspaceRuntime(options: CreateWorkspaceRuntimeOptions): 
         agentName: input.agentName,
         sessionCwd: input.workspaceCwd,
         processConfig: { command: process.execPath },
-        prompt: composePrompt(input, options.host.logger),
+        prompt,
         connector: createInMemoryAcpConnector(connection => new DockerSandboxAcpBridgeAgent(
           connection,
           sandboxRuntime,
@@ -119,6 +141,8 @@ export function createWorkspaceRuntime(options: CreateWorkspaceRuntimeOptions): 
           runId: input.runId ?? 'run',
           nodeId: input.nodeId ?? input.agentName,
           attempt: input.attempt ?? 1,
+          resources: prepared ? { root: prepared.sandboxRoot, files: prepared.files } : undefined,
+          agent: config.agent,
           model: config.model,
           effort: config.effort,
           timeoutMs: resolveTimeouts(catalog.config.pipeline.timeouts).promptMs,
@@ -175,8 +199,9 @@ export function createWorkspaceRuntime(options: CreateWorkspaceRuntimeOptions): 
       agentName: input.agentName,
       sessionCwd: input.workspaceCwd,
       processConfig: config,
-      prompt: composePrompt(input, options.host.logger),
+      prompt,
       connector: options.connectorOverrides?.native,
+      readOnlyRoots: prepared ? [prepared.root] : [],
       getPermissionContext: options.host.permissionContext,
       autoApprovePermissions: input.permissions === 'allowAll',
       timeouts: catalog.config.pipeline.timeouts,
@@ -201,7 +226,14 @@ export function createWorkspaceRuntime(options: CreateWorkspaceRuntimeOptions): 
   return {
     programs,
     runAgent,
+    restoreProgram: runId => resources.restoreProgram(runId),
     preflightPipeline: async (program, runId) => {
+      for (const node of program.nodes) {
+        if (node.agent && node.skills.length && resolveAgent(catalog, node.agent).skills === false) {
+          throw new Error(`Pipeline node declares skills but agent "${node.agent}" has skills disabled.`);
+        }
+      }
+      resources.prepare(runId, program);
       const plannedSandboxNames = program.nodes.flatMap(node => {
         if (
           node.kind !== 'agent'
@@ -550,8 +582,17 @@ async function decidePipelinePromotion(
   return 'cancel';
 }
 
-function loadValidCatalog(workspaceCwd: string): AgentCatalog {
-  const catalog = loadAgentCatalog(workspaceCwd);
+function loadValidCatalog(workspaceCwd: string, embeddedRoot?: string): AgentCatalog {
+  const bundled = embeddedRoot ? loadAgentCatalog(workspaceCwd, embeddedRoot) : undefined;
+  const hasProjectConfig = fs.existsSync(path.join(workspaceCwd, '.acp/acp-agents.json'))
+    || fs.existsSync(path.join(workspaceCwd, '.acp/.sandcastle/config.json'));
+  const project = hasProjectConfig || !bundled ? loadAgentCatalog(workspaceCwd) : undefined;
+  const selected = project ?? bundled!;
+  const catalog: AgentCatalog = {
+    ...selected,
+    agents: { ...bundled?.agents, ...project?.agents },
+    errors: [...(bundled?.errors ?? []), ...(project?.errors ?? [])],
+  };
   if (catalog.errors.length > 0) {
     throw new Error(`Invalid workspace ACP configuration:\n- ${catalog.errors.join('\n- ')}`);
   }
@@ -581,18 +622,10 @@ async function selectSandboxNetworkPolicy(
   return choices.find(choice => choice === selected);
 }
 
-function composePrompt(input: PipelineAgentRunInput, logger: WorkspaceRuntimeHost['logger']) {
-  const renderSkills = (skillNames: readonly string[]): string => {
-    if (skillNames.length === 0) return '';
-    const catalog = loadSkillCatalog({
-      workspaceCwd: input.workspaceCwd,
-      logger: (message, error) => logger.error(message, error),
-    });
-    return renderSkillsCatalog(catalog, [...skillNames], input.workspaceCwd);
-  };
+function composePrompt(input: PipelineAgentRunInput, resources: PreparedRunResources | undefined, sandbox: boolean) {
+  const renderSkills = (names: readonly string[]) => resources?.renderSkills(names, sandbox) ?? '';
   if (input.prompt) return renderAcpPrompt(input.prompt, { renderSkills });
-  const skills = input.skills ?? [];
-  const skillsBlock = renderSkills(skills);
+  const skillsBlock = renderSkills(input.skills ?? []);
   return [{
     type: 'text' as const,
     text: skillsBlock ? `${skillsBlock}\n\n${input.promptText}` : input.promptText,

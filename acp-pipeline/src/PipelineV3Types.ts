@@ -216,7 +216,11 @@ export interface PipelinePauseSnapshot {
   nodeId: string;
   type: PipelinePauseType;
   content: string;
+  /** All questions posed in this interview round (batch mode). */
+  questions?: string[];
   recommendation?: string;
+  /** All recommended answers paired with `questions` (batch mode). */
+  recommendations?: string[];
   format: PipelinePauseFormat;
   handoff?: PipelineWorkspaceHandoffDefinition;
   workspaceGuard?: "documentation-only";

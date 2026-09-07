@@ -80,8 +80,8 @@ for (const surface of hostSurfaces) {
 
     const firstPause = await runtime.start(program, { inputs: { userPrompt: "ship parity" } });
     assert.equal(firstPause.status, "paused");
-    assert.equal(firstPause.pause.content, "Which seam?");
-    assert.equal(firstPause.pause.recommendation, "Runtime API.");
+    assert.equal(firstPause.pause.content, "Which seam?\n\n➡️ Runtime API.");
+    assert.match(firstPause.pause.content, /➡️ Runtime API\./);
 
     const secondPause = await runtime.resume(firstPause.runId, {
       pauseId: firstPause.pause.id,
@@ -333,13 +333,13 @@ function proposedQuestion(question: string, recommendedAnswer?: string): string 
   const lines = [
     "<proposed_plan>",
     "<interview_state>question</interview_state>",
-    `<clarification_question>${question}</clarification_question>`,
+    question,
   ];
   if (recommendedAnswer) {
-    lines.push(`<recommended_answer>${recommendedAnswer}</recommended_answer>`);
+    lines.push(`➡️ ${recommendedAnswer}`);
   }
   lines.push("</proposed_plan>");
-  return lines.join("\n");
+  return lines.join("\n\n");
 }
 
 function proposedReady(body: string): string {

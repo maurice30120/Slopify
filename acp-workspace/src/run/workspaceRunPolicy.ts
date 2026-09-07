@@ -351,7 +351,9 @@ function orderTicketsByDependencies(tickets: TicketGraphArtifact['tickets']): Ti
   return ordered;
 }
 
-function readTicketGraph(result: Extract<PipelineRuntimeResult, { status: 'completed' }>): TicketGraphArtifact {
+function readTicketGraph(
+  result: Extract<PipelineRuntimeResult, { status: 'completed' }>,
+): TicketGraphArtifact {
   const artifact = Object.values(result.snapshot.artifacts).reverse()
     .find(candidate => candidate.type === 'acp.ticket-graph/v1');
   if (!artifact) throw new Error('Sequential delivery requires an acp.ticket-graph/v1 artifact in the run snapshot.');
@@ -362,17 +364,127 @@ function readTicketGraph(result: Extract<PipelineRuntimeResult, { status: 'compl
   return validation.value;
 }
 
+/**
+ * Synthétise un artefact `acp.ticket-graph/v1` (JSON) à partir des tickets
+ * Markdown écrits par un nœud agent `acp.workspace-files/v1`. Le planner écrit
+ * un fichier Markdown par ticket sous `.scratch/<feature>/issues/` et renvoie un
+ * handoff Markdown pointant vers ce répertoire ; cet adaptateur reconstruit le
+ * graphe structuré obligatoire attendu par la livraison séquentielle.
+ *
+ * Retourne `null` lorsque l'artefact n'est pas un handoff `workspace-files`
+ * référençant un répertoire `issues/` (aucune synthèse possible).
+ */
+export function synthesizeTicketGraphArtifact(
+  workspaceCwd: string,
+  artifact: PipelineArtifact,
+): PipelineArtifact | null {
+  if (artifact.type !== 'acp.workspace-files/v1' || typeof artifact.value !== 'string') return null;
+  const references = collectScratchReferences(artifact.value).map(normalizeReference);
+  const issueDirs = [...new Set(references.filter(reference => /\/issues$/.test(reference)))];
+  if (issueDirs.length !== 1) return null;
+  const issuesAbsolute = resolveScratchPath(workspaceCwd, issueDirs[0]);
+  if (!fs.statSync(issuesAbsolute).isDirectory()) return null;
+  const derived = deriveTicketGraphFromIssues(issuesAbsolute);
+  const validation = validateMultiAgentArtifact('acp.ticket-graph/v1', derived);
+  if (!validation.ok || validation.value?.contract !== 'acp.ticket-graph/v1') {
+    throw new Error(`Invalid Ticket Graph synthesized from ${issueDirs[0]}: ${validation.errors.join(' ')}`);
+  }
+  return {
+    name: 'ticketGraph',
+    type: 'acp.ticket-graph/v1',
+    format: 'json',
+    value: validation.value,
+    producerNodeId: artifact.producerNodeId,
+  };
+}
+
 function indexTicketMarkdown(issuesAbsolute: string, issuesDirectory: string): Map<string, string> {
   const indexed = new Map<string, string>();
   for (const entry of fs.readdirSync(issuesAbsolute, { withFileTypes: true })) {
     if (!entry.isFile() || !entry.name.endsWith('.md')) continue;
-    const matches = [...fs.readFileSync(path.join(issuesAbsolute, entry.name), 'utf8').matchAll(/^\*\*Ticket ID:\*\*\s*(\S+)\s*$/gm)];
-    if (matches.length !== 1) continue;
-    const id = matches[0][1];
+    const id = readTicketId(fs.readFileSync(path.join(issuesAbsolute, entry.name), 'utf8'), entry.name);
+    if (!id) continue;
     if (indexed.has(id)) throw new Error(`Markdown adapter duplicates Ticket Graph node "${id}".`);
     indexed.set(id, `${issuesDirectory}/${entry.name}`);
   }
   return indexed;
+}
+
+const TICKET_ID_PATTERN = /^\*\*Ticket ID:\*\*\s*(\S+)\s*$/m;
+const BLOCKED_BY_PATTERN = /^\*\*Blocked by:\*\*\s*(.+?)\s*$/m;
+const WHAT_TO_BUILD_PATTERN = /^\*\*What to build:\*\*\s*(.+?)\s*$/m;
+const HEADING_PATTERN = /^\s*#\s+(.+?)\s*$/m;
+const ID_TOKEN_PATTERN = /^(T?\d+)/;
+
+function deriveTicketGraphFromIssues(issuesAbsolute: string): TicketGraphArtifact {
+  const entries = fs.readdirSync(issuesAbsolute, { withFileTypes: true })
+    .filter(entry => entry.isFile() && entry.name.endsWith('.md'))
+    .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+  if (entries.length === 0) {
+    throw new Error(`Sequential delivery issues directory contains no Markdown tickets: ${issuesAbsolute}`);
+  }
+  const files = entries.map(entry => ({
+    name: entry.name,
+    text: fs.readFileSync(path.join(issuesAbsolute, entry.name), 'utf8'),
+  }));
+  const byId = new Map<string, { name: string; text: string; title: string }>();
+  for (const file of files) {
+    const id = readTicketId(file.text, file.name);
+    if (!id) throw new Error(`Sequential delivery ticket "${file.name}" has no stable Ticket ID.`);
+    if (byId.has(id)) throw new Error(`Sequential delivery ticket "${file.name}" duplicates Ticket Graph node "${id}".`);
+    byId.set(id, { name: file.name, text: file.text, title: readTicketTitle(file.text, file.name) || id });
+  }
+  const ids = new Set(byId.keys());
+  const tickets: TicketGraphArtifact['tickets'] = [];
+  for (const [id, file] of byId) {
+    tickets.push({
+      id,
+      title: file.title,
+      scope: readTicketScope(file.text, file.title),
+      needs: readTicketNeeds(file.text, ids),
+      validation: readTicketValidation(file.text, file.title),
+    });
+  }
+  return { contract: 'acp.ticket-graph/v1', tickets };
+}
+
+function readTicketId(text: string, name: string): string | undefined {
+  const explicit = TICKET_ID_PATTERN.exec(text)?.[1];
+  if (explicit) return explicit;
+  const heading = HEADING_PATTERN.exec(text)?.[1] ?? '';
+  const headingToken = ID_TOKEN_PATTERN.exec(heading)?.[1];
+  if (headingToken) return headingToken;
+  return ID_TOKEN_PATTERN.exec(name.replace(/\.md$/, ''))?.[1];
+}
+
+function readTicketTitle(text: string, name: string): string {
+  const heading = HEADING_PATTERN.exec(text)?.[1] ?? '';
+  const stripped = heading.replace(ID_TOKEN_PATTERN, '').replace(/^[:—–\-\s]+/, '').trim();
+  if (stripped) return stripped;
+  return name.replace(/\.md$/, '').replace(/^[T\d]*[-:—–\s]*/, '').trim() || name.replace(/\.md$/, '');
+}
+
+function readTicketScope(text: string, title: string): string[] {
+  const match = WHAT_TO_BUILD_PATTERN.exec(text)?.[1];
+  if (match && match.trim()) return [match.trim()];
+  return [title];
+}
+
+function readTicketNeeds(text: string, ids: Set<string>): string[] {
+  const match = BLOCKED_BY_PATTERN.exec(text)?.[1];
+  if (!match || /^\s*none\b/i.test(match)) return [];
+  const needs: string[] = [];
+  for (const part of match.split(/,|;|\band\b/).map(part => part.trim()).filter(Boolean)) {
+    if (/^\s*none\b/i.test(part)) continue;
+    const token = ID_TOKEN_PATTERN.exec(part)?.[1];
+    if (token && ids.has(token)) needs.push(token);
+  }
+  return [...new Set(needs)];
+}
+
+function readTicketValidation(text: string, title: string): string[] {
+  const items = [...text.matchAll(/^\s*-\s*\[[ xX]\]\s+(.+?)\s*$/gm)].map(match => match[1]).filter(Boolean);
+  return items.length > 0 ? items : [`${title} delivered`];
 }
 
 function collectScratchReferences(content: string): string[] {

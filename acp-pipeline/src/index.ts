@@ -8,6 +8,7 @@ export * from './PipelineV3Catalog';
 export {
   PipelineRuntime as CorePipelineRuntime,
   renderRuntimeTemplate,
+  type PipelineNodeArtifactSummary,
   type PipelineRuntimeEvent,
   type PipelineRuntimeOptions,
   type PipelineRuntimeStartOptions,

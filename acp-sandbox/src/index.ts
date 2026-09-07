@@ -1,4 +1,5 @@
 import type { PromotionPolicy } from './gitPromotion.js';
+import type { SandboxAgentKind } from './runtime.js';
 
 export {
   DockerSandboxAcpBridgeAgent,
@@ -70,9 +71,11 @@ export {
   type SubprocessResult,
 } from './runtime.js';
 
+export type { SandboxAgentKind } from './runtime.js';
+
 export interface SandboxAgentConfig {
   transport: 'sandbox';
-  agent: 'codex';
+  agent: SandboxAgentKind;
   model: string;
   effort?: 'low' | 'medium' | 'high' | 'xhigh';
   displayName?: string;

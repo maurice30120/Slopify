@@ -95,6 +95,20 @@ test("FileSystemHandler rejects paths outside the workspace", async () => {
 	);
 });
 
+test("FileSystemHandler permits only reads in explicitly granted resource roots", async () => {
+  const workspace = createTempWorkspace();
+  const resources = createTempWorkspace();
+  const outside = createTempWorkspace();
+  writeFile(resources, 'SKILL.md', 'frozen');
+  writeFile(outside, 'secret.txt', 'private');
+  fs.symlinkSync(outside, path.join(resources, 'escape'));
+  const handler = new FileSystemHandler(workspace, [resources]);
+  assert.equal((await handler.readTextFile({ sessionId: 's', path: path.join(resources, 'SKILL.md') })).content, 'frozen');
+  await assert.rejects(handler.writeTextFile({ sessionId: 's', path: path.join(resources, 'SKILL.md'), content: 'changed' }), /read-only/);
+  await assert.rejects(handler.readTextFile({ sessionId: 's', path: path.join(resources, 'escape/secret.txt') }), /escapes workspace boundary/);
+  await assert.rejects(handler.readTextFile({ sessionId: 's', path: path.join(outside, 'secret.txt') }), /escapes workspace boundary/);
+});
+
 test("PermissionHandler cancels when UI is unavailable", async () => {
 	const handler = new PermissionHandler(() => undefined);
 

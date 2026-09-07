@@ -10,6 +10,17 @@
       "agent": "codex",
       "model": "gpt-5.6-codex",
       "effort": "high"
+    },
+    "OpenCode": {
+      "command": "opencode",
+      "args": ["acp"],
+      "env": {}
+    },
+    "OpenCode Sandbox": {
+      "transport": "sandbox",
+      "agent": "opencode",
+      "model": "opencode-go/glm-5.2",
+      "effort": "high"
     }
   },
   "pipeline": {

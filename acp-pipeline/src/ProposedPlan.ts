@@ -2,9 +2,6 @@ const OPEN_TAG = '<proposed_plan>';
 const CLOSE_TAG = '</proposed_plan>';
 const PROPOSED_PLAN_RE = /<proposed_plan>[\s\S]*?<\/proposed_plan>/g;
 const INTERVIEW_STATE_RE = /<interview_state>\s*(question|ready)\s*<\/interview_state>/i;
-const CLARIFICATION_QUESTION_RE = /<clarification_question>\s*([\s\S]*?)\s*<\/clarification_question>/i;
-const RECOMMENDED_ANSWER_RE = /<recommended_answer>\s*([\s\S]*?)\s*<\/recommended_answer>/i;
-
 export type ProposedPlanInterviewState = 'question' | 'ready' | null;
 
 export function extractSingleProposedPlan(text: string): string {
@@ -29,14 +26,12 @@ export function isProposedPlanAwaitingAnswer(text: string): boolean {
   return getProposedPlanInterviewState(text) === 'question';
 }
 
-export function extractClarificationQuestion(text: string): string | null {
+export function extractQuestionRound(text: string): string | null {
   const plan = extractSingleProposedPlan(text);
-  return plan.match(CLARIFICATION_QUESTION_RE)?.[1]?.trim() || null;
-}
-
-export function extractRecommendedAnswer(text: string): string | null {
-  const plan = extractSingleProposedPlan(text);
-  return plan.match(RECOMMENDED_ANSWER_RE)?.[1]?.trim() || null;
+  if (getProposedPlanInterviewState(plan) !== 'question') return null;
+  const body = plan.slice(OPEN_TAG.length, -CLOSE_TAG.length)
+    .replace(INTERVIEW_STATE_RE, '').trim();
+  return body || null;
 }
 
 export function assertSingleProposedPlan(text: string): void {

@@ -1,0 +1,7 @@
+# Livrer les skills des pipelines et les figer par run
+
+Slopify fournira ses pipelines avec une sélection explicite de skills, leurs ressources et leurs dépendances, afin de les utiliser dans des projets sans catalogue local ; les skills homonymes du projet ne remplaceront pas implicitement celles fournies. Le prompt ACP transmettra leur nom, leur description et un chemin absolu accessible à l’agent, avec une obligation de lecture pour les skills déclarées par l’étape ; une copie figée par run préservera ces ressources en sandbox et lors des reprises après une mise à jour de la CLI, au prix du stockage et de la gestion de cette copie. Les prérequis propres au projet seront vérifiés avant le lancement des agents et leur absence produira un diagnostic de configuration explicite.
+
+Un manifeste explicite sélectionnera les pipelines et leurs dépendances ; le build vérifiera les fichiers déclarés et embarquera intégralement les dossiers des skills sélectionnées, sans déduire leurs dépendances du texte Markdown. Les références `slopify:<nom>` et `project:<nom>` distingueront les origines ; les noms simples des pipelines du projet conserveront leur résolution locale. Le répertoire personnel partagé est hors du périmètre initial.
+
+Périmètre validé pour implémentation. Le répertoire Git conserve les ressources des runs sans les ajouter au dépôt de travail ; les sandboxes reçoivent une copie hors du clone et les reprises vérifient l’intégrité des fichiers.

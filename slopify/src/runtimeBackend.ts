@@ -1,4 +1,5 @@
 import { createWorkspaceRuntime, type RuntimePermissionContext } from '@acp-client/workspace';
+import { fileURLToPath } from 'node:url';
 import type { CliPipelineBackendFactory } from './host.js';
 
 type RuntimeCliPipelineBackendContext = Parameters<CliPipelineBackendFactory>[1] & {
@@ -22,6 +23,7 @@ export const createRuntimeCliBackend: CliPipelineBackendFactory = (workspaceCwd,
     : undefined;
   const runtime = createWorkspaceRuntime({
     workspaceCwd,
+    embeddedRoot: fileURLToPath(new URL('../resources/', import.meta.url)),
     keepSandboxes: runtimeContext.keepSandboxes,
     onSandboxRetained: sandbox => context.logger.error(formatRetainedSandbox(sandbox)),
     host: {
@@ -48,6 +50,7 @@ export const createRuntimeCliBackend: CliPipelineBackendFactory = (workspaceCwd,
 
   return {
     programs: [...runtime.programs],
+    restoreProgram: runId => runtime.restoreProgram(runId),
     preflightPipeline: (program, runId) => runtime.preflightPipeline(program, runId),
     runAgent: runtime.runAgent,
     clearRunLogs: () => runtime.clearRunLogs(),

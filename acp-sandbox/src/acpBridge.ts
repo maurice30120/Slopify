@@ -15,6 +15,7 @@ import { SandboxAcpExtensionHandler } from './extensions.js';
 import {
   DockerSandboxRuntime,
   SandboxResumeDivergenceError,
+  type SandboxAgentKind,
   type SandboxRunInput,
   type SandboxRunResult,
 } from './runtime.js';
@@ -54,7 +55,7 @@ export class DockerSandboxAcpBridgeAgent implements Agent {
   async initialize(_params: InitializeRequest) {
     return {
       protocolVersion: PROTOCOL_VERSION,
-      agentInfo: { name: 'Docker Sandbox Codex', version: '0.1.0' },
+      agentInfo: { name: `Docker Sandbox ${agentLabel(this.options.agent)}`, version: '0.1.0' },
       agentCapabilities: { loadSession: false, sessionCapabilities: { close: {} } },
     };
   }
@@ -172,12 +173,16 @@ export class SandboxAcpExtensionAgent implements Agent {
 
 function textPrompt(params: PromptRequest): string {
   const parts = params.prompt.map(block => {
-    if (block.type !== 'text') throw new Error(`Docker Sandbox Codex supports only ACP text prompts; received ${block.type}.`);
+    if (block.type !== 'text') throw new Error(`Docker Sandbox agents support only ACP text prompts; received ${block.type}.`);
     return block.text;
   });
   const prompt = parts.join('\n\n').trim();
-  if (!prompt) throw new Error('Docker Sandbox Codex requires a non-empty ACP prompt.');
+  if (!prompt) throw new Error('Docker Sandbox agents require a non-empty ACP prompt.');
   return prompt;
+}
+
+function agentLabel(agent: SandboxAgentKind | undefined): string {
+  return agent === 'opencode' ? 'OpenCode' : 'Codex';
 }
 
 function bridgeFailure(error: unknown): SandboxBridgeFailure {

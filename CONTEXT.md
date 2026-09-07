@@ -4,6 +4,10 @@ Slopify exécute des agents dans des environnements isolés et contrôle explici
 
 ## Language
 
+**Skill embarquée**:
+Méthode réutilisable sélectionnée et fournie avec Slopify pour ses pipelines, avec les ressources et les autres skills dont elle dépend. Une skill homonyme du projet ne la remplace pas implicitement.
+_Avoid_: Skill personnelle, skill du projet
+
 **Sandbox Run**:
 Exécution isolée d’un agent sur une copie privée du dépôt, sans mutation du workspace hôte.
 _Avoid_: container run

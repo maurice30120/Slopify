@@ -17,8 +17,15 @@ import type { CliTerminal } from '../src/terminal.js';
 
 class FakeTerminal implements CliTerminal {
   readonly errors: string[] = [];
+  readonly rawErrors: string[] = [];
+  readonly supportsAnsi: boolean;
+  readonly columns = 80;
+  constructor(supportsAnsi = false) {
+    this.supportsAnsi = supportsAnsi;
+  }
   write(): void {}
   writeError(message: string): void { this.errors.push(message); }
+  writeErrorRaw(message: string): void { this.rawErrors.push(message); }
   async ask(): Promise<string> { return ''; }
   async confirm(): Promise<boolean> { return false; }
   async select(): Promise<string | undefined> { return undefined; }
@@ -179,7 +186,7 @@ test('passes workspace services to the backend factory', () => {
   let actualTerminal: Pick<CliTerminal, 'confirm' | 'select'> | undefined;
   const host = new CliPipelineHost(cwd, {
     terminal,
-    verbose: true,
+    logLevel: 'verbose',
     backendFactory: (workspaceCwd, context) => {
       actualCwd = workspaceCwd;
       actualTerminal = context.terminal;
@@ -235,7 +242,7 @@ test('logs agent failures with RPC details', async () => {
   };
   const host = new CliPipelineHost(workspace(), {
     terminal,
-    verbose: true,
+    logLevel: 'verbose',
     backendFactory: backend(runner),
   });
   const result = await host.start('question-flow', 'add a CLI');
@@ -274,4 +281,132 @@ test('rejects resume and cancel for unknown runs', async () => {
     /Unknown active ACP pipeline run "missing-run"/,
   );
   await assert.rejects(() => host.cancel('missing-run'), /Unknown active ACP pipeline run "missing-run"/);
+});
+
+test('renders node transitions in default log level', async () => {
+  const terminal = new FakeTerminal();
+  const runner: PipelineAgentRunner = async () => ({ text: 'Which API?' });
+  const host = new CliPipelineHost(workspace(), {
+    terminal,
+    backendFactory: backend(runner),
+    runIdFactory: () => 'run-transitions',
+  });
+  const result = await host.start('question-flow', 'add a CLI');
+  assert.equal(result.status, 'paused');
+  const joined = terminal.errors.join('\n');
+  assert.match(joined, /▶ plan · Planner/);
+  assert.match(joined, /✓ plan · Planner · \d+/);
+});
+
+test('suppresses status output in quiet log level', async () => {
+  const terminal = new FakeTerminal();
+  const runner: PipelineAgentRunner = async () => ({ text: 'Which API?' });
+  const host = new CliPipelineHost(workspace(), {
+    terminal,
+    backendFactory: backend(runner),
+    logLevel: 'quiet',
+    runIdFactory: () => 'run-quiet',
+  });
+  const result = await host.start('question-flow', 'add a CLI');
+  assert.equal(result.status, 'paused');
+  assert.equal(terminal.errors.length, 0);
+});
+
+test('streams agent thought and message chunks live at verbose level', async () => {
+  const terminal = new FakeTerminal();
+  const runner: PipelineAgentRunner = async input => {
+    input.onSessionUpdate?.({
+      sessionId: 's1',
+      update: { sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: 'Analyzing... ' } },
+    });
+    input.onSessionUpdate?.({
+      sessionId: 's1',
+      update: { sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: 'the request.' } },
+    });
+    input.onSessionUpdate?.({
+      sessionId: 's1',
+      update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Which API?' } },
+    });
+    return { text: 'Which API?' };
+  };
+  const host = new CliPipelineHost(workspace(), {
+    terminal,
+    logLevel: 'verbose',
+    backendFactory: backend(runner),
+    runIdFactory: () => 'run-stream',
+  });
+
+  const started = await host.start('question-flow', 'add a CLI');
+  assert.equal(started.status, 'paused');
+  assert.ok(
+    terminal.errors.includes('[slopify] plan · Planner réfléchit'),
+    'thought phase label streamed',
+  );
+  assert.ok(
+    terminal.errors.includes('[slopify] plan · Planner répond'),
+    'message phase label streamed',
+  );
+  assert.equal(
+    terminal.rawErrors.join(''),
+    'Analyzing... the request.\nWhich API?\n',
+    'thought then message content streamed with newline separators',
+  );
+});
+
+test('does not stream session content at default log level', async () => {
+  const terminal = new FakeTerminal();
+  const runner: PipelineAgentRunner = async input => {
+    input.onSessionUpdate?.({
+      sessionId: 's1',
+      update: { sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: 'secret' } },
+    });
+    input.onSessionUpdate?.({
+      sessionId: 's1',
+      update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'answer' } },
+    });
+    return { text: 'Which API?' };
+  };
+  const host = new CliPipelineHost(workspace(), {
+    terminal,
+    backendFactory: backend(runner),
+    runIdFactory: () => 'run-no-stream',
+  });
+
+  const started = await host.start('question-flow', 'add a CLI');
+  assert.equal(started.status, 'paused');
+  assert.equal(terminal.rawErrors.length, 0, 'no content streamed at default level');
+  assert.ok(!terminal.errors.some(e => e.includes('réfléchit') || e.includes('répond')));
+});
+
+test('renders streamed markdown as ANSI when terminal supports it', async () => {
+  const previousAnsiStream = process.env.SLOPIFY_ANSI_STREAM;
+  delete process.env.SLOPIFY_ANSI_STREAM;
+  try {
+  const terminal = new FakeTerminal(true);
+  const runner: PipelineAgentRunner = async input => {
+    input.onSessionUpdate?.({
+      sessionId: 's1',
+      update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '# Title\n\n**bold** text.' } },
+    });
+    return { text: 'done' };
+  };
+  const host = new CliPipelineHost(workspace(), {
+    terminal,
+    logLevel: 'verbose',
+    backendFactory: backend(runner),
+    runIdFactory: () => 'run-ansi',
+  });
+
+  const started = await host.start('question-flow', 'add a CLI');
+  assert.equal(started.status, 'paused');
+  const output = terminal.rawErrors.join('');
+  assert.ok(output.includes('\x1b['), 'output contains ANSI escape sequences');
+  assert.ok(!output.includes('**bold**'), 'markdown bold syntax is rendered, not raw');
+  assert.ok(!output.includes('# Title'), 'markdown heading syntax is rendered, not raw');
+  assert.ok(output.includes('Title'), 'heading text content is present');
+  assert.ok(output.includes('bold'), 'bold text content is present');
+  } finally {
+    if (previousAnsiStream === undefined) delete process.env.SLOPIFY_ANSI_STREAM;
+    else process.env.SLOPIFY_ANSI_STREAM = previousAnsiStream;
+  }
 });

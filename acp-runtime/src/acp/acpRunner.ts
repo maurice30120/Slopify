@@ -16,6 +16,7 @@ import type { Logger, RuntimePermissionContext } from '../types.js';
 export interface AcpRunRequest<TFinal = undefined> {
   agentName: string;
   sessionCwd: string;
+  readOnlyRoots?: readonly string[];
   processConfig: ProcessAgentConfig;
   prompt: ContentBlock[];
   connector?: AcpConnector;
@@ -89,6 +90,7 @@ export class AcpRunner {
         agentName: request.agentName,
         processConfig: request.processConfig,
         workspaceCwd: request.sessionCwd,
+        readOnlyRoots: request.readOnlyRoots,
         sessionUpdateHandler,
         getPermissionContext: request.getPermissionContext ?? (() => undefined),
         autoApprovePermissions: request.autoApprovePermissions,

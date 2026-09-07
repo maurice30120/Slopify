@@ -8,6 +8,7 @@ export interface AcpConnectorInput {
   agentName: string;
   processConfig: ProcessAgentConfig;
   workspaceCwd: string;
+  readOnlyRoots?: readonly string[];
   sessionUpdateHandler: SessionUpdateHandler;
   getPermissionContext: () => RuntimePermissionContext | undefined;
   autoApprovePermissions?: boolean;
@@ -28,6 +29,7 @@ export const defaultAcpConnector: AcpConnector = async (input) => {
   const agentManager = new AgentProcessManager(input.logger);
   const connectionManager = new ConnectionManager(input.sessionUpdateHandler, {
     logger: input.logger,
+    readOnlyRoots: input.readOnlyRoots,
     getPermissionContext: input.getPermissionContext,
     autoApprovePermissions: input.autoApprovePermissions === true,
     timeouts: input.timeouts,

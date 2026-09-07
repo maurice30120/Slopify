@@ -18,6 +18,7 @@ import type {
   CompiledPipelineNode,
   CompiledPipelineProgram,
   PipelineArtifact,
+  PipelineArtifactFormat,
   PipelineNodeExecutionFailure,
   PipelineNodeExecutionResult,
   PipelinePauseSnapshot,
@@ -38,6 +39,22 @@ export interface PipelineRuntimeOptions {
   adapterName?: string;
   adapterCapabilities?: PipelineAdapterPolicyCapabilities;
   resolveNodeSkills?: (node: CompiledPipelineNode) => string[] | Promise<string[]>;
+  /**
+   * Synthétise des artefacts additionnels après qu'un nœud a publié son artefact
+   * principal. Permet à l'hôte workspace de reconstruire un contrat structuré
+   * (ex. `acp.ticket-graph/v1`) à partir d'un handoff `workspace-files` Markdown.
+   * Les artefacts retournés sont acceptés via le même chemin (validation + plan).
+   */
+  synthesizeArtifacts?: (artifact: PipelineArtifact) => PipelineArtifact[];
+}
+
+export interface PipelineNodeArtifactSummary {
+  name: string;
+  type: string;
+  format: PipelineArtifactFormat;
+  valueBytes: number;
+  ticketCount?: number;
+  filesChanged?: number;
 }
 
 export interface PipelineRuntimeEvent {
@@ -57,6 +74,8 @@ export interface PipelineRuntimeEvent {
   nodeId?: string;
   message?: string;
   activity?: AgentNodeSessionActivity;
+  durationMs?: number;
+  artifactSummary?: PipelineNodeArtifactSummary;
   at: string;
 }
 
@@ -106,6 +125,7 @@ export class PipelineRuntime {
   private readonly adapterName: string;
   private readonly adapterCapabilities?: PipelineAdapterPolicyCapabilities;
   private readonly resolveNodeSkills?: (node: CompiledPipelineNode) => string[] | Promise<string[]>;
+  private readonly synthesizeArtifacts?: (artifact: PipelineArtifact) => PipelineArtifact[];
 
   constructor(
     private readonly adapter: PipelineRuntimeAdapter,
@@ -118,6 +138,7 @@ export class PipelineRuntime {
     this.adapterName = options.adapterName ?? "pipeline";
     this.adapterCapabilities = options.adapterCapabilities;
     this.resolveNodeSkills = options.resolveNodeSkills;
+    this.synthesizeArtifacts = options.synthesizeArtifacts;
     for (const program of options.programs ?? []) {
       this.programsById.set(program.id, program);
     }
@@ -552,7 +573,14 @@ export class PipelineRuntime {
           };
           active.snapshot.updatedAt = this.isoNow();
           await this.persist(active.snapshot);
-          await this.emitRuntimeEvent({ runId: active.snapshot.runId, type: "node_completed", nodeId: node.id, at: active.snapshot.updatedAt });
+          await this.emitRuntimeEvent({
+            runId: active.snapshot.runId,
+            type: "node_completed",
+            nodeId: node.id,
+            durationMs: this.computeNodeDurationMs(active, node.id),
+            artifactSummary: this.buildArtifactSummary(active, node.id, artifact),
+            at: active.snapshot.updatedAt,
+          });
           return { ok: true };
         }
 
@@ -565,7 +593,7 @@ export class PipelineRuntime {
           };
           active.snapshot.updatedAt = this.isoNow();
           await this.persist(active.snapshot);
-          await this.emitRuntimeEvent({ runId: active.snapshot.runId, type: "node_failed", nodeId: node.id, message: result.message, at: active.snapshot.updatedAt });
+          await this.emitRuntimeEvent({ runId: active.snapshot.runId, type: "node_failed", nodeId: node.id, message: result.message, durationMs: this.computeNodeDurationMs(active, node.id), at: active.snapshot.updatedAt });
           return { nodeId: node.id, attempt, code: result.code, message: result.message };
         }
       } finally {
@@ -695,7 +723,7 @@ export class PipelineRuntime {
             }
             interview.turns.push({ role: "agent", content: parsed.content });
             this.recordInterviewHistory(active, interview);
-            return this.pauseInterview(active, node, parsed.question, parsed.recommendedAnswer);
+            return this.pauseInterview(active, node, parsed.questions, parsed.recommendedAnswers);
           }
 
           interview.structuredOutputs = [
@@ -722,7 +750,14 @@ export class PipelineRuntime {
           };
           active.snapshot.updatedAt = this.isoNow();
           await this.persist(active.snapshot);
-          await this.emitRuntimeEvent({ runId: active.snapshot.runId, type: "node_completed", nodeId: node.id, at: active.snapshot.updatedAt });
+          await this.emitRuntimeEvent({
+            runId: active.snapshot.runId,
+            type: "node_completed",
+            nodeId: node.id,
+            durationMs: this.computeNodeDurationMs(active, node.id),
+            artifactSummary: this.buildArtifactSummary(active, node.id, artifact),
+            at: active.snapshot.updatedAt,
+          });
           return { ok: true };
         } catch (error: unknown) {
           const message = error instanceof Error ? error.message : String(error);
@@ -779,14 +814,20 @@ export class PipelineRuntime {
     return { nodeId: node.id, code: "retry_exhausted", message: `Node "${node.id}" exhausted retries.` };
   }
 
-  private async pauseInterview(active: ActiveRun, node: CompiledPipelineNode, question: string, recommendation?: string): Promise<{ paused: PipelineRuntimeResult }> {
+  private async pauseInterview(active: ActiveRun, node: CompiledPipelineNode, questions: string[], recommendations?: string[]): Promise<{ paused: PipelineRuntimeResult }> {
     const state = active.snapshot.nodeStates[node.id];
     const turn = active.snapshot.activeInterview?.turns.filter(entry => entry.role === "agent").length ?? state.attempts;
+    const numbered = questions.length > 1
+      ? questions.map((q, i) => `❓ **Q${i + 1}** - ${q}`).join("\n\n")
+      : questions[0] ?? "";
+    const recommendation = recommendations?.[0];
     const pause = {
       id: `${active.snapshot.runId}:${node.id}:question:${turn}`,
       nodeId: node.id,
       type: "question" as const,
-      content: question,
+      content: numbered,
+      questions,
+      ...(recommendations && recommendations.length > 0 ? { recommendations } : {}),
       ...(recommendation ? { recommendation } : {}),
       format: "markdown" as const,
     };
@@ -943,7 +984,52 @@ export class PipelineRuntime {
     const planError = this.captureExecutionPlan(active, artifact);
     if (planError) return planError;
     active.snapshot.artifacts[artifactKey(artifact.producerNodeId, artifact.name)] = artifact;
+    if (this.synthesizeArtifacts) {
+      for (const synthesized of this.synthesizeArtifacts(artifact)) {
+        const extraArtifact = { ...synthesized, producerNodeId: artifact.producerNodeId };
+        if (active.snapshot.artifacts[artifactKey(extraArtifact.producerNodeId, extraArtifact.name)]) continue;
+        const extraError = this.acceptArtifact(active, extraArtifact);
+        if (extraError) return extraError;
+      }
+    }
     return undefined;
+  }
+
+  private computeNodeDurationMs(active: ActiveRun, nodeId: string): number | undefined {
+    const state = active.snapshot.nodeStates[nodeId];
+    if (!state?.startedAt || !state?.completedAt) return undefined;
+    return Date.parse(state.completedAt) - Date.parse(state.startedAt);
+  }
+
+  private buildArtifactSummary(active: ActiveRun, nodeId: string, artifact: PipelineArtifact): PipelineNodeArtifactSummary {
+    const summary: PipelineNodeArtifactSummary = {
+      name: artifact.name,
+      type: artifact.type,
+      format: artifact.format,
+      valueBytes: Buffer.byteLength(stringifyTemplateValue(artifact.value), 'utf8'),
+    };
+
+    if (artifact.type === 'acp.ticket-graph/v1') {
+      try {
+        const parsed = typeof artifact.value === 'string' ? JSON.parse(artifact.value) : artifact.value;
+        if (parsed?.tickets && Array.isArray(parsed.tickets)) {
+          summary.ticketCount = parsed.tickets.length;
+        }
+      } catch {
+        // not parseable, omit ticketCount
+      }
+    }
+
+    if (active.snapshot.sandboxRuns) {
+      for (const run of Object.values(active.snapshot.sandboxRuns)) {
+        if (run.nodeId === nodeId && run.checkpoint?.preview?.fileCount !== undefined) {
+          summary.filesChanged = run.checkpoint.preview.fileCount;
+          break;
+        }
+      }
+    }
+
+    return summary;
   }
 
   private async persist(snapshot: PipelineRuntimeSnapshot): Promise<void> {

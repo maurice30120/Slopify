@@ -12,9 +12,10 @@ import {
   createWorkspaceRuntime,
   createWorkspaceRun,
   removeAgentConfig,
+  synthesizeTicketGraphArtifact,
   upsertAgentConfig,
 } from '../src/index.js';
-import type { PipelineRuntimeResult } from '@acp-client/pipeline';
+import type { PipelineArtifact, PipelineRuntimeResult } from '@acp-client/pipeline';
 import type { SubprocessRequest, SubprocessResult } from '@acp-client/sandbox';
 
 function workspace(): string {
@@ -27,18 +28,26 @@ test('public entry point parses native configuration', () => {
   assert.deepEqual(config.errors, []);
 });
 
-test('accepts only Codex for the sandbox transport with corrective errors', () => {
-  const accepted = parseAcpConfig(JSON.stringify({ agents: {
+test('accepts Codex and OpenCode for the sandbox transport with corrective errors', () => {
+  const acceptedCodex = parseAcpConfig(JSON.stringify({ agents: {
     Isolated: { transport: 'sandbox', agent: 'codex', model: 'gpt-5.6-codex', effort: 'high' },
   } }));
-  assert.deepEqual(accepted.errors, []);
-  assert.equal(accepted.agents.Isolated.transport, 'sandbox');
+  assert.deepEqual(acceptedCodex.errors, []);
+  assert.equal(acceptedCodex.agents.Isolated.transport, 'sandbox');
+  assert.equal(acceptedCodex.agents.Isolated.agent, 'codex');
+
+  const acceptedOpencode = parseAcpConfig(JSON.stringify({ agents: {
+    Isolated: { transport: 'sandbox', agent: 'opencode', model: 'opencode-go/glm-5.2' },
+  } }));
+  assert.deepEqual(acceptedOpencode.errors, []);
+  assert.equal(acceptedOpencode.agents.Isolated.transport, 'sandbox');
+  assert.equal(acceptedOpencode.agents.Isolated.agent, 'opencode');
 
   const rejected = parseAcpConfig(JSON.stringify({ agents: {
     Other: { transport: 'sandbox', agent: 'pi', model: 'pi-model' },
   } }));
   assert.equal(rejected.agents.Other, undefined);
-  assert.match(rejected.errors.join('\n'), /must be "codex".*other Docker Sandbox agents are not supported yet/);
+  assert.match(rejected.errors.join('\n'), /must be "codex" or "opencode".*other Docker Sandbox agents are not supported yet/);
 });
 
 test('writes and removes agents in the single ACP catalogue while preserving its envelope', () => {
@@ -176,7 +185,7 @@ test('WorkspaceRuntime exposes only the deep run interface', () => {
       logger: { log: () => undefined, error: () => undefined },
     },
   });
-  assert.deepEqual(Object.keys(runtime).sort(), ['clearRunLogs', 'preflightPipeline', 'programs', 'runAgent']);
+  assert.deepEqual(Object.keys(runtime).sort(), ['clearRunLogs', 'preflightPipeline', 'programs', 'restoreProgram', 'runAgent']);
 });
 
 test('low-level runtime has no workspace, Pipeline V3, or isolated-runtime ownership', () => {
@@ -234,6 +243,62 @@ test('WorkspaceRun uses Ticket Graph identities and dependencies regardless of M
   assert.match(starts[2].prompt, /Dependencies: T01/);
   assert.equal(final.status, 'completed');
   assert.equal(final.status === 'completed' ? final.artifact?.value : undefined, 'review complete');
+});
+
+test('synthesizeTicketGraphArtifact reconstructs an acp.ticket-graph/v1 artifact from a workspace-files handoff', () => {
+  const cwd = workspace();
+  const issuesDir = path.join(cwd, '.scratch', 'feature', 'issues');
+  fs.mkdirSync(issuesDir, { recursive: true });
+  fs.writeFileSync(path.join(cwd, '.scratch', 'feature', 'spec.md'), '# Spec\n');
+  fs.writeFileSync(path.join(issuesDir, '01-first.md'), [
+    '# 01: First',
+    '',
+    '**What to build:** first slice',
+    '',
+    '**Blocked by:** None (can start immediately)',
+    '',
+    '**Status:** ready-for-agent',
+    '',
+    '- [ ] first passes',
+    '',
+  ].join('\n'));
+  fs.writeFileSync(path.join(issuesDir, '02-second.md'), [
+    '# 02: Second',
+    '',
+    '**What to build:** second slice',
+    '',
+    '**Blocked by:** 01: First',
+    '',
+    '**Status:** ready-for-agent',
+    '',
+    '- [ ] second passes',
+    '',
+  ].join('\n'));
+  const handoff: PipelineArtifact = {
+    name: 'tickets',
+    type: 'acp.workspace-files/v1',
+    format: 'markdown',
+    value: '- `.scratch/feature/spec.md`\n- `.scratch/feature/issues/`',
+    producerNodeId: 'tasks',
+  };
+
+  const graph = synthesizeTicketGraphArtifact(cwd, handoff);
+
+  assert.equal(graph?.type, 'acp.ticket-graph/v1');
+  assert.equal(graph?.format, 'json');
+  assert.equal(graph?.producerNodeId, 'tasks');
+  const value = graph?.value as { contract: string; tickets: Array<{ id: string; needs: string[] }> };
+  assert.equal(value.contract, 'acp.ticket-graph/v1');
+  assert.deepEqual(value.tickets.map(t => t.id), ['01', '02']);
+  assert.deepEqual(value.tickets.find(t => t.id === '02')?.needs, ['01']);
+});
+
+test('synthesizeTicketGraphArtifact returns null for non-workspace-files artifacts', () => {
+  const cwd = workspace();
+  const graph = synthesizeTicketGraphArtifact(cwd, {
+    name: 'plan', type: 'acp.grill-decision/v1', format: 'markdown', value: 'plan', producerNodeId: 'plan',
+  });
+  assert.equal(graph, null);
 });
 
 test('WorkspaceRun rejects an invalid typed handoff before a host can approve it', async () => {

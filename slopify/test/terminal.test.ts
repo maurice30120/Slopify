@@ -23,7 +23,7 @@ test('cancels pending questions when stdin closes', async () => {
   input.end();
 
   await assert.rejects(answer, /Terminal input closed/);
-  assert.ok(output.chunks.join('').startsWith('Answer [/done to finish]: '));
+  assert.ok(errors.chunks.join('').startsWith('Answer [/done to finish]: '));
 
   terminal.close();
 });
@@ -39,7 +39,7 @@ test('ask returns user input with whitespace trimmed', async () => {
 
   const answer = await answerPromise;
   assert.equal(answer, 'hello world');
-  assert.ok(output.chunks.join('').startsWith('Question: '));
+  assert.ok(errors.chunks.join('').startsWith('Question: '));
 
   terminal.close();
 });
@@ -55,7 +55,7 @@ test('confirm with y returns true', async () => {
 
   const result = await resultPromise;
   assert.equal(result, true);
-  assert.ok(output.chunks.join('').includes('Confirm? [y/N]'));
+  assert.ok(errors.chunks.join('').includes('Confirm? [y/N]'));
 
   terminal.close();
 });
@@ -146,9 +146,9 @@ test('confirm with message displays full message', async () => {
 
   const result = await resultPromise;
   assert.equal(result, true);
-  assert.ok(output.chunks.join('').includes('Title'));
-  assert.ok(output.chunks.join('').includes('Message content'));
-  assert.ok(output.chunks.join('').includes('Confirm? [y/N]'));
+  assert.ok(errors.chunks.join('').includes('Title'));
+  assert.ok(errors.chunks.join('').includes('Message content'));
+  assert.ok(errors.chunks.join('').includes('Confirm? [y/N]'));
 
   terminal.close();
 });
@@ -176,6 +176,53 @@ test('writeError outputs to stderr with newline', async () => {
   terminal.writeError('error message');
 
   assert.equal(errors.chunks.join(''), 'error message\n');
+
+  terminal.close();
+});
+
+test('ask then confirm on the same terminal both work', async () => {
+  const input = new PassThrough();
+  const output = new MemoryWritable();
+  const errors = new MemoryWritable();
+  const terminal = new NodeCliTerminal(input, output, errors);
+
+  const askPromise = terminal.ask('Answer [/done to finish]:');
+  input.write('ok pour tout\n');
+  const askResult = await askPromise;
+  assert.equal(askResult, 'ok pour tout');
+
+  const confirmPromise = terminal.confirm('Approve pipeline pause?');
+  input.write('y\n');
+  const confirmResult = await confirmPromise;
+  assert.equal(confirmResult, true);
+
+  terminal.close();
+});
+
+test('resets raw mode before each prompt to recover from TUI agent corruption', async () => {
+  const rawModeCalls: boolean[] = [];
+  const input = new PassThrough();
+  // Simulate a TTY stream whose raw mode was left corrupted by a killed agent.
+  (input as { setRawMode?: unknown }).setRawMode = (mode: boolean) => { rawModeCalls.push(mode); };
+  const output = new MemoryWritable();
+  const errors = new MemoryWritable();
+  const terminal = new NodeCliTerminal(input, output, errors);
+
+  const askPromise = terminal.ask('Answer:');
+  input.write('ok\n');
+  await askPromise;
+
+  const confirmPromise = terminal.confirm('Approve?');
+  input.write('y\n');
+  const confirmResult = await confirmPromise;
+  assert.equal(confirmResult, true);
+
+  // Each prompt must call setRawMode(false) before createInterface re-enables it.
+  // The sequence is: false (reset), then createInterface does not call setRawMode
+  // on a non-TTY PassThrough (it has the method but isTTY is falsy), so we only
+  // assert the reset call happened for each prompt.
+  assert.ok(rawModeCalls.filter(m => m === false).length >= 2,
+    'setRawMode(false) must be called before each prompt to reset terminal state');
 
   terminal.close();
 });

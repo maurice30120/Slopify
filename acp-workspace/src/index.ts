@@ -42,6 +42,7 @@ export {
   type WorkspaceRunInteraction,
   type WorkspaceRunOutcome,
 } from './run/workspaceRunPolicy.js';
+export { synthesizeTicketGraphArtifact } from './run/workspaceRunPolicy.js';
 
 // Types
 export type {

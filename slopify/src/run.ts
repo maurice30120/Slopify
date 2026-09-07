@@ -6,6 +6,7 @@ import {
 
 import type { CliResumeCommand, CliRunCommand } from './args.js';
 import type { CliPipelineHost, CliPipelineListEntry } from './host.js';
+import { formatDuration } from './host.js';
 import type { CliTerminal } from './terminal.js';
 
 export interface CliRunResult {
@@ -20,12 +21,16 @@ export async function runPipelineInteractive(
   terminal: CliTerminal,
   command: CliRunCommand | CliResumeCommand,
 ): Promise<CliRunResult> {
+  const showStatus = command.logLevel !== 'quiet';
+  const startedAt = Date.now();
   const workspaceRun = createWorkspaceRun({
     workspaceCwd: command.cwd,
     start: (pipelineName, prompt) => host.start(pipelineName, prompt),
     ...(host.recover ? { recover: runId => host.recover!(runId) } : {}),
     resume: (runId, decision) => host.resume(runId, decision),
-    onDeliveryProgress: message => terminal.writeError(`[slopify] ${message}`),
+    onDeliveryProgress: message => {
+      if (showStatus) terminal.writeError(message);
+    },
   });
   let result = command.kind === 'resume'
     ? await workspaceRun.recover(command.runId)
@@ -33,7 +38,7 @@ export async function runPipelineInteractive(
 
   while (result.status === 'interaction-required') {
     const interaction = result.interaction;
-    if (!command.json) terminal.write(formatInteraction(interaction));
+    if (!command.json) terminal.write(formatInteraction(interaction), 'markdown');
 
     if (interaction.kind === 'question') {
       const answer = await askForAnswer(terminal);
@@ -64,14 +69,21 @@ export async function runPipelineInteractive(
   }
 
   const final: CliRunResult = result;
+  const totalMs = Date.now() - startedAt;
   if (command.json) {
     terminal.write(JSON.stringify(final, null, 2));
   } else if (final.status === 'completed') {
     const output = stringifyArtifact(final.artifact);
+    if (showStatus) {
+      terminal.writeError(`Pipeline completed in ${formatDuration(totalMs)}`);
+    }
     if (output) {
-      terminal.write(output);
+      terminal.write(output, final.artifact?.format === 'markdown' ? 'markdown' : undefined);
     }
   } else if (final.status === 'failed') {
+    if (showStatus) {
+      terminal.writeError(`Pipeline failed in ${formatDuration(totalMs)}`);
+    }
     terminal.writeError(formatFailure(final.error));
   } else if (final.status === 'rejected') {
     terminal.writeError('Pipeline Change Set rejected.');

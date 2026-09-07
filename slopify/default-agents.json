@@ -1,0 +1,16 @@
+{
+  "agents": {
+    "OpenCode": { "command": "opencode", "args": ["acp"] },
+    "OpenCode Sandbox": {
+      "transport": "sandbox",
+      "agent": "opencode",
+      "model": "opencode-go/glm-5.2",
+      "effort": "high"
+    }
+  },
+  "pipeline": {
+    "enabled": true,
+    "instructionsMaxBytes": 262144,
+    "timeouts": { "initializeMs": 120000, "promptMs": 1800000 }
+  }
+}

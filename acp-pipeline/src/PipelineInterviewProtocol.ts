@@ -1,13 +1,12 @@
 import {
-  extractClarificationQuestion,
-  extractRecommendedAnswer,
+  extractQuestionRound,
   extractSingleProposedPlan,
   getProposedPlanInterviewState,
 } from "./ProposedPlan";
 import type { PipelineInterviewTurn } from "./PipelineV3Types";
 
 export type PipelineInterviewProtocolState =
-  | { state: "question"; question: string; recommendedAnswer?: string; content: string }
+  | { state: "question"; questions: string[]; recommendedAnswers?: string[]; content: string }
   | { state: "ready"; artifact: unknown; content: string };
 
 export interface PipelineInterviewProtocol {
@@ -45,12 +44,15 @@ const proposedPlanProtocol: PipelineInterviewProtocol = {
     const plan = extractSingleProposedPlan(text);
     const state = getProposedPlanInterviewState(plan);
     if (state === "question") {
-      const question = extractClarificationQuestion(plan);
-      if (!question) {
-        throw new Error("Expected a non-empty <clarification_question> for interview_state question.");
+      const round = extractQuestionRound(plan);
+      if (!round) {
+        throw new Error("Expected a non-empty Markdown question round for interview_state question.");
       }
-      const recommendedAnswer = extractRecommendedAnswer(plan) ?? undefined;
-      return { state, question, recommendedAnswer, content: plan };
+      return {
+        state,
+        questions: [round],
+        content: plan,
+      };
     }
     if (state === "ready") {
       return { state, artifact: plan, content: plan };
@@ -85,7 +87,7 @@ const proposedPlanProtocol: PipelineInterviewProtocol = {
       "",
       "Your previous response did not satisfy the proposed-plan protocol.",
       `Protocol error: ${diagnostic}`,
-      "Return only one valid <proposed_plan> block. Use <interview_state>question</interview_state> with a non-empty <clarification_question>, or <interview_state>ready</interview_state> for the final plan.",
+      "Return only one valid <proposed_plan> block. Use <interview_state>question</interview_state> followed by the complete non-empty Markdown question round (including recommendations), or <interview_state>ready</interview_state> for the final plan. After a question round, end the turn and wait for the user's answers.",
     ].join("\n");
   },
 

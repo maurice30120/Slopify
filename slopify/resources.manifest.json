@@ -1,0 +1,76 @@
+{
+  "version": 1,
+  "agentConfig": "default-agents.json",
+  "pipelines": [
+    "grill-spec-tickets-implement-review.yaml",
+    "implement-ticket.yaml",
+    "review-delivery.yaml"
+  ],
+  "instructions": [
+    "interactive-planner.md",
+    "matt-spec-writer.md",
+    "matt-ticket-planner.md",
+    "matt-implementer.md",
+    "matt-plan-reviewer.md"
+  ],
+  "skills": {
+    "grill-with-docs": {
+      "dependencies": [
+        "grilling",
+        "domain-modeling"
+      ]
+    },
+    "grilling": {
+      "dependencies": []
+    },
+    "domain-modeling": {
+      "dependencies": [],
+      "requiredFiles": [
+        "CONTEXT-FORMAT.md",
+        "ADR-FORMAT.md"
+      ]
+    },
+    "to-spec": {
+      "dependencies": [
+        "codebase-design"
+      ],
+      "requiredProjectFiles": [
+        "docs/agents/issue-tracker.md"
+      ]
+    },
+    "to-tickets": {
+      "dependencies": [],
+      "requiredProjectFiles": [
+        "docs/agents/issue-tracker.md"
+      ]
+    },
+    "implement": {
+      "dependencies": [
+        "tdd",
+        "code-review"
+      ]
+    },
+    "tdd": {
+      "dependencies": [
+        "codebase-design"
+      ],
+      "requiredFiles": [
+        "tests.md",
+        "mocking.md"
+      ]
+    },
+    "code-review": {
+      "dependencies": [],
+      "requiredProjectFiles": [
+        "docs/agents/issue-tracker.md"
+      ]
+    },
+    "codebase-design": {
+      "dependencies": [],
+      "requiredFiles": [
+        "DEEPENING.md",
+        "DESIGN-IT-TWICE.md"
+      ]
+    }
+  }
+}

@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
+import { createMarkdownStreamRenderer, type MarkdownStreamRenderer } from 'markstream-cli';
 import {
   PipelineRuntime,
   PipelineRuntimeAgentAdapter,
@@ -12,11 +13,15 @@ import {
   type CompiledPipelineNode,
   type PipelineAgentRunInput,
   type PipelineAgentRunner,
+  type PipelineArtifact,
+  type PipelineNodeArtifactSummary,
   type PipelineResumeDecision,
   type PipelineRuntimeResult,
   type PipelineRunStore,
 } from '@acp-client/pipeline';
+import { synthesizeTicketGraphArtifact } from '@acp-client/workspace';
 
+import type { LogLevel } from './args.js';
 import type { CliTerminal } from './terminal.js';
 
 type SessionNotification = Parameters<NonNullable<PipelineAgentRunInput['onSessionUpdate']>>[0];
@@ -28,6 +33,7 @@ export interface CliLogger {
 
 export interface CliPipelineBackend {
   programs: CompiledPipelineProgram[];
+  restoreProgram?(runId: string): CompiledPipelineProgram;
   preflightPipeline?(program: CompiledPipelineProgram, runId: string): Promise<void>;
   runAgent?: PipelineAgentRunner;
   clearRunLogs?(): void;
@@ -52,7 +58,7 @@ export interface CliPipelineListEntry {
 export interface CliPipelineHostOptions {
   terminal: CliTerminal;
   backendFactory: CliPipelineBackendFactory;
-  verbose?: boolean;
+  logLevel?: LogLevel;
   createSession?: AgentNodeSessionFactory;
   runAgent?: PipelineAgentRunner;
   runIdFactory?: () => string;
@@ -72,17 +78,29 @@ export class CliPipelineHost {
   private readonly runLogs = new Map<string, PipelineRunLog>();
   private readonly activeAgentNodes = new Map<string, CompiledPipelineNode>();
   private readonly activityByNode = new Map<string, 'agent_message_chunk' | 'agent_thought_chunk'>();
+  private readonly streamedContentByNode = new Set<string>();
+  /** Dernier contenu reçu, car certains adaptateurs renvoient le texte cumulatif. */
+  private readonly streamedTextByNode = new Map<string, string>();
+  private readonly rendererByNode = new Map<string, MarkdownStreamRenderer>();
   private readonly runStore: PipelineRunStore;
+  private readonly logLevel: LogLevel;
 
   constructor(
     private readonly workspaceCwd: string,
     private readonly options: CliPipelineHostOptions,
   ) {
     this.runStore = workspacePipelineRunStore(workspaceCwd);
+    this.logLevel = this.options.logLevel ?? 'default';
     this.logger = {
       log: message => {
         this.appendHostLog('host_log', { message });
-        if (this.options.verbose) {
+        // Le diagnostic « Agent "…" exited (code=…, signal=SIGTERM) » arrive de
+        // façon asynchrone quand le runtime libère le processus agent à la pause.
+        // Écrit sur stderr, il se colle au prompt de lecture (`Answer …:`) qui
+        // vient d'être affiché, et l'utilisateur croit que l'agent a planté
+        // alors qu'il s'agit d'une libération normale. On le garde dans le run
+        // log (diagnostic) sans l'afficher dans le terminal.
+        if (this.shouldLog('verbose') && !AGENT_EXIT_LOG.test(message)) {
           this.options.terminal.writeError(`[slopify] ${message}`);
         }
       },
@@ -92,7 +110,9 @@ export class CliPipelineHost {
           message,
           error: error === undefined ? undefined : serializeError(error),
         });
-        this.options.terminal.writeError(`[slopify] ${message}${suffix}`);
+        if (this.shouldLog('default')) {
+          this.options.terminal.writeError(`[slopify] ${message}${suffix}`);
+        }
       },
     };
 
@@ -189,7 +209,26 @@ export class CliPipelineHost {
           this.activityByNode.delete(key);
         }
       }
+      for (const key of this.streamedContentByNode) {
+        if (key.startsWith(`${result.runId}:`)) {
+          this.streamedContentByNode.delete(key);
+        }
+      }
+      for (const key of this.streamedTextByNode.keys()) {
+        if (key.startsWith(`${result.runId}:`)) {
+          this.streamedTextByNode.delete(key);
+        }
+      }
+      for (const key of this.rendererByNode.keys()) {
+        if (key.startsWith(`${result.runId}:`)) {
+          this.rendererByNode.delete(key);
+        }
+      }
     }
+  }
+
+  private shouldLog(minLevel: LogLevel): boolean {
+    return LOG_LEVEL_RANK[this.logLevel] >= LOG_LEVEL_RANK[minLevel];
   }
 
   async recover(runId: string): Promise<PipelineRuntimeResult> {
@@ -205,6 +244,10 @@ export class CliPipelineHost {
       runIdFactory: () => runId,
       programs: [program],
       store: this.runStore,
+      synthesizeArtifacts: (artifact: PipelineArtifact) => {
+        const graph = synthesizeTicketGraphArtifact(this.workspaceCwd, artifact);
+        return graph ? [graph] : [];
+      },
       onEvent: event => {
         const log = this.runLogs.get(event.runId);
         const eventNode = event.nodeId ? program.nodesById.get(event.nodeId) : undefined;
@@ -216,13 +259,32 @@ export class CliPipelineHost {
         if ((event.type === 'node_completed' || event.type === 'node_failed') && eventNode?.agent) {
           this.activeAgentNodes.delete(eventNode.agent);
         }
-        if (this.options.verbose) {
+        if (this.shouldLog('default')) {
+          if (event.type === 'node_started' && eventNode?.agent) {
+            this.options.terminal.writeError(`  ▶ ${formatAgentLabel(eventNode)}`);
+          } else if (event.type === 'node_completed' && event.nodeId) {
+            this.closeStreamedLine(event.runId, event.nodeId);
+            const label = eventNode ? formatAgentLabel(eventNode) : event.nodeId;
+            const parts = formatCompletionParts(event.durationMs, event.artifactSummary);
+            this.options.terminal.writeError(`  ✓ ${label}${parts ? ' · ' + parts : ''}`);
+          } else if (event.type === 'node_failed' && event.nodeId) {
+            this.closeStreamedLine(event.runId, event.nodeId);
+            const label = eventNode ? formatAgentLabel(eventNode) : event.nodeId;
+            const dur = formatDuration(event.durationMs);
+            const msg = event.message ? ` · ${event.message}` : '';
+            this.options.terminal.writeError(`  ✗ ${label}${dur ? ' · ' + dur : ''}${msg}`);
+          }
+        }
+        if (this.shouldLog('verbose')) {
           const node = event.nodeId ? ` node=${event.nodeId}` : '';
           const message = event.message ? ` ${event.message}` : '';
           this.options.terminal.writeError(`[runtime] ${event.type}${node}${message}`);
         }
         if ((event.type === 'node_completed' || event.type === 'node_failed') && event.nodeId) {
           this.activityByNode.delete(activityKey(event.runId, event.nodeId));
+          this.streamedContentByNode.delete(activityKey(event.runId, event.nodeId));
+          this.streamedTextByNode.delete(activityKey(event.runId, event.nodeId));
+          this.rendererByNode.delete(activityKey(event.runId, event.nodeId));
         }
       },
     });
@@ -233,7 +295,7 @@ export class CliPipelineHost {
     if (active) return active;
     const snapshot = await this.runStore.load(runId);
     const program = snapshot
-      ? this.programs.find(candidate => candidate.id === snapshot.pipelineId)
+      ? this.backend.restoreProgram?.(runId) ?? this.programs.find(candidate => candidate.id === snapshot.pipelineId)
       : undefined;
     if (!snapshot || !program || (snapshot.status !== 'paused' && snapshot.status !== 'running')) {
       throw new Error(`Unknown active ACP pipeline run "${runId}".`);
@@ -263,10 +325,12 @@ export class CliPipelineHost {
     const loggedRunner = (async input => {
       const runLog = this.findRunLog(input);
       const activeNode = this.activeAgentNodes.get(input.agentName);
-      const skills = this.options.verbose
+      const skills = this.shouldLog('verbose')
         ? ` (skills=${input.skills?.join(',') || 'none'})`
         : '';
-      this.options.terminal.writeError(`[slopify] Starting node agent "${input.agentName}"${skills}`);
+      if (this.shouldLog('verbose')) {
+        this.options.terminal.writeError(`[slopify] Starting node agent "${input.agentName}"${skills}`);
+      }
       runLog?.appendForNode(activeNode, 'agent_started', {
         agentName: input.agentName,
         workspaceCwd: input.workspaceCwd,
@@ -283,7 +347,7 @@ export class CliPipelineHost {
           textBytes: Buffer.byteLength(resolvePipelineStepText(result), 'utf8'),
           promotion: typeof result === 'object' ? result.promotion : undefined,
         });
-        if (this.options.verbose) {
+        if (this.shouldLog('verbose')) {
           this.options.terminal.writeError(`[slopify] Agent "${input.agentName}" completed.`);
         }
         return result;
@@ -309,7 +373,7 @@ export class CliPipelineHost {
       },
       onStatus: (activeRunId, node, update) => {
         this.runLogs.get(activeRunId)?.appendNode(node, 'status', update);
-        if (this.options.verbose) {
+        if (this.shouldLog('debug')) {
           this.options.terminal.writeError(
             `[${node.id}:${node.agent ?? 'pause'}] ${update.status}: ${update.message}`,
           );
@@ -326,14 +390,71 @@ export class CliPipelineHost {
     }
 
     const key = activityKey(runId, node.id);
-    if (this.activityByNode.get(key) === kind) {
-      return;
+    const previous = this.activityByNode.get(key);
+    if (previous !== kind) {
+      this.activityByNode.set(key, kind);
+      if (this.shouldLog('verbose')) {
+        // Ferme la ligne de contenu streamé de la phase précédente avant
+        // d'écrire l'en-tête de la nouvelle phase (réfléchit → répond).
+        if (this.streamedContentByNode.has(key)) {
+          this.rendererByNode.delete(key);
+          this.options.terminal.writeErrorRaw('\n');
+        }
+        this.streamedTextByNode.delete(key);
+        const label = formatAgentLabel(node);
+        const action = kind === 'agent_thought_chunk' ? 'réfléchit' : 'répond';
+        this.options.terminal.writeError(`[slopify] ${label} ${action}`);
+      }
     }
-    this.activityByNode.set(key, kind);
 
-    const label = formatAgentLabel(node);
-    const action = kind === 'agent_thought_chunk' ? 'réfléchit' : 'répond';
-    this.options.terminal.writeError(`[slopify] ${label} ${action}`);
+    // Streaming en direct du contenu des pensées et de la réponse. Le contenu
+    // des pensées reste exclu de la persistance (.acp/logs) — voir
+    // sanitizeSessionNotification — mais s'affiche ici à la demande.
+    // Sur un TTY, le Markdown est rendu en ANSI via markstream-cli ; sur un
+    // flux non-TTY (pipe, tests), le texte brut est écrit tel quel.
+    if (this.shouldLog('verbose')) {
+      const content = update?.content;
+      const incomingText = content?.type === 'text' ? content.text : '';
+      const previousText = this.streamedTextByNode.get(key) ?? '';
+      // ACP implementations differ: some send deltas, others resend the full
+      // accumulated message. In the latter case only render the new suffix.
+      const text = incomingText.startsWith(previousText)
+        ? incomingText.slice(previousText.length)
+        : incomingText;
+      this.streamedTextByNode.set(key, incomingText);
+      if (text) {
+        // Le rendu est automatique sur TTY. Les terminaux qui ne gèrent pas
+        // les patches de curseur peuvent le désactiver explicitement.
+        const patchAnsi = this.options.terminal.supportsAnsi
+          && process.env.SLOPIFY_ANSI_STREAM !== '0';
+        if (patchAnsi) {
+          let renderer = this.rendererByNode.get(key);
+          if (!renderer) {
+            renderer = createMarkdownStreamRenderer({
+              strategy: 'smart',
+              render: { color: true, streaming: true, width: this.options.terminal.columns },
+            });
+            this.rendererByNode.set(key, renderer);
+          }
+          const patch = renderer.push(text);
+          if (patch) {
+            this.options.terminal.writeErrorRaw(patch);
+          }
+        } else {
+          this.options.terminal.writeErrorRaw(text);
+        }
+        this.streamedContentByNode.add(key);
+      }
+    }
+  }
+
+  private closeStreamedLine(runId: string, nodeId: string): void {
+    const key = activityKey(runId, nodeId);
+    if (this.streamedContentByNode.delete(key)) {
+      this.rendererByNode.delete(key);
+      this.streamedTextByNode.delete(key);
+      this.options.terminal.writeErrorRaw('\n');
+    }
   }
 }
 
@@ -493,6 +614,48 @@ function formatAgentLabel(node: CompiledPipelineNode): string {
   return node.agent && node.agent !== node.id
     ? `${node.id} · ${node.agent}`
     : node.id;
+}
+
+const LOG_LEVEL_RANK: Record<LogLevel, number> = { quiet: 0, default: 1, verbose: 2, debug: 3 };
+
+// Diagnostic de fin de processus agent émis par acp-runtime (agentProcess.ts).
+// Voir host logger.log pour la raison de ne pas l'afficher dans le terminal.
+const AGENT_EXIT_LOG = /^Agent ".*" exited \(code=.*\)$/u;
+
+export function formatDuration(ms: number | undefined): string {
+  if (ms === undefined || ms < 0) return '';
+  if (ms < 1000) return `${ms}ms`;
+  const totalSeconds = Math.floor(ms / 1000);
+  if (totalSeconds < 60) return `${totalSeconds}s`;
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}m${String(seconds).padStart(2, '0')}s`;
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes}B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
+}
+
+function formatCompletionParts(
+  durationMs: number | undefined,
+  summary: PipelineNodeArtifactSummary | undefined,
+): string {
+  const parts: string[] = [];
+  const dur = formatDuration(durationMs);
+  if (dur) parts.push(dur);
+  if (summary) {
+    const summaryParts: string[] = [];
+    if (summary.ticketCount !== undefined) summaryParts.push(`${summary.ticketCount} tickets`);
+    if (summary.filesChanged !== undefined) summaryParts.push(`${summary.filesChanged} files`);
+    if (summaryParts.length > 0) {
+      parts.push(summaryParts.join(' · '));
+    } else {
+      parts.push(formatBytes(summary.valueBytes));
+    }
+  }
+  return parts.join(' · ');
 }
 
 function formatError(error: unknown): string {

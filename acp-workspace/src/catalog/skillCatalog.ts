@@ -1,5 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
+import * as yaml from "js-yaml";
 
 import {
 	renderExplicitPipelineSkills,
@@ -84,40 +85,19 @@ interface ParsedSkillFrontmatter {
 }
 
 function parseSkillFrontmatter(text: string): ParsedSkillFrontmatter | null {
-	const frontmatter = extractFrontmatter(text);
-	if (!frontmatter) {
-		return null;
-	}
-
-	const name = readScalar(frontmatter, "name");
-	const description = readScalar(frontmatter, "description");
-	if (!name || !description) {
-		return null;
-	}
-
-	const disable = readScalar(frontmatter, "disable-model-invocation");
-	return {
-		name,
-		description,
-		disableModelInvocation: disable === "true",
-	};
-}
-
-function extractFrontmatter(text: string): string | null {
-	const match = /^---\r?\n([\s\S]*?)\r?\n---/.exec(text);
-	return match ? match[1] : null;
-}
-
-function readScalar(frontmatter: string, key: string): string {
-	const re = new RegExp(
-		`^${key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}:\\s*(.*)$`,
-		"m",
-	);
-	const match = re.exec(frontmatter);
-	if (!match) {
-		return "";
-	}
-	return match[1].trim().replace(/^(["'])|(["'])$/g, "");
+  const match = /^---\r?\n([\s\S]*?)\r?\n---/.exec(text);
+  if (!match) return null;
+  try {
+    const value = yaml.load(match[1]);
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+    const fields = value as Record<string, unknown>;
+    if (typeof fields.name !== 'string' || !fields.name.trim()
+      || typeof fields.description !== 'string' || !fields.description.trim()) return null;
+    return {
+      name: fields.name.trim(), description: fields.description.trim(),
+      disableModelInvocation: fields['disable-model-invocation'] === true,
+    };
+  } catch { return null; }
 }
 
 /**

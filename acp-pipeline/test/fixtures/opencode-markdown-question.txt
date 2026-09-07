@@ -1,0 +1,21 @@
+<proposed_plan>
+<interview_state>question</interview_state>
+
+Le spec `.scratch/improve-comments/spec.md` existe déjà avec une structure complète. Je vais affiner les décisions clés par le grilling.
+
+❓ **Q1** - **Périmètre public** : Le spec définit « public = exporté ». Cela signifie que seuls les symboles `export` (classe, interface, fonction, type) reçoivent un JSDoc. Les fonctions internes non exportées ne sont pas documentées. Est-ce que cette frontière est la bonne, ou documenteriez-vous aussi les symboles internes qui sont utilisés par d'autres fichiers dans le même package ?
+
+➡️ Je recommande de **ne documenter que les symboles exportés** : c'est vérifiable automatiquement par le script d'audit, et les symboles internes changent plus fréquemment (coût de maintenance élevé).
+
+---
+
+❓ **Q2** - **Script d'audit** : Le spec propose `scripts/audit-docs.mjs` comme script maison compatible `node:test`, bloquant en CI. Une alternative serait d'utiliser un outil existant comme `typedoc` ou `tsdoc`. Pourquoi un script maison plutôt qu'un outil existant ?
+
+➡️ Je recommande le **script maison** : le repo n'a pas de dépendance externe de linting, le pattern `.mjs` maison est déjà utilisé (ex. `build-resources.mjs`), et un script simple analyse les AST sans surcharge.
+
+---
+
+❓ **Q3** - **Traitement des commentaires existants** : Le spec définit un triple traitement : (a) supprimer les redondants, (b) conserver les architecturaux, (c) promouvoir les inline en JSDoc. La frontière « redondant vs architectural » peut être floue. Avez-vous des exemples concrets de commentaires que vous considérez comme « redondants » à supprimer, et d'autres comme « architecturaux » à conserver ?
+
+➡️ Je recommande la **règle simple** : si le commentaire explique « pourquoi » (intention, décision, historique, contrainte), il est architectural ; s'il explique « quoi » (ce que le code fait déjà), il est redondant. Les exemples du codebase (terminal.ts:90-101, host.ts:97-102) servent de référence.
+</proposed_plan>

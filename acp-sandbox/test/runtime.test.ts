@@ -3,6 +3,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { execFileSync } from 'node:child_process';
+import { createHash, randomUUID } from 'node:crypto';
 
 import {
   DOCKER_SANDBOX_NETWORK_POLICY_CHOICES,
@@ -98,6 +100,36 @@ function hostMutatingGitCalls(calls: SubprocessRequest[]): SubprocessRequest[] {
   return calls.filter(call => call.command === 'git' && mutating.has(call.args[0] ?? ''));
 }
 
+test('installs complete binary resources outside the clone before starting the agent', async t => {
+  const root = `/tmp/slopify-resources/${createHash('sha256').update(randomUUID()).digest('hex')}`;
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const binary = Buffer.alloc(80000, 237);
+  const script = '#!/bin/sh\nprintf frozen\n';
+  const scenario = sandboxScenario();
+  let inspected = false;
+  const fake = fakeExecutor(request => {
+    if (request.args[0] === 'exec' && ['sh', 'chmod'].includes(request.args[2])) {
+      execFileSync(request.args[2], request.args.slice(3));
+    }
+    if (request.args[0] === 'exec' && request.args[2] === 'codex') {
+      assert.deepEqual(fs.readFileSync(`${root}/review/templates/binary.bin`), binary);
+      assert.equal(execFileSync(`${root}/review/scripts/example.sh`, { encoding: 'utf8' }), 'frozen');
+      assert.equal(fs.statSync(`${root}/review/templates/binary.bin`).mode & 0o222, 0);
+      inspected = true;
+    }
+    return scenario.respond(request);
+  });
+  await new DockerSandboxRuntime(fake.execute).runCodex({
+    workspaceCwd: '/repo', runId: 'resources', nodeId: 'review', attempt: 1,
+    model: 'test', prompt: `Read ${root}/review/SKILL.md`,
+    resources: { root, files: [
+      { relativePath: 'review/templates/binary.bin', contentBase64: binary.toString('base64'), executable: false },
+      { relativePath: 'review/scripts/example.sh', contentBase64: Buffer.from(script).toString('base64'), executable: true },
+    ] },
+  });
+  assert.ok(inspected);
+});
+
 function temporaryDirectory(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'slopify-sandbox-lifecycle-'));
 }
@@ -185,6 +217,35 @@ test('creates and previews an attributed Agent Checkpoint without mutating the h
   assert.equal(states[0].baseCommit, 'base123');
   assert.equal(states[0].sandboxId, `id-${sandboxName}`);
   assert.equal(states[1].checkpoint?.checkpoint.commit, 'checkpoint456');
+});
+
+test('runs OpenCode in a cloned sandbox with the opencode non-interactive command', async () => {
+  const scenario = sandboxScenario({
+    changedFiles: ['src/feature.ts'],
+    diff: 'diff --git a/src/feature.ts b/src/feature.ts\n+opencode change\n',
+  });
+  const fake = fakeExecutor(scenario.respond);
+  const runtime = new DockerSandboxRuntime(fake.execute);
+
+  const output = await runtime.runCodex({
+    workspaceCwd: '/repo', runId: 'run', nodeId: 'implement', attempt: 1,
+    prompt: 'Implement the feature.', model: 'opencode-go/glm-5.2',
+    agent: 'opencode', effort: 'high', workspaceEffects: true,
+  });
+
+  assert.equal(output.checkpointStatus, 'checkpointed');
+
+  const create = fake.calls.find(call => call.command === 'sbx' && call.args[0] === 'create' && !call.args.includes('--help'));
+  assert.ok(create);
+  assert.ok(create!.args.includes('opencode'));
+
+  const exec = fake.calls.find(call => call.command === 'sbx' && call.args[0] === 'exec' && call.args.includes('opencode'));
+  assert.ok(exec);
+  assert.deepEqual(exec!.args.slice(0, 8), ['exec', output.sandboxName, 'opencode', 'run', '--auto', '--format', 'json', '--model']);
+  assert.ok(exec!.args.includes('opencode-go/glm-5.2'));
+  assert.ok(exec!.args.includes('--variant'));
+  assert.ok(exec!.args.includes('high'));
+  assert.ok(exec!.args.includes('Implement the feature.'));
 });
 
 test('creates an empty technical checkpoint and returns no_changes when its preview is empty', async () => {

@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
-import { pathToFileURL } from 'node:url';
+import { realpathSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { formatHelp, parseCliArgs } from './args.js';
 import { CliPipelineHost, type CliPipelineBackendFactory } from './host.js';
 import { formatPipelineList, runPipelineInteractive } from './run.js';
@@ -27,7 +28,7 @@ export async function main(
         workspaceCwd,
         Object.assign(context, { keepSandboxes }),
       ),
-      verbose: command.verbose,
+      logLevel: command.logLevel,
     });
 
     if (command.kind === 'list') {
@@ -47,6 +48,12 @@ export async function main(
 }
 
 const entryPoint = process.argv[1];
-if (entryPoint && import.meta.url === pathToFileURL(entryPoint).href) {
-  process.exitCode = await main();
+if (entryPoint) {
+  try {
+    if (realpathSync(entryPoint) === fileURLToPath(import.meta.url)) {
+      process.exitCode = await main();
+    }
+  } catch {
+    // entry point does not exist or cannot be resolved; do not run
+  }
 }

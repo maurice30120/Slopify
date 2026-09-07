@@ -209,6 +209,40 @@ test("PipelineRuntime compiles and persists a Ticket Graph before the first impl
   assert.equal(result.snapshot.executionPlan?.plan.contract, "acp.execution-plan/v1");
 });
 
+test("PipelineRuntime synthesizes a Ticket Graph artifact via the synthesizeArtifacts hook", async () => {
+  const program = compilePipelineV3Definition({
+    version: 3,
+    id: "synthesize-ticket-graph",
+    title: "Synthesize ticket graph",
+    nodes: [{
+      id: "tasks",
+      agent: "Codex",
+      prompt: "Create tasks",
+      output: { name: "tickets", type: "acp.workspace-files/v1", format: "markdown" },
+    }],
+  }, agents).program!;
+  const runtime = new PipelineRuntime(sessionAdapter(async () => ({
+    artifact: { name: "tickets", type: "acp.workspace-files/v1", format: "markdown", value: "handoff" },
+  })), {
+    synthesizeArtifacts: () => [{
+      name: "ticketGraph",
+      type: "acp.ticket-graph/v1",
+      format: "json",
+      value: {
+        contract: "acp.ticket-graph/v1",
+        tickets: [{ id: "T01", title: "One", scope: [], needs: [], validation: [] }],
+      },
+      producerNodeId: "tasks",
+    }],
+  });
+
+  const result = await runtime.start(program);
+  assert.equal(result.status, "completed");
+  assert.equal(result.snapshot.artifacts["tasks.ticketGraph"]?.type, "acp.ticket-graph/v1");
+  assert.equal(result.snapshot.executionPlan?.plan.contract, "acp.execution-plan/v1");
+  assert.deepEqual(result.snapshot.executionPlan?.expansion.expandedNodeIds, ["T01", "final-review"]);
+});
+
 test("PipelineRuntime rejects an unsupported structured Ticket Graph version", async () => {
   const program = compilePipelineV3Definition({
     version: 3,
@@ -606,10 +640,10 @@ test("PipelineRuntime pauses an interview question, records the answer, then pro
   const first = await runtime.start(program, { inputs: { userPrompt: "ship" } });
   assert.equal(first.status, "paused");
   assert.equal(first.pause.type, "question");
-  assert.equal(first.pause.content, "Which API?");
-  assert.equal(first.pause.recommendation, "Use the public API.");
-  assert.equal(first.snapshot.pendingPause?.content, "Which API?");
-  assert.equal(first.snapshot.pendingPause?.recommendation, "Use the public API.");
+  assert.equal(first.pause.content, "Which API?\n\n➡️ Use the public API.");
+  assert.equal(first.pause.recommendation, undefined);
+  assert.equal(first.snapshot.pendingPause?.content, "Which API?\n\n➡️ Use the public API.");
+  assert.equal(first.snapshot.pendingPause?.recommendation, undefined);
   assert.equal(first.snapshot.nodeStates.plan.status, "paused");
   assert.equal(first.snapshot.artifacts["plan.plan"], undefined);
 
@@ -627,6 +661,70 @@ test("PipelineRuntime pauses an interview question, records the answer, then pro
   assert.equal(approval.snapshot.nodeInterviewHistories?.plan.originalPrompt, "Plan ship");
   assert.deepEqual(approval.snapshot.nodeInterviewHistories?.plan.turns.map(turn => turn.role), ["agent", "user"]);
   assert.equal(approval.snapshot.artifacts["plan.plan"].value, proposedReady("Use the public API."));
+});
+
+test("PipelineRuntime pauses a batch interview round exposing every question and a numbered content", async () => {
+  const program = compilePipelineV3Definition({
+    version: 3,
+    id: "interview-batch",
+    title: "Interview Batch",
+    nodes: [
+      {
+        id: "plan",
+        agent: "Codex",
+        prompt: "Plan {{userPrompt}}",
+        interaction: { protocol: "proposed-plan", repairAttempts: 0 },
+        output: { name: "plan", type: "acp.grill-decision/v1", format: "markdown" },
+      },
+      {
+        id: "approval",
+        type: "pause",
+        pause: "approval",
+        content: "{{inputs.plan}}",
+        format: "proposed-plan",
+        needs: ["plan"],
+        inputs: [{ name: "plan", from: "plan.plan", type: "acp.grill-decision/v1", format: "markdown" }],
+        output: { name: "approved", type: "acp.grill-decision/v1", format: "markdown" },
+      },
+    ],
+  }, agents).program!;
+  const prompts: string[] = [];
+  const runtime = new PipelineRuntime(sessionAdapter(async ({ prompt }) => {
+      prompts.push(prompt);
+      if (prompts.length === 1) {
+        return {
+          artifact: {
+            name: "plan",
+            type: "acp.grill-decision/v1",
+            format: "markdown",
+            value: proposedBatchRound([
+              { question: "Which seam owns persistence?", recommendedAnswer: "Repository interface." },
+              { question: "How are transactions bounded?", recommendedAnswer: "Per-request unit of work." },
+            ]),
+          },
+        };
+      }
+      return { artifact: { name: "plan", type: "acp.grill-decision/v1", format: "markdown", value: proposedReady("Repository interface. Per-request unit of work.") } };
+  }), { runIdFactory: () => "run-interview-batch" });
+
+  const first = await runtime.start(program, { inputs: { userPrompt: "ship" } });
+  assert.equal(first.status, "paused");
+  assert.equal(first.pause.type, "question");
+  const round = "Which seam owns persistence?\n\n➡️ Repository interface.\n\nHow are transactions bounded?\n\n➡️ Per-request unit of work.";
+  assert.deepEqual(first.pause.questions, [round]);
+  assert.equal(first.pause.recommendations, undefined);
+  assert.equal(first.pause.content, round);
+  assert.equal(first.snapshot.nodeStates.plan.status, "paused");
+
+  const approval = await runtime.resume(first.runId, {
+    pauseId: first.pause.id,
+    kind: "answer",
+    value: "Repository interface. Per-request unit of work.",
+  });
+
+  assert.equal(approval.status, "paused");
+  assert.equal(approval.pause.type, "approval");
+  assert.match(approval.pause.content, /Repository interface/);
 });
 
 test("PipelineRuntime completes an interview with complete-interview and rejects later question output", async () => {
@@ -1911,13 +2009,27 @@ function proposedQuestion(question: string, recommendedAnswer?: string): string 
   const lines = [
     "<proposed_plan>",
     "<interview_state>question</interview_state>",
-    `<clarification_question>${question}</clarification_question>`,
+    question,
   ];
   if (recommendedAnswer) {
-    lines.push(`<recommended_answer>${recommendedAnswer}</recommended_answer>`);
+    lines.push(`➡️ ${recommendedAnswer}`);
   }
   lines.push("</proposed_plan>");
-  return lines.join("\n");
+  return lines.join("\n\n");
+}
+
+function proposedBatchRound(
+  questions: Array<{ question: string; recommendedAnswer?: string }>,
+): string {
+  const lines = ["<proposed_plan>", "<interview_state>question</interview_state>"];
+  for (const { question, recommendedAnswer } of questions) {
+    lines.push(question);
+    if (recommendedAnswer) {
+      lines.push(`➡️ ${recommendedAnswer}`);
+    }
+  }
+  lines.push("</proposed_plan>");
+  return lines.join("\n\n");
 }
 
 function proposedReady(body: string): string {

@@ -11,10 +11,11 @@ import type {
 import { validatePath } from './security.js';
 
 export class FileSystemHandler {
-  constructor(private readonly workspaceRoot: string) {}
+  constructor(private readonly workspaceRoot: string, private readonly readOnlyRoots: readonly string[] = []) {}
 
   async readTextFile(params: ReadTextFileRequest): Promise<ReadTextFileResponse> {
-    const resolvedPath = validatePath(params.path, this.workspaceRoot);
+    const resource = this.readOnlyRoots.find(root => isWithin(root, params.path));
+    const resolvedPath = validatePath(params.path, resource ?? this.workspaceRoot);
     let content = await fs.readFile(resolvedPath, 'utf8');
 
     if (
@@ -31,9 +32,17 @@ export class FileSystemHandler {
   }
 
   async writeTextFile(params: WriteTextFileRequest): Promise<WriteTextFileResponse> {
+    const absolute = path.resolve(this.workspaceRoot, params.path);
+    if (this.readOnlyRoots.some(root => isWithin(root, absolute))) throw new Error('Run resources are read-only.');
     const resolvedPath = validatePath(params.path, this.workspaceRoot);
+    if (this.readOnlyRoots.some(root => isWithin(root, resolvedPath))) throw new Error('Run resources are read-only.');
     await fs.mkdir(path.dirname(resolvedPath), { recursive: true });
     await fs.writeFile(resolvedPath, params.content, 'utf8');
     return {};
   }
+}
+
+function isWithin(root: string, target: string): boolean {
+  const relative = path.relative(path.resolve(root), target);
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
 }
