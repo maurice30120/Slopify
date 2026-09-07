@@ -32,6 +32,7 @@ export interface SubprocessRequest {
   cwd: string;
   stdin: 'ignore';
   observeOutput?: boolean;
+  onStdout?: (chunk: string) => void;
   signal?: AbortSignal;
   env?: NodeJS.ProcessEnv;
 }
@@ -50,6 +51,7 @@ export interface SandboxRunInput {
   nodeId: string;
   attempt: number;
   prompt: string;
+  onStdout?: (chunk: string) => void;
   resources?: {
     root: string;
     files: Array<{ relativePath: string; contentBase64: string; executable: boolean }>;
@@ -328,7 +330,7 @@ export class DockerSandboxRuntime {
       await this.installResources(input, sandboxName, execution.signal);
 
       const agentArgs = agent === 'opencode'
-        ? ['run', '--auto', '--format', 'json']
+        ? ['run', '--auto', '--format', 'json', '--thinking']
         : ['exec', '--dangerously-bypass-approvals-and-sandbox', '--ephemeral', '--json'];
       const execArgs = ['exec', sandboxName, agent, ...agentArgs];
       if (input.model) execArgs.push('--model', input.model);
@@ -342,7 +344,8 @@ export class DockerSandboxRuntime {
         args: execArgs,
         cwd: input.workspaceCwd,
         stdin: 'ignore',
-        observeOutput: true,
+        observeOutput: !input.onStdout,
+        onStdout: input.onStdout,
         signal: execution.signal,
       });
       stdout = agentRun.stdout;
@@ -760,7 +763,7 @@ export function createNodeSubprocessExecutor(): SubprocessExecutor {
     };
     child.stdout.setEncoding('utf8');
     child.stderr.setEncoding('utf8');
-    child.stdout.on('data', chunk => { stdout += chunk; if (request.observeOutput) process.stdout.write(chunk); });
+    child.stdout.on('data', chunk => { stdout += chunk; request.onStdout?.(chunk); if (request.observeOutput) process.stdout.write(chunk); });
     child.stderr.on('data', chunk => { stderr += chunk; if (request.observeOutput) process.stderr.write(chunk); });
     child.once('error', error => {
       if (request.signal?.aborted) {

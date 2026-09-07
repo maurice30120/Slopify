@@ -1,3 +1,6 @@
+import type { AgentSideConnection, SessionNotification } from '@agentclientprotocol/sdk';
+import { DockerSandboxAcpBridgeAgent } from '../src/acpBridge.js';
+import { createNodeSubprocessExecutor } from '../src/runtime.js';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -241,7 +244,7 @@ test('runs OpenCode in a cloned sandbox with the opencode non-interactive comman
 
   const exec = fake.calls.find(call => call.command === 'sbx' && call.args[0] === 'exec' && call.args.includes('opencode'));
   assert.ok(exec);
-  assert.deepEqual(exec!.args.slice(0, 8), ['exec', output.sandboxName, 'opencode', 'run', '--auto', '--format', 'json', '--model']);
+  assert.deepEqual(exec!.args.slice(0, 9), ['exec', output.sandboxName, 'opencode', 'run', '--auto', '--format', 'json', '--thinking', '--model']);
   assert.ok(exec!.args.includes('opencode-go/glm-5.2'));
   assert.ok(exec!.args.includes('--variant'));
   assert.ok(exec!.args.includes('high'));
@@ -877,5 +880,61 @@ test('suspends reconciliation on identity or base divergence without relaunch, c
       assert.equal(fake.calls.some(call => ['create', 'rm', 'run'].includes(call.args[0] ?? '')), false);
       assert.deepEqual(hostMutatingGitCalls(fake.calls), []);
     });
+  }
+});
+
+for (const agent of ['opencode', 'codex'] as const) {
+  test(`streams ${agent} thinking through the runtime and ACP before subprocess completion`, async () => {
+    const updates: SessionNotification[] = [];
+    const scenario = sandboxScenario();
+    const thought = agent === 'opencode'
+      ? { type: 'reasoning', part: { text: 'Inspecting host' } }
+      : { type: 'item.completed', item: { type: 'reasoning', text: 'Inspecting host' } };
+    const message = agent === 'opencode'
+      ? { type: 'text', part: { text: 'Done' } }
+      : { type: 'item.completed', item: { type: 'agent_message', text: 'Done' } };
+    const wire = JSON.stringify(thought) + '\n' + JSON.stringify(message);
+    const fake = fakeExecutor(request => {
+      if (request.args[0] === 'exec' && request.args[2] === agent) {
+        if (agent === 'opencode') assert.ok(request.args.includes('--thinking'));
+        assert.equal(request.observeOutput, false, 'ACP must own output rendering');
+        request.onStdout?.(wire.slice(0, 13));
+        assert.equal(updates.length, 0, 'partial JSON is buffered');
+        request.onStdout?.(wire.slice(13));
+        assert.equal(updates[0]?.update.sessionUpdate, 'agent_thought_chunk');
+        return result(wire);
+      }
+      return scenario.respond(request);
+    });
+    const bridge = new DockerSandboxAcpBridgeAgent({
+      sessionUpdate: async (update: SessionNotification) => { updates.push(update); },
+    } as AgentSideConnection, new DockerSandboxRuntime(fake.execute), {
+      agent, runId: 'stream', nodeId: 'plan', attempt: 1, model: 'test',
+    });
+    const { sessionId } = await bridge.newSession({ cwd: '/repo', mcpServers: [] });
+    await bridge.prompt({ sessionId, prompt: [{ type: 'text', text: 'inspect' }] });
+    const preview = await bridge.extMethod('sandbox/preview', { sessionId });
+    assert.equal(preview.ok, true, JSON.stringify(preview));
+    assert.deepEqual(updates.map(event => event.update), [
+      { sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: 'Inspecting host' } },
+      { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Done' } },
+    ], 'flush unterminated final record once, without replaying stdout');
+  });
+}
+
+test('subprocess executor delivers stdout while the child is still running', async () => {
+  const directory = temporaryDirectory();
+  const ack = path.join(directory, 'ack');
+  try {
+    const result = await createNodeSubprocessExecutor()({
+      command: process.execPath,
+      args: ['-e', `process.stdout.write('réfléchit'); const fs = require('node:fs'); const timer = setInterval(() => { if (fs.existsSync(process.argv[1])) { clearInterval(timer); clearTimeout(timeout); } }, 10); const timeout = setTimeout(() => process.exit(2), 3000);`, ack],
+      cwd: directory, stdin: 'ignore',
+      onStdout: () => { fs.writeFileSync(ack, 'received'); },
+    });
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.stdout, 'réfléchit');
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
   }
 });

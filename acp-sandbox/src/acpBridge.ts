@@ -11,6 +11,7 @@ import {
 } from '@agentclientprotocol/sdk';
 import { randomUUID } from 'node:crypto';
 
+import { SandboxOutputStream } from './outputStream.js';
 import { SandboxAcpExtensionHandler } from './extensions.js';
 import {
   DockerSandboxRuntime,
@@ -22,7 +23,7 @@ import {
 
 export type DockerSandboxAcpBridgeOptions = Omit<
   SandboxRunInput,
-  'workspaceCwd' | 'prompt' | 'signal'
+  'workspaceCwd' | 'prompt' | 'signal' | 'onStdout'
 >;
 
 export interface SandboxBridgeFailure {
@@ -74,28 +75,36 @@ export class DockerSandboxAcpBridgeAgent implements Agent {
     const controller = new AbortController();
     session.active = controller;
     session.failure = undefined;
+    const pending: Promise<void>[] = [];
+    const output = new SandboxOutputStream(this.options.agent ?? 'codex', update => {
+      const delivery = this.connection.sessionUpdate({ sessionId: params.sessionId, update });
+      // Attach a rejection handler immediately; propagate failures when draining.
+      void delivery.catch(() => {});
+      pending.push(delivery);
+    });
+    let receivedOutput = false;
     try {
       session.result = await this.runtime.runCodex({
         ...this.options,
         workspaceCwd: session.cwd,
         prompt: textPrompt(params),
         signal: controller.signal,
+        onStdout: chunk => {
+          receivedOutput = true;
+          output.push(chunk);
+        },
       });
-      if (session.result.stdout.trim()) {
-        await this.connection.sessionUpdate({
-          sessionId: params.sessionId,
-          update: {
-            sessionUpdate: 'agent_message_chunk',
-            content: { type: 'text', text: session.result.stdout },
-          },
-        });
-      }
+      // Restored checkpoints and injected executors may only provide final output.
+      if (!receivedOutput) output.push(session.result.stdout);
+      output.flush();
+      await Promise.all(pending);
       return { stopReason: 'end_turn' as const };
     } catch (error: unknown) {
       if (controller.signal.aborted) return { stopReason: 'cancelled' as const };
       session.failure = bridgeFailure(error);
       return { stopReason: 'end_turn' as const };
     } finally {
+      await Promise.allSettled(pending);
       session.active = undefined;
     }
   }
