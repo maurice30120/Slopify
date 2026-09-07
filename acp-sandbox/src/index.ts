@@ -80,6 +80,8 @@ export interface SandboxAgentConfig {
   effort?: 'low' | 'medium' | 'high' | 'xhigh';
   displayName?: string;
   skills?: boolean;
+  /** Fragment JSON écrit tel quel dans ~/.config/opencode/config.json de la sandbox. */
+  opencodeConfig?: Record<string, unknown>;
 }
 
 export interface SandboxPipelineConfig {

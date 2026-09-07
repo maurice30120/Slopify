@@ -36,12 +36,33 @@ test('accepts Codex and OpenCode for the sandbox transport with corrective error
   assert.equal(acceptedCodex.agents.Isolated.transport, 'sandbox');
   assert.equal(acceptedCodex.agents.Isolated.agent, 'codex');
 
+  const opencodeConfig = {
+    provider: {
+      'opencode-go': {
+        npm: '@ai-sdk/openai-compatible',
+        options: { baseURL: 'https://opencode.ai/zen/go/v1', apiKey: '{env:OPENCODE_GO_API_KEY}' },
+      },
+    },
+  };
   const acceptedOpencode = parseAcpConfig(JSON.stringify({ agents: {
-    Isolated: { transport: 'sandbox', agent: 'opencode', model: 'opencode-go/glm-5.2' },
+    Isolated: { transport: 'sandbox', agent: 'opencode', model: 'opencode-go/glm-5.2', opencodeConfig },
   } }));
   assert.deepEqual(acceptedOpencode.errors, []);
   assert.equal(acceptedOpencode.agents.Isolated.transport, 'sandbox');
   assert.equal(acceptedOpencode.agents.Isolated.agent, 'opencode');
+  assert.deepEqual(acceptedOpencode.agents.Isolated.opencodeConfig, opencodeConfig);
+
+  const rejectedOnCodex = parseAcpConfig(JSON.stringify({ agents: {
+    WithConfig: { transport: 'sandbox', agent: 'codex', model: 'gpt-5.6-codex', opencodeConfig },
+  } }));
+  assert.equal(rejectedOnCodex.agents.WithConfig, undefined);
+  assert.match(rejectedOnCodex.errors.join('\n'), /agents\.WithConfig\.opencodeConfig is only supported for agent "opencode"/);
+
+  const rejectedShape = parseAcpConfig(JSON.stringify({ agents: {
+    BadShape: { transport: 'sandbox', agent: 'opencode', model: 'opencode-go/glm-5.2', opencodeConfig: ['nope'] },
+  } }));
+  assert.equal(rejectedShape.agents.BadShape, undefined);
+  assert.match(rejectedShape.errors.join('\n'), /agents\.BadShape\.opencodeConfig must be an object/);
 
   const rejected = parseAcpConfig(JSON.stringify({ agents: {
     Other: { transport: 'sandbox', agent: 'pi', model: 'pi-model' },

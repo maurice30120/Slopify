@@ -112,7 +112,7 @@ terminal incompatible, utiliser `SLOPIFY_ANSI_STREAM=0`.
 Pipeline Change Set est rejeté, présenté à l’utilisateur, appliqué ou rejeté
 automatiquement.
 
-Un agent isolé accepte Codex ou OpenCode :
+Un agent isolé accepte Codex ou OpenCode :
 
 ```json
 {
@@ -122,6 +122,40 @@ Un agent isolé accepte Codex ou OpenCode :
       "agent": "codex",
       "model": "gpt-5.6-codex",
       "effort": "high"
+    }
+  }
+}
+```
+
+Un agent OpenCode peut déclarer `opencodeConfig` : le fragment JSON est écrit
+tel quel dans `~/.config/opencode/config.json` de la sandbox à chaque exécution
+(l’image n’embarque pas les providers du workspace). Les clés n’y apparaissent
+jamais en clair — le placeholder `{env:OPENCODE_GO_API_KEY}` est résolu par le
+proxy Docker Sandbox via `sbx secret set-custom` :
+
+```json
+{
+  "agents": {
+    "OpenCode Sandbox": {
+      "transport": "sandbox",
+      "agent": "opencode",
+      "model": "opencode-go/glm-5.2",
+      "effort": "high",
+      "opencodeConfig": {
+        "provider": {
+          "opencode-go": {
+            "npm": "@ai-sdk/openai-compatible",
+            "name": "OpenCode Go",
+            "options": {
+              "baseURL": "https://opencode.ai/zen/go/v1",
+              "apiKey": "{env:OPENCODE_GO_API_KEY}"
+            },
+            "models": {
+              "glm-5.2": { "name": "GLM 5.2" }
+            }
+          }
+        }
+      }
     }
   }
 }

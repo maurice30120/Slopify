@@ -39,6 +39,22 @@ function result(stdout = '', stderr = '', exitCode = 0): SubprocessResult {
   return { exitCode, stdout, stderr };
 }
 
+const opencodeConfigFixture = {
+  provider: {
+    'opencode-go': {
+      npm: '@ai-sdk/openai-compatible',
+      name: 'OpenCode Go',
+      options: {
+        baseURL: 'https://opencode.ai/zen/go/v1',
+        apiKey: '{env:OPENCODE_GO_API_KEY}',
+      },
+      models: {
+        'glm-5.2': { name: 'GLM 5.2' },
+      },
+    },
+  },
+};
+
 function fakeExecutor(respond: (request: SubprocessRequest) => SubprocessResult | Promise<SubprocessResult>): { execute: SubprocessExecutor; calls: SubprocessRequest[] } {
   const calls: SubprocessRequest[] = [];
   return {
@@ -211,6 +227,7 @@ test('creates and previews an attributed Agent Checkpoint without mutating the h
     `HEAD:${checkpointRef}`,
   ]);
   assert.deepEqual(hostMutatingGitCalls(fake.calls), []);
+  assert.equal(fake.calls.some(call => call.command === 'sbx' && call.args[0] === 'exec' && call.args.includes('slopify-opencode-config')), false);
   assert.deepEqual(fake.calls.at(-1)?.args, ['rm', '--force', sandboxName]);
   assert.deepEqual(states.map(state => [state.integrationState, state.resourceState]), [
     ['sandbox_created', 'active'],
@@ -233,7 +250,7 @@ test('runs OpenCode in a cloned sandbox with the opencode non-interactive comman
   const output = await runtime.runCodex({
     workspaceCwd: '/repo', runId: 'run', nodeId: 'implement', attempt: 1,
     prompt: 'Implement the feature.', model: 'opencode-go/glm-5.2',
-    agent: 'opencode', effort: 'high', workspaceEffects: true,
+    agent: 'opencode', effort: 'high', opencodeConfig: opencodeConfigFixture, workspaceEffects: true,
   });
 
   assert.equal(output.checkpointStatus, 'checkpointed');
@@ -249,6 +266,35 @@ test('runs OpenCode in a cloned sandbox with the opencode non-interactive comman
   assert.ok(exec!.args.includes('--variant'));
   assert.ok(exec!.args.includes('high'));
   assert.ok(exec!.args.includes('Implement the feature.'));
+
+  const inject = fake.calls.find(call => call.command === 'sbx' && call.args[0] === 'exec' && call.args.includes('slopify-opencode-config'));
+  assert.ok(inject);
+  assert.deepEqual(inject!.args.slice(0, 5), [
+    'exec', output.sandboxName, 'sh', '-c',
+    'mkdir -p -- "$HOME/.config/opencode" && printf %s "$1" > "$HOME/.config/opencode/config.json"',
+  ]);
+  assert.deepEqual(JSON.parse(inject!.args.at(-1) ?? ''), opencodeConfigFixture);
+  assert.ok(fake.calls.indexOf(inject!) < fake.calls.indexOf(exec!), 'the declared config must be installed before the agent runs');
+});
+
+test('injects the OpenCode config only when the workspace declares one for an OpenCode agent', async () => {
+  for (const caseItem of [
+    { name: 'opencode without config', agent: 'opencode' as const, opencodeConfig: undefined },
+    { name: 'codex with config', agent: 'codex' as const, opencodeConfig: opencodeConfigFixture },
+  ]) {
+    const fake = fakeExecutor(sandboxScenario().respond);
+    await new DockerSandboxRuntime(fake.execute).runCodex({
+      workspaceCwd: '/repo', runId: 'gate', nodeId: 'implement', attempt: 1,
+      prompt: 'Implement the feature.', model: 'opencode-go/glm-5.2',
+      agent: caseItem.agent,
+      ...(caseItem.opencodeConfig ? { opencodeConfig: caseItem.opencodeConfig } : {}),
+    });
+    assert.equal(
+      fake.calls.some(call => call.command === 'sbx' && call.args[0] === 'exec' && call.args.includes('slopify-opencode-config')),
+      false,
+      caseItem.name,
+    );
+  }
 });
 
 test('creates an empty technical checkpoint and returns no_changes when its preview is empty', async () => {
@@ -760,6 +806,29 @@ test('resumes a matching sandbox after creation without creating a second resour
   assert.equal(output.checkpoint.commit, 'checkpoint456');
   assert.equal(fake.calls.some(call => call.args[0] === 'create' && !call.args.includes('--help')), false);
   assert.equal(fake.calls.some(call => call.args[0] === 'exec' && call.args.includes('codex')), true);
+});
+
+test('reinjects the OpenCode provider config when resuming an uncheckpointed OpenCode sandbox', async () => {
+  const sandboxName = stableSandboxName('run-resume-opencode', 'work', 1);
+  const scenario = sandboxScenario({ changedFiles: ['work.ts'], diff: 'diff' });
+  const fake = fakeExecutor(request => {
+    if (request.args.join(' ') === 'ls --json') return result(JSON.stringify([{ id: 'stable-id', name: sandboxName }]));
+    if (request.command === 'sbx' && request.args.join(' ') === `exec ${sandboxName} git rev-parse HEAD`) return result('base123\n');
+    return scenario.respond(request);
+  });
+
+  await new DockerSandboxRuntime(fake.execute).runCodex({
+    workspaceCwd: '/repo', runId: 'run-resume-opencode', nodeId: 'work', attempt: 1,
+    prompt: 'Continue safely.', model: 'opencode-go/glm-5.2', agent: 'opencode',
+    opencodeConfig: opencodeConfigFixture,
+    resumeState: {
+      sandboxName, sandboxId: 'stable-id', runId: 'run-resume-opencode', nodeId: 'work', attempt: 1,
+      baseCommit: 'base123', integrationState: 'sandbox_created', resourceState: 'active',
+    },
+  });
+
+  assert.equal(fake.calls.some(call => call.args[0] === 'create' && !call.args.includes('--help')), false);
+  assert.equal(fake.calls.some(call => call.args[0] === 'exec' && call.args.includes('slopify-opencode-config')), true);
 });
 
 test('resumes after checkpoint persistence without relaunching Codex or requiring the removed resource', async () => {

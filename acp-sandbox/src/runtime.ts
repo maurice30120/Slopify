@@ -59,6 +59,7 @@ export interface SandboxRunInput {
   model: string;
   agent?: SandboxAgentKind;
   effort?: 'low' | 'medium' | 'high' | 'xhigh';
+  opencodeConfig?: Record<string, unknown>;
   signal?: AbortSignal;
   timeoutMs?: number;
   workspaceEffects?: boolean;
@@ -240,6 +241,30 @@ export class DockerSandboxRuntime {
     }
   }
 
+  // L'image sandbox OpenCode n'embarque pas les providers du workspace et les
+  // écritures dans $HOME ne survivent pas à un redémarrage de sandbox : le
+  // fragment déclaré par le catalog est réinjecté à chaque exécution, avant de
+  // lancer l'agent.
+  private async installOpenCodeConfig(
+    cwd: string,
+    sandboxName: string,
+    config: Record<string, unknown>,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    await this.requireSuccess({
+      command: 'sbx',
+      args: [
+        'exec', sandboxName,
+        'sh', '-c', 'mkdir -p -- "$HOME/.config/opencode" && printf %s "$1" > "$HOME/.config/opencode/config.json"',
+        'slopify-opencode-config',
+        `${JSON.stringify(config, null, 2)}\n`,
+      ],
+      cwd,
+      stdin: 'ignore',
+      signal,
+    }, 'install the OpenCode config');
+  }
+
   async runCodex(input: SandboxRunInput): Promise<SandboxRunResult> {
     const agent = input.agent ?? 'codex';
     const sandboxName = input.resumeState?.sandboxName ?? stableSandboxName(input.runId, input.nodeId, input.attempt);
@@ -328,6 +353,9 @@ export class DockerSandboxRuntime {
       }
 
       await this.installResources(input, sandboxName, execution.signal);
+      if (agent === 'opencode' && input.opencodeConfig) {
+        await this.installOpenCodeConfig(input.workspaceCwd, sandboxName, input.opencodeConfig, execution.signal);
+      }
 
       const agentArgs = agent === 'opencode'
         ? ['run', '--auto', '--format', 'json', '--thinking']

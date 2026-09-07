@@ -169,12 +169,14 @@ function parseAgent(
     const effort = value.effort === undefined
       ? undefined
       : readSandboxEffort(value.effort, `agents.${name}.effort`, errors);
-    if (!model || effort === null) return null;
+    const opencodeConfig = readOpenCodeConfig(value.opencodeConfig, value.agent, `agents.${name}.opencodeConfig`, errors);
+    if (!model || effort === null || opencodeConfig === null) return null;
     return {
       transport: 'sandbox',
       agent: value.agent,
       model,
       ...(effort === undefined ? {} : { effort }),
+      ...(opencodeConfig === undefined ? {} : { opencodeConfig }),
       ...(typeof value.displayName === 'string' ? { displayName: value.displayName } : {}),
       ...(typeof value.skills === 'boolean' ? { skills: value.skills } : {}),
     };
@@ -224,6 +226,24 @@ function readSandboxEffort(
   }
   errors.push(`${scope} must be "low", "medium", "high", or "xhigh".`);
   return null;
+}
+
+function readOpenCodeConfig(
+  value: unknown,
+  agent: unknown,
+  scope: string,
+  errors: string[],
+): Record<string, unknown> | undefined | null {
+  if (value === undefined) return undefined;
+  if (agent !== 'opencode') {
+    errors.push(`${scope} is only supported for agent "opencode".`);
+    return null;
+  }
+  if (!isRecord(value)) {
+    errors.push(`${scope} must be an object.`);
+    return null;
+  }
+  return value;
 }
 
 function readNonEmptyString(value: unknown, scope: string, errors: string[]): string | null {

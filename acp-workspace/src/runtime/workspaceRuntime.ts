@@ -145,6 +145,7 @@ export function createWorkspaceRuntime(options: CreateWorkspaceRuntimeOptions): 
           agent: config.agent,
           model: config.model,
           effort: config.effort,
+          ...(config.opencodeConfig ? { opencodeConfig: config.opencodeConfig } : {}),
           timeoutMs: resolveTimeouts(catalog.config.pipeline.timeouts).promptMs,
           workspaceEffects: input.sideEffects === 'workspace',
           keepSandbox: options.keepSandboxes,
