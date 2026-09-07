@@ -2,7 +2,6 @@ import { randomUUID } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
-import { createMarkdownStreamRenderer, type MarkdownStreamRenderer } from 'markstream-cli';
 import {
   PipelineRuntime,
   PipelineRuntimeAgentAdapter,
@@ -22,6 +21,7 @@ import {
 import { synthesizeTicketGraphArtifact } from '@acp-client/workspace';
 
 import type { LogLevel } from './args.js';
+import { MarkdownBlockStream } from './markdownBlockStream.js';
 import type { CliTerminal } from './terminal.js';
 
 type SessionNotification = Parameters<NonNullable<PipelineAgentRunInput['onSessionUpdate']>>[0];
@@ -81,7 +81,7 @@ export class CliPipelineHost {
   private readonly streamedContentByNode = new Set<string>();
   /** Dernier contenu reçu, car certains adaptateurs renvoient le texte cumulatif. */
   private readonly streamedTextByNode = new Map<string, string>();
-  private readonly rendererByNode = new Map<string, MarkdownStreamRenderer>();
+  private readonly blockStreamByNode = new Map<string, MarkdownBlockStream>();
   private readonly runStore: PipelineRunStore;
   private readonly logLevel: LogLevel;
 
@@ -219,9 +219,9 @@ export class CliPipelineHost {
           this.streamedTextByNode.delete(key);
         }
       }
-      for (const key of this.rendererByNode.keys()) {
+      for (const key of this.blockStreamByNode.keys()) {
         if (key.startsWith(`${result.runId}:`)) {
-          this.rendererByNode.delete(key);
+          this.blockStreamByNode.delete(key);
         }
       }
     }
@@ -284,7 +284,7 @@ export class CliPipelineHost {
           this.activityByNode.delete(activityKey(event.runId, event.nodeId));
           this.streamedContentByNode.delete(activityKey(event.runId, event.nodeId));
           this.streamedTextByNode.delete(activityKey(event.runId, event.nodeId));
-          this.rendererByNode.delete(activityKey(event.runId, event.nodeId));
+          this.blockStreamByNode.delete(activityKey(event.runId, event.nodeId));
         }
       },
     });
@@ -394,11 +394,19 @@ export class CliPipelineHost {
     if (previous !== kind) {
       this.activityByNode.set(key, kind);
       if (this.shouldLog('verbose')) {
-        // Ferme la ligne de contenu streamé de la phase précédente avant
-        // d'écrire l'en-tête de la nouvelle phase (réfléchit → répond).
+        // Vide le tampon de la phase précédente (rendu par blocs) avant
+        // d'écrire l'en-tête de la nouvelle phase (réfléchit → répond). En
+        // texte brut, un saut de ligne suffit car les écritures n'en ajoutent
+        // pas ; en mode blocs, le rendu se termine déjà par un saut de ligne.
         if (this.streamedContentByNode.has(key)) {
-          this.rendererByNode.delete(key);
-          this.options.terminal.writeErrorRaw('\n');
+          const stream = this.blockStreamByNode.get(key);
+          if (stream) {
+            const remaining = stream.flush();
+            if (remaining) this.options.terminal.writeErrorRaw(remaining);
+            this.blockStreamByNode.delete(key);
+          } else {
+            this.options.terminal.writeErrorRaw('\n');
+          }
         }
         this.streamedTextByNode.delete(key);
         const label = formatAgentLabel(node);
@@ -410,8 +418,10 @@ export class CliPipelineHost {
     // Streaming en direct du contenu des pensées et de la réponse. Le contenu
     // des pensées reste exclu de la persistance (.acp/logs) — voir
     // sanitizeSessionNotification — mais s'affiche ici à la demande.
-    // Sur un TTY, le Markdown est rendu en ANSI via markstream-cli ; sur un
-    // flux non-TTY (pipe, tests), le texte brut est écrit tel quel.
+    // Sur un TTY, le Markdown est rendu par blocs terminés via markstream-cli
+    // (chaque bloc écrit une seule fois, sans déplacement de curseur) ; sur un
+    // flux non-TTY (pipe, tests) ou avec SLOPIFY_ANSI_STREAM=0, le texte brut
+    // est écrit tel quel.
     if (this.shouldLog('verbose')) {
       const content = update?.content;
       const incomingText = content?.type === 'text' ? content.text : '';
@@ -423,22 +433,19 @@ export class CliPipelineHost {
         : incomingText;
       this.streamedTextByNode.set(key, incomingText);
       if (text) {
-        // Le rendu est automatique sur TTY. Les terminaux qui ne gèrent pas
-        // les patches de curseur peuvent le désactiver explicitement.
-        const patchAnsi = this.options.terminal.supportsAnsi
+        // Sur TTY le rendu par blocs est le comportement par défaut. Les flux
+        // non-TTY ou SLOPIFY_ANSI_STREAM=0 conservent le texte brut.
+        const renderBlocks = this.options.terminal.supportsAnsi
           && process.env.SLOPIFY_ANSI_STREAM !== '0';
-        if (patchAnsi) {
-          let renderer = this.rendererByNode.get(key);
-          if (!renderer) {
-            renderer = createMarkdownStreamRenderer({
-              strategy: 'smart',
-              render: { color: true, streaming: true, width: this.options.terminal.columns },
-            });
-            this.rendererByNode.set(key, renderer);
+        if (renderBlocks) {
+          let stream = this.blockStreamByNode.get(key);
+          if (!stream) {
+            stream = new MarkdownBlockStream({ width: this.options.terminal.columns });
+            this.blockStreamByNode.set(key, stream);
           }
-          const patch = renderer.push(text);
-          if (patch) {
-            this.options.terminal.writeErrorRaw(patch);
+          const rendered = stream.push(text);
+          if (rendered) {
+            this.options.terminal.writeErrorRaw(rendered);
           }
         } else {
           this.options.terminal.writeErrorRaw(text);
@@ -451,9 +458,15 @@ export class CliPipelineHost {
   private closeStreamedLine(runId: string, nodeId: string): void {
     const key = activityKey(runId, nodeId);
     if (this.streamedContentByNode.delete(key)) {
-      this.rendererByNode.delete(key);
+      const stream = this.blockStreamByNode.get(key);
+      if (stream) {
+        const remaining = stream.flush();
+        if (remaining) this.options.terminal.writeErrorRaw(remaining);
+        this.blockStreamByNode.delete(key);
+      } else {
+        this.options.terminal.writeErrorRaw('\n');
+      }
       this.streamedTextByNode.delete(key);
-      this.options.terminal.writeErrorRaw('\n');
     }
   }
 }
