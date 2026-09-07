@@ -437,3 +437,48 @@ function walk(dir: string): string[] {
     return entry.isDirectory() ? walk(target) : [target];
   });
 }
+
+for (const change of ['unchanged', 'modified', 'restored', 'deleted', 'untracked'] as const) {
+  test(`WorkspaceRun reports only changes since its baseline: ${change}`, async t => {
+    const cwd = workspace();
+    t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
+    const git = (...args: string[]) => execFileSync('git', args, { cwd, stdio: 'ignore' });
+    git('init');
+    for (const file of ['preexisting.txt', 'target.txt']) fs.writeFileSync(path.join(cwd, file), 'original\n');
+    git('add', '.');
+    git('-c', 'user.name=ACP Test', '-c', 'user.email=acp@example.test', 'commit', '-m', 'initial');
+    fs.writeFileSync(path.join(cwd, 'preexisting.txt'), 'already dirty\n');
+    fs.writeFileSync(path.join(cwd, 'target.txt'), 'already dirty\n');
+    const run = createWorkspaceRun({
+      workspaceCwd: cwd,
+      start: async () => {
+        if (change === 'modified') fs.writeFileSync(path.join(cwd, 'target.txt'), 'changed during run\n');
+        if (change === 'restored') fs.writeFileSync(path.join(cwd, 'target.txt'), 'original\n');
+        if (change === 'deleted') fs.unlinkSync(path.join(cwd, 'target.txt'));
+        if (change === 'untracked') fs.writeFileSync(path.join(cwd, 'new.txt'), 'new\n');
+        return {
+          status: 'paused', runId: 'run-plan',
+          pause: {
+            id: 'approval', nodeId: 'plan_approval', type: 'approval',
+            content: 'Approve?', format: 'markdown', workspaceGuard: 'documentation-only',
+          },
+          snapshot: runtimeSnapshot('paused'),
+        };
+      },
+      resume: async () => { throw new Error('not resumed'); },
+    });
+    const outcome = await run.start('planning', 'make a plan');
+    if (change === 'unchanged') {
+      assert.equal(outcome.status, 'interaction-required');
+      return;
+    }
+    assert.equal(outcome.status, 'failed');
+    if (outcome.status !== 'failed') return;
+    assert.equal(outcome.error.code, 'preimplementation_workspace_change');
+    assert.doesNotMatch(outcome.error.message, /preexisting\.txt/);
+    assert.match(outcome.error.message, /since the run started/);
+    assert.match(outcome.error.message, /Existing uncommitted changes.*not listed/);
+    assert.match(outcome.error.message, change === 'untracked' ? /new\.txt/ : /target\.txt/);
+    if (change === 'untracked') assert.doesNotMatch(outcome.error.message, /target\.txt/);
+  });
+}

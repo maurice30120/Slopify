@@ -17,9 +17,7 @@ export const SEQUENTIAL_DELIVERY_ARTIFACT_TYPE = 'acp.sequential-delivery/v1';
 const SCRATCH_REFERENCE = /`((?:\.\/)?\.scratch\/[^`\r\n]+)`/g;
 
 interface WorkspaceState {
-  trackedPatch: string;
-  trackedPaths: string[];
-  untrackedFiles: Record<string, string>;
+  files: Record<string, string>;
 }
 
 export interface WorkspaceRunPolicyOptions {
@@ -535,34 +533,44 @@ function toWorkspacePath(workspaceCwd: string, file: string): string {
 function captureWorkspaceState(workspaceCwd: string): WorkspaceState | undefined {
   try {
     if (runGit(workspaceCwd, ['rev-parse', '--is-inside-work-tree']).trim() !== 'true') return undefined;
-    const exclusions = [
-      ':(exclude).scratch/**',
-      ':(exclude).acp/runs-v3/**',
-      ':(exclude)CONTEXT.md',
-      ':(exclude)docs/architecture/adr/**',
-    ];
-    const trackedPatch = runGit(workspaceCwd, ['diff', '--binary', 'HEAD', '--', '.', ...exclusions]);
-    const trackedPaths = splitLines(runGit(workspaceCwd, ['diff', '--name-only', 'HEAD', '--', '.', ...exclusions]));
-    const untrackedFiles = Object.fromEntries(runGit(workspaceCwd, ['ls-files', '--others', '--exclude-standard', '-z'])
-      .split('\0').filter(Boolean).map(value => value.split(path.sep).join('/')).filter(file => !isWorkspaceGuardAllowedPath(file)).sort()
-      .map(file => [file, fingerprintPath(path.join(workspaceCwd, file))]));
-    return { trackedPatch, trackedPaths, untrackedFiles };
+    // Snapshot file contents, including existing local edits, so HEAD-relative changes
+    // cannot implicate untouched dirty files or hide files restored during the run.
+    const paths = runGit(workspaceCwd, ['ls-files', '--cached', '--others', '--exclude-standard', '-z'])
+      .split('\0').filter(Boolean).filter(file => !isWorkspaceGuardAllowedPath(file));
+    const files = Object.fromEntries([...new Set(paths)].sort().flatMap(file => {
+      try { return [[file, fingerprintPath(path.join(workspaceCwd, file))]]; }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+        throw error;
+      }
+    }));
+    return { files };
   } catch { return undefined; }
 }
 
 function validateWorkspaceState(before: WorkspaceState | undefined, after: WorkspaceState | undefined): string | undefined {
-  if (!before || !after || (before.trackedPatch === after.trackedPatch && JSON.stringify(before.untrackedFiles) === JSON.stringify(after.untrackedFiles))) return undefined;
-  const untracked = new Set([...Object.keys(before.untrackedFiles), ...Object.keys(after.untrackedFiles)]);
-  const changed = [...untracked].filter(file => before.untrackedFiles[file] !== after.untrackedFiles[file]);
-  const paths = [...new Set([...after.trackedPaths, ...changed])].sort();
-  return `Documentation-only nodes changed workspace files outside .scratch, CONTEXT.md, or docs/architecture/adr/${paths.length ? `: ${paths.join(', ')}` : ''}`;
+  if (!before || !after) return undefined;
+  const paths = [...new Set([...Object.keys(before.files), ...Object.keys(after.files)])]
+    .filter(file => before.files[file] !== after.files[file]).sort();
+  if (paths.length === 0) return undefined;
+  const changes = paths.map(file => {
+    const status = !(file in before.files) ? 'added' : !(file in after.files) ? 'deleted' : 'modified';
+    return `  - ${status}: ${JSON.stringify(file)}`;
+  });
+  return [
+    `Documentation-only workspace guard: ${paths.length} file(s) changed since the run started outside the allowed paths.`,
+    'Allowed paths: .scratch/, CONTEXT.md, docs/architecture/adr/, .acp/runs-v3/ (run state).',
+    'Existing uncommitted changes that stayed unchanged are not listed.',
+    ...changes,
+    'These changes may come from agents or concurrent edits; this check cannot identify their author.',
+    'Review the listed files before retrying. A dirty workspace alone does not cause this failure.',
+  ].join('\n');
 }
 
 function runGit(cwd: string, args: string[]): string {
   return execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
 }
 
-function splitLines(value: string): string[] { return value.split(/\r?\n/).map(line => line.trim()).filter(Boolean); }
 function isWorkspaceGuardAllowedPath(file: string): boolean {
   return file === 'CONTEXT.md' || file === '.scratch' || file.startsWith('.scratch/')
     || file === '.acp/runs-v3' || file.startsWith('.acp/runs-v3/')
@@ -571,6 +579,6 @@ function isWorkspaceGuardAllowedPath(file: string): boolean {
 function fingerprintPath(file: string): string {
   const stat = fs.lstatSync(file);
   if (stat.isSymbolicLink()) return createHash('sha256').update(`link:${fs.readlinkSync(file)}`).digest('hex');
-  if (stat.isFile()) return createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+  if (stat.isFile()) return createHash('sha256').update(`file:${stat.mode}:`).update(fs.readFileSync(file)).digest('hex');
   return createHash('sha256').update(`mode:${stat.mode}:size:${stat.size}`).digest('hex');
 }
