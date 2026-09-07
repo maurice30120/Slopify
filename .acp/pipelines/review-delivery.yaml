@@ -4,7 +4,7 @@ title: Review Approved Delivery
 
 nodes:
   - id: review
-    agent: OpenCode
+    agent: OpenCode Sandbox
     skills: [code-review]
     instructionsFile: ../agents/matt-plan-reviewer.md
     prompt: |
@@ -13,7 +13,6 @@ nodes:
     policy:
       filesystem: read-only
       terminal: workspace-write
-      network: disabled
       promotion: discard
     output:
       name: report

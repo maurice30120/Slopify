@@ -1,9 +1,10 @@
 {
   "agents": {
     "Codex CLI": {
-      "command": "npx",
-      "args": ["-y", "@agentclientprotocol/codex-acp@1.1.7"],
-      "env": {}
+      "transport": "sandbox",
+      "agent": "codex",
+      "model": "gpt-5.6-codex",
+      "effort": "high"
     },
     "Codex Sandbox": {
       "transport": "sandbox",
@@ -12,9 +13,10 @@
       "effort": "high"
     },
     "OpenCode": {
-      "command": "opencode",
-      "args": ["acp"],
-      "env": {}
+      "transport": "sandbox",
+      "agent": "opencode",
+      "model": "opencode-go/glm-5.2",
+      "effort": "high"
     },
     "OpenCode Sandbox": {
       "transport": "sandbox",

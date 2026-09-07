@@ -12,7 +12,7 @@ Le pipeline choisit les agents de chaque nœud. La commande n'accepte volontaire
 
 La CLI embarque les pipelines `grill-spec-tickets-implement-review`,
 `implement-ticket` et `review-delivery`, leurs instructions, leurs skills et
-une configuration d’agents OpenCode par défaut. Elle localise ces ressources
+une configuration d’agents OpenCode en Docker Sandbox par défaut. Elle localise ces ressources
 relativement à son installation, indépendamment du répertoire courant.
 
 Le projet peut fournir :
@@ -26,7 +26,13 @@ méthode fournie, `project:code-review` celle du projet. Un nom simple comme
 `code-review` conserve la résolution locale au projet. Une skill locale ne
 remplace jamais implicitement une skill `slopify:`.
 
-Les agents doivent être installés et authentifiés sur la machine. Les étapes
+Tous les agents des pipelines fournis s’exécutent dans Docker Sandbox, y compris
+la planification, la spécification et la revue. Docker Sandbox (`sbx`) doit être
+installé et les agents authentifiés pour cet environnement. OpenCode utilise
+`run --auto` et Codex désactive ses confirmations internes dans la sandbox.
+La politique réseau est globale (`sbx policy`), sans réglage par étape.
+Un projet peut déclarer explicitement un agent ACP natif si une intégration
+nécessite un accès à l’hôte. Les étapes
 qui utilisent le tracker exigent un fichier non vide
 `docs/agents/issue-tracker.md` décrivant le workflow du projet. Les skills
 manquantes, désactivées pour l’agent ou privées d’un prérequis déclaré bloquent

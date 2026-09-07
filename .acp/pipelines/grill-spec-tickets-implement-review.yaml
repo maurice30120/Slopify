@@ -4,7 +4,7 @@ title: Grill with Docs → Spec Docs → Ticket Docs → Sequential Implement �
 
 nodes:
   - id: plan
-    agent: OpenCode
+    agent: OpenCode Sandbox
     skills: [grill-with-docs, grilling, domain-modeling]
     interaction:
       protocol: proposed-plan
@@ -16,7 +16,6 @@ nodes:
     policy:
       filesystem: workspace-write
       terminal: none
-      network: disabled
       promotion: auto-apply
     output:
       name: plan
@@ -42,7 +41,7 @@ nodes:
       format: markdown
 
   - id: spec
-    agent: OpenCode
+    agent: OpenCode Sandbox
     skills: [to-spec, domain-modeling]
     instructionsFile: ../agents/matt-spec-writer.md
     prompt: |
@@ -60,7 +59,6 @@ nodes:
     policy:
       filesystem: workspace-write
       terminal: none
-      network: disabled
       promotion: auto-apply
     output:
       name: specification
@@ -68,7 +66,7 @@ nodes:
       format: markdown
 
   - id: tasks
-    agent: OpenCode
+    agent: OpenCode Sandbox
     skills: [to-tickets]
     instructionsFile: ../agents/matt-ticket-planner.md
     prompt: |
@@ -86,7 +84,6 @@ nodes:
     policy:
       filesystem: workspace-write
       terminal: none
-      network: disabled
       promotion: auto-apply
     output:
       name: tickets
