@@ -131,7 +131,9 @@ Un agent OpenCode peut déclarer `opencodeConfig` : le fragment JSON est écrit
 tel quel dans `~/.config/opencode/config.json` de la sandbox à chaque exécution
 (l’image n’embarque pas les providers du workspace). Les clés n’y apparaissent
 jamais en clair — le placeholder `{env:OPENCODE_GO_API_KEY}` est résolu par le
-proxy Docker Sandbox via `sbx secret set-custom` :
+proxy Docker Sandbox via `sbx secret set-custom`. La variable d’environnement
+est figée à la création de la sandbox : une sandbox créée avant le stockage du
+secret ne la recevra jamais, même après redémarrage :
 
 ```json
 {
@@ -160,6 +162,10 @@ proxy Docker Sandbox via `sbx secret set-custom` :
   }
 }
 ```
+
+Au premier démarrage, OpenCode normalise et réécrit `config.json` (il y ajoute
+notamment `$schema`) : le fragment injecté est un bootstrap, pas un contrat
+stable.
 
 ## Runtime v3
 
