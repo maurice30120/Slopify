@@ -16,6 +16,35 @@ export const MINIMUM_SBX_VERSION = '0.35.0';
 export const DEFAULT_SANDBOX_CLEANUP_TIMEOUT_MS = 30_000;
 export const DOCKER_SANDBOX_NETWORK_POLICY_CHOICES = ['Open', 'Balanced', 'Locked Down'] as const;
 
+// OpenCode peut conserver son processus ACP ouvert après une erreur terminale
+// du fournisseur. Le wrapper surveille le journal local du sandbox, remonte un
+// diagnostic exploitable sans recopier d'URL ou d'identifiant, puis termine le
+// processus pour que `sbx exec` rende la main au runtime.
+const OPENCODE_WATCHDOG_SCRIPT = `set -u
+log=/home/agent/.local/share/opencode/log/opencode.log
+opencode "\$@" &
+pid=\$!
+status=0
+watchdog_status=0
+while kill -0 "\$pid" 2>/dev/null; do
+  if grep -q "Weekly usage limit reached" "\$log" 2>/dev/null; then
+    printf "%s\\n" "OpenCode provider error: Weekly usage limit reached. OpenCode Go usage must reset or have balance enabled." >&2
+    watchdog_status=1
+    kill "\$pid" 2>/dev/null || true
+    break
+  fi
+  if grep -Eq "AI_APICallError|AI_RetryError" "\$log" 2>/dev/null; then
+    printf "%s\\n" "OpenCode provider error: the model request failed. Inspect the retained sandbox OpenCode log for details." >&2
+    watchdog_status=1
+    kill "\$pid" 2>/dev/null || true
+    break
+  fi
+  sleep 1
+done
+wait "\$pid" 2>/dev/null || status=\$?
+if [ "\$watchdog_status" -ne 0 ]; then exit 1; fi
+exit "\$status"`;
+
 export type DockerSandboxNetworkPolicyChoice = typeof DOCKER_SANDBOX_NETWORK_POLICY_CHOICES[number];
 export type DockerSandboxNetworkPolicyPreset = 'allow-all' | 'balanced' | 'deny-all';
 
@@ -380,7 +409,9 @@ export class DockerSandboxRuntime {
       const agentArgs = agent === 'opencode'
         ? ['run', '--auto', '--format', 'json', '--thinking']
         : ['exec', '--dangerously-bypass-approvals-and-sandbox', '--ephemeral', '--json'];
-      const execArgs = ['exec', sandboxName, agent, ...agentArgs];
+      const execArgs = agent === 'opencode'
+        ? ['exec', sandboxName, 'sh', '-c', OPENCODE_WATCHDOG_SCRIPT, 'slopify-opencode-runner', ...agentArgs]
+        : ['exec', sandboxName, agent, ...agentArgs];
       if (input.model) execArgs.push('--model', input.model);
       if (input.effort) {
         execArgs.push(agent === 'opencode' ? '--variant' : '--config');

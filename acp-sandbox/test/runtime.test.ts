@@ -259,9 +259,10 @@ test('runs OpenCode in a cloned sandbox with the opencode non-interactive comman
   assert.ok(create);
   assert.ok(create!.args.includes('opencode'));
 
-  const exec = fake.calls.find(call => call.command === 'sbx' && call.args[0] === 'exec' && call.args.includes('opencode'));
+  const exec = fake.calls.find(call => call.command === 'sbx' && call.args[0] === 'exec'
+    && call.args[2] === 'sh' && call.args[3] === '-c' && call.args[4]?.includes('opencode "$@"'));
   assert.ok(exec);
-  assert.deepEqual(exec!.args.slice(0, 9), ['exec', output.sandboxName, 'opencode', 'run', '--auto', '--format', 'json', '--thinking', '--model']);
+  assert.deepEqual(exec!.args.slice(0, 6), ['exec', output.sandboxName, 'sh', '-c', exec!.args[4], 'slopify-opencode-runner']);
   assert.ok(exec!.args.includes('opencode-go/glm-5.2'));
   assert.ok(exec!.args.includes('--variant'));
   assert.ok(exec!.args.includes('high'));
@@ -275,6 +276,55 @@ test('runs OpenCode in a cloned sandbox with the opencode non-interactive comman
   ]);
   assert.deepEqual(JSON.parse(inject!.args.at(-1) ?? ''), opencodeConfigFixture);
   assert.ok(fake.calls.indexOf(inject!) < fake.calls.indexOf(exec!), 'the declared config must be installed before the agent runs');
+});
+
+test('wraps OpenCode with a provider-error watchdog so quota failures return promptly', async () => {
+  const scenario = sandboxScenario();
+  const fake = fakeExecutor(scenario.respond);
+  const runtime = new DockerSandboxRuntime(fake.execute);
+
+  const output = await runtime.runCodex({
+    workspaceCwd: '/repo', runId: 'run', nodeId: 'watchdog', attempt: 1,
+    prompt: 'Inspect the file.', model: 'opencode-go/glm-5.2', agent: 'opencode', effort: 'high',
+    opencodeConfig: opencodeConfigFixture,
+  });
+
+  const exec = fake.calls.find(call => call.command === 'sbx' && call.args[0] === 'exec'
+    && call.args[2] === 'sh' && call.args[3] === '-c' && call.args[4]?.includes('opencode "$@"'));
+  assert.ok(exec);
+  assert.deepEqual(exec!.args.slice(0, 4), ['exec', output.sandboxName, 'sh', '-c']);
+  const script = exec!.args[4] ?? '';
+  assert.match(script, /opencode "\$@"/);
+  assert.match(script, /Weekly usage limit reached/);
+  assert.match(script, /OpenCode provider error/);
+  assert.equal(exec!.args[5], 'slopify-opencode-runner');
+  assert.deepEqual(exec!.args.slice(6), [
+    'run', '--auto', '--format', 'json', '--thinking', '--model', 'opencode-go/glm-5.2', '--variant', 'high',
+    'Inspect the file.',
+  ]);
+});
+
+test('surfaces the watchdog provider diagnostic in the OpenCode runtime error', async () => {
+  const scenario = sandboxScenario();
+  const fake = fakeExecutor(request => {
+    const isOpenCodeRunner = request.command === 'sbx'
+      && request.args[0] === 'exec'
+      && request.args[2] === 'sh'
+      && request.args[3] === '-c'
+      && request.args[4]?.includes('opencode "$@"');
+    return isOpenCodeRunner
+      ? result('', 'OpenCode provider error: Weekly usage limit reached. OpenCode Go usage must reset or have balance enabled.', 1)
+      : scenario.respond(request);
+  });
+
+  await assert.rejects(
+    new DockerSandboxRuntime(fake.execute).runCodex({
+      workspaceCwd: '/repo', runId: 'run', nodeId: 'provider-failure', attempt: 1,
+      prompt: 'Inspect the file.', model: 'opencode-go/glm-5.2', agent: 'opencode', effort: 'high',
+      opencodeConfig: opencodeConfigFixture,
+    }),
+    /Weekly usage limit reached.*OpenCode Go usage must reset/,
+  );
 });
 
 test('injects the OpenCode config only when the workspace declares one for an OpenCode agent', async () => {
@@ -1002,7 +1052,12 @@ for (const agent of ['opencode', 'codex'] as const) {
       : { type: 'item.completed', item: { type: 'agent_message', text: 'Done' } };
     const wire = JSON.stringify(thought) + '\n' + JSON.stringify(message);
     const fake = fakeExecutor(request => {
-      if (request.args[0] === 'exec' && request.args[2] === agent) {
+      const isAgentInvocation = request.args[0] === 'exec' && (
+        agent === 'opencode'
+          ? request.args[2] === 'sh' && request.args[3] === '-c' && request.args[4]?.includes('opencode "$@"')
+          : request.args[2] === agent
+      );
+      if (isAgentInvocation) {
         if (agent === 'opencode') assert.ok(request.args.includes('--thinking'));
         assert.equal(request.observeOutput, false, 'ACP must own output rendering');
         request.onStdout?.(wire.slice(0, 13));
