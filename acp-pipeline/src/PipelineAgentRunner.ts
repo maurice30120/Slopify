@@ -97,6 +97,12 @@ export interface PipelineAgentRunInput {
 	skills?: string[];
 	onSandboxRunState?: (state: PipelineSandboxRunSnapshot) => void | Promise<void>;
 	resumeSandboxRun?: PipelineSandboxRunSnapshot;
+	/**
+	 * Réparation : ordonne au runtime sandbox de relancer l'agent malgré un
+	 * checkpoint persisté pour ce nœud et cette tentative. La sandbox existante
+	 * est reconciliée ou recréée, et le checkpoint supersédée est remplacé.
+	 */
+	forceRerun?: boolean;
 }
 
 export interface PipelineChangeSetPreview {

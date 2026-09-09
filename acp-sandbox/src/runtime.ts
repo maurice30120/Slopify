@@ -68,6 +68,7 @@ export interface SandboxRunInput {
   onSandboxRetained?: (sandbox: RetainedSandbox) => void | Promise<void>;
   onStateChange?: (state: SandboxRunState) => void | Promise<void>;
   resumeState?: SandboxRunState;
+  forceRerun?: boolean;
 }
 
 export interface SandboxRunState {
@@ -287,7 +288,7 @@ export class DockerSandboxRuntime {
       let baseCommit: string;
       if (input.resumeState) {
         baseCommit = input.resumeState.baseCommit;
-        if (input.resumeState.resourceState === 'removed' && input.resumeState.checkpoint) {
+        if (!input.forceRerun && input.resumeState.resourceState === 'removed' && input.resumeState.checkpoint) {
           durableState = { ...input.resumeState };
         } else {
           const reconciled = await this.reconcileSandbox({
@@ -304,6 +305,25 @@ export class DockerSandboxRuntime {
             resourceState: reconciled.status === 'removed' ? 'removed' : input.resumeState.resourceState,
             ...(reconciled.status === 'reusable' && reconciled.sandboxId ? { sandboxId: reconciled.sandboxId } : {}),
           };
+          if (input.forceRerun && reconciled.status !== 'reusable') {
+            await this.requireSuccess({
+              command: 'sbx',
+              args: ['create', '--clone', '--name', sandboxName, agent, '.'],
+              cwd: input.workspaceCwd,
+              stdin: 'ignore',
+              signal: execution.signal,
+            }, 'create the Docker Sandbox');
+            created = true;
+            const sandboxId = await this.readSandboxId(input.workspaceCwd, sandboxName, execution.signal);
+            durableState = {
+              ...durableState,
+              ...(sandboxId ? { sandboxId } : {}),
+              resourceState: 'active',
+            };
+          }
+        }
+        if (input.forceRerun) {
+          durableState = { ...durableState, checkpoint: undefined, integrationState: 'sandbox_created' };
         }
         stdout = durableState.stdout ?? '';
         stderr = durableState.stderr ?? '';

@@ -8,6 +8,8 @@ import {
   NATIVE_ACP_BASELINE_CAPABILITIES,
   PIPELINE_NODE_ACP_HISTORY_ARTIFACT_NAME,
   PIPELINE_NODE_ACP_HISTORY_ARTIFACT_TYPE,
+  PipelineRuntimeAgentAdapter,
+  type PipelineAgentRunInput,
   type PipelineNodeExecutionInput,
   type PipelineNodeExecutionResult,
   type PipelineInterviewSnapshot,
@@ -1114,6 +1116,87 @@ test("PipelineRuntime repairs one malformed interview output before failing expl
   const failed = await failing.start(program);
   assert.equal(failed.status, "failed");
   assert.equal(failed.error.code, "malformed_interview_output");
+});
+
+test("PipelineRuntime sets forceRerun on the repair turn and propagates it through the agent adapter", async () => {
+  const program = compilePipelineV3Definition({
+    version: 3,
+    id: "repair-propagate",
+    title: "Repair Propagate",
+    nodes: [
+      {
+        id: "plan",
+        agent: "Codex",
+        prompt: "Plan",
+        interaction: { protocol: "proposed-plan", repairAttempts: 1 },
+        output: { name: "plan", type: "acp.grill-decision/v1", format: "markdown" },
+      },
+    ],
+  }, agents).program!;
+  let call = 0;
+  const inputs: PipelineAgentRunInput[] = [];
+  const adapter = new PipelineRuntimeAgentAdapter({
+    workspaceCwd: () => "/repo",
+    runAgent: async input => {
+      inputs.push(input);
+      call += 1;
+      return call === 1 ? "not a plan" : proposedReady("Repaired.");
+    },
+  });
+  const runtime = new PipelineRuntime(adapter, { runIdFactory: () => "run-repair-propagate" });
+
+  const result = await runtime.start(program);
+
+  assert.equal(result.status, "completed");
+  assert.equal(inputs.length, 2);
+  assert.equal(inputs[0].forceRerun, undefined);
+  assert.equal(inputs[1].forceRerun, true);
+  assert.equal(result.artifact?.value, proposedReady("Repaired."));
+});
+
+test("PipelineRuntime sets forceRerun on the final output request turn and propagates it through the agent adapter", async () => {
+  const program = compilePipelineV3Definition({
+    version: 3,
+    id: "final-output-rerun",
+    title: "Final Output Rerun",
+    nodes: [
+      {
+        id: "plan",
+        agent: "Codex",
+        prompt: "Plan",
+        interaction: { protocol: "proposed-plan", repairAttempts: 0 },
+        output: { name: "plan", type: "acp.grill-decision/v1", format: "markdown" },
+      },
+    ],
+  }, agents).program!;
+  let call = 0;
+  const inputs: PipelineAgentRunInput[] = [];
+  const adapter = new PipelineRuntimeAgentAdapter({
+    workspaceCwd: () => "/repo",
+    runAgent: async input => {
+      inputs.push(input);
+      call += 1;
+      return call === 1 ? proposedQuestion("Anything else?")
+        : call === 2 ? "missing final artifact"
+          : proposedReady("Final.");
+    },
+  });
+  const runtime = new PipelineRuntime(adapter, { runIdFactory: () => "run-final-output-rerun" });
+
+  const paused = await runtime.start(program);
+  assert.equal(paused.status, "paused");
+
+  const result = await runtime.resume(paused.runId, {
+    pauseId: paused.pause.id,
+    kind: "complete-interview",
+  });
+
+  assert.equal(result.status, "completed");
+  assert.equal(inputs.length, 3);
+  assert.equal(inputs[0].forceRerun, undefined);
+  assert.equal(inputs[1].forceRerun, undefined);
+  assert.equal(inputs[2].forceRerun, true);
+  assert.equal(result.artifact?.value, proposedReady("Final."));
 });
 
 test("PipelineRuntime gives each interview turn its own repair budget", async () => {

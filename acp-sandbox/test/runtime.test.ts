@@ -865,6 +865,44 @@ test('resumes after checkpoint persistence without relaunching Codex or requirin
   assert.equal(fake.calls.some(call => call.args[0] === 'rm'), false);
 });
 
+test('relaunches the agent and returns the new run output when forceRerun repairs a removed checkpointed sandbox', async () => {
+  const sandboxName = stableSandboxName('run-repair', 'work', 1);
+  const scenario = sandboxScenario({ changedFiles: ['work.ts'], diff: 'diff' });
+  const fake = fakeExecutor(request => {
+    if (request.args[0] === 'exec' && request.args[2] === 'codex') {
+      return result('repaired output\n');
+    }
+    return scenario.respond(request);
+  });
+
+  const output = await new DockerSandboxRuntime(fake.execute).runCodex({
+    workspaceCwd: '/repo', runId: 'run-repair', nodeId: 'work', attempt: 1,
+    prompt: 'Repair prompt.', model: 'gpt',
+    forceRerun: true,
+    resumeState: {
+      sandboxName, sandboxId: 'stable-id', runId: 'run-repair', nodeId: 'work', attempt: 1,
+      baseCommit: 'base123', integrationState: 'checkpointed', resourceState: 'removed',
+      stdout: 'persisted output', stderr: '',
+      checkpoint: {
+        checkpointStatus: 'checkpointed',
+        checkpoint: {
+          sandboxName, runId: 'run-repair', nodeId: 'work', attempt: 1,
+          baseCommit: 'base123', commit: 'checkpoint456',
+          remote: `sandbox-${sandboxName}`, ref: `refs/slopify/checkpoints/${sandboxName}`,
+        },
+        preview: {
+          baseCommit: 'base123', checkpointCommit: 'checkpoint456', fileCount: 1,
+          files: ['work.ts'], diff: 'diff',
+        },
+      },
+    },
+  });
+
+  assert.equal(fake.calls.some(call => call.args[0] === 'exec' && call.args.includes('codex')), true);
+  assert.equal(output.stdout, 'repaired output\n');
+  assert.notEqual(output.stdout, 'persisted output');
+});
+
 test('repeats cleanup idempotently when a checkpointed sandbox disappeared before removed state persisted', async () => {
   const sandboxName = stableSandboxName('run-cleanup-crash', 'work', 1);
   const scenario = sandboxScenario();

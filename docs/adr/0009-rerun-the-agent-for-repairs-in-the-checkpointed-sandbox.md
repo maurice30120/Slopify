@@ -1,0 +1,5 @@
+# Rerun the agent for repairs in the checkpointed sandbox
+
+A checkpointed sandbox resume short-circuits and returns the persisted output, which is correct for Reprise (crash recovery) but silently swallowed Réparation turns: the pipeline re-sent a repair prompt and received the old malformed answer back. We distinguish Reprise (reuse the Agent Checkpoint, no relaunch) from Réparation (an explicit `forceRerun` flag on the sandbox run input that re-launches the agent in the reused sandbox and replaces the same run/node/attempt checkpoint). When the sandbox resource was removed, `forceRerun` recreates it from the host workspace tree and checkpoints the new run against the persisted base commit; the superseded checkpoint is stripped in-memory so the runtime relaunches, and the old Git ref is overwritten when the new same-(nodeId, attempt) checkpoint is created. Cross-attempt superseded refs are deleted later, at Pipeline Change Set finalization.
+
+Considered options: a distinct sandbox per repair turn — rejected because it multiplies name collisions, retention and promotion bookkeeping for no isolation benefit, since a repair turn is deliberately the same attempt.

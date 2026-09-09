@@ -292,6 +292,12 @@ export interface PipelineNodeExecutionInput {
 
 export interface AgentNodeSessionTurnInput extends PipelineNodeExecutionInput {
   replay?: boolean;
+  /**
+   * Réparation : relance l'agent dans la sandbox checkpointée et remplace
+   * l'Agent Checkpoint du même pipeline, nœud et tentative. Faux pour une
+   * Reprise qui réutilise le checkpoint sans relancer.
+   */
+  forceRerun?: boolean;
 }
 
 export interface AgentNodeSessionActivity {

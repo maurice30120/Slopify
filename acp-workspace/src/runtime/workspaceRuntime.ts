@@ -153,6 +153,7 @@ export function createWorkspaceRuntime(options: CreateWorkspaceRuntimeOptions): 
           onSandboxRetained: options.onSandboxRetained,
           onStateChange: state => input.onSandboxRunState?.(toPipelineSandboxRunSnapshot(state)),
           ...(input.resumeSandboxRun ? { resumeState: toSandboxRunState(input.resumeSandboxRun) } : {}),
+          ...(input.forceRerun ? { forceRerun: true } : {}),
           },
         )),
         getPermissionContext: options.host.permissionContext,

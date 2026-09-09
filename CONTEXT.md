@@ -16,6 +16,18 @@ _Avoid_: container run
 Résultat versionné produit par un agent et identifié par le pipeline, le nœud et la tentative qui l’ont créé.
 _Avoid_: Final promotion, agent workspace
 
+**Reprise**:
+Reprise d’un tour interrompu en réutilisant l’Agent Checkpoint persisté, sans relancer l’agent.
+_Avoid_: Réparation, relance
+
+**Réparation**:
+Nouveau tour déclenché par une erreur de protocole après un tour déjà checkpointé ; il relance l’agent dans la même sandbox et remplace l’Agent Checkpoint du même pipeline, nœud et tentative.
+_Avoid_: Reprise, nouvelle tentative
+
+**Nouvelle tentative**:
+Nouvelle exécution d’un nœud qui incrémente le numéro de tentative et démarre un nouveau Sandbox Run, produisant un Agent Checkpoint distinct.
+_Avoid_: Réparation, reprise
+
 **Pipeline Change Set**:
 Résultat cohérent obtenu après intégration de tous les Agent Checkpoints retenus pour un pipeline.
 _Avoid_: Agent checkpoint, partial promotion

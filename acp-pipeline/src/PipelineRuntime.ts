@@ -675,6 +675,9 @@ export class PipelineRuntime {
         await this.emitRuntimeEvent({ runId: active.snapshot.runId, type: "node_started", nodeId: node.id, at: active.snapshot.updatedAt });
       }
 
+      // Une Réparation relance l'agent dans la sandbox checkpointée du même
+      // nœud et de la même tentative ; réinitialisé à chaque nouvelle tentative.
+      let forceRerun = false;
       for (;;) {
         let session: AgentNodeSession;
         try {
@@ -691,6 +694,7 @@ export class PipelineRuntime {
           onSandboxRunState: state => this.persistSandboxRunState(active, state),
           resumeSandboxRun: this.resumeSandboxRun(active, node.id, attempt),
           replay: isReplay,
+          forceRerun,
         });
         if (!("artifact" in result)) {
           active.snapshot.diagnostics.push({ nodeId: node.id, attempt, code: result.code, message: result.message });
@@ -764,6 +768,7 @@ export class PipelineRuntime {
           if (interview.completionRequested && interview.finalOutputRequestsUsed < 1) {
             interview.finalOutputRequestsUsed += 1;
             prompt = protocol.renderFinalOutputRequest({ prompt, diagnostic: message });
+            forceRerun = true;
             active.snapshot.updatedAt = this.isoNow();
             this.recordInterviewHistory(active, interview);
             await this.persist(active.snapshot);
@@ -789,6 +794,7 @@ export class PipelineRuntime {
           if (interview.repairAttemptsUsed < node.interaction.repairAttempts) {
             interview.repairAttemptsUsed += 1;
             prompt = protocol.renderRepair({ prompt, diagnostic: message });
+            forceRerun = true;
             active.snapshot.updatedAt = this.isoNow();
             this.recordInterviewHistory(active, interview);
             await this.persist(active.snapshot);

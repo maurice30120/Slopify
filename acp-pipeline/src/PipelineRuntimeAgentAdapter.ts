@@ -15,6 +15,7 @@ import type {
   AgentNodeSession,
   AgentNodeSessionFactory,
   AgentNodeSessionFactoryInput,
+  AgentNodeSessionTurnInput,
   CompiledPipelineNode,
   PipelineNodeExecutionInput,
   PipelineNodeExecutionResult,
@@ -92,7 +93,7 @@ class PipelineRuntimeAgentNodeSession implements AgentNodeSession {
     }
   }
 
-  async send(input: PipelineNodeExecutionInput): Promise<PipelineNodeExecutionResult> {
+  async send(input: AgentNodeSessionTurnInput): Promise<PipelineNodeExecutionResult> {
     const node = input.node;
     if (this.closed) {
       return {
@@ -138,6 +139,7 @@ class PipelineRuntimeAgentNodeSession implements AgentNodeSession {
         skills: [...node.skills],
         onSandboxRunState: input.onSandboxRunState,
         resumeSandboxRun: input.resumeSandboxRun,
+        ...(input.forceRerun ? { forceRerun: true } : {}),
       });
       return {
         artifact: {
