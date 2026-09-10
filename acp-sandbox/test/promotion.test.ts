@@ -1,4 +1,8 @@
 import assert from 'node:assert/strict';
+import { execFile } from 'node:child_process';
+import { cp, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
 
 import {
@@ -39,6 +43,14 @@ function checkpoint(nodeId: string, attempt = 1, changed = true): AgentCheckpoin
 
 function result(stdout = '', stderr = '', exitCode = 0): SubprocessResult {
   return { stdout, stderr, exitCode };
+}
+
+function executeFile(command: string, args: string[], cwd: string, env?: NodeJS.ProcessEnv): Promise<SubprocessResult> {
+  return new Promise(resolve => {
+    execFile(command, args, { cwd, env: { ...process.env, ...env }, encoding: 'utf8' }, (error, stdout, stderr) => {
+      resolve(result(stdout, stderr, error && 'code' in error && typeof error.code === 'number' ? error.code : error ? 1 : 0));
+    });
+  });
 }
 
 function integrationGit(options: { head?: string; dirty?: boolean } = {}): {
@@ -118,6 +130,53 @@ async function promote(
 
 test('exposes the four pipeline Promotion policies', () => {
   assert.deepEqual(PROMOTION_POLICIES, ['discard', 'ask', 'auto-apply', 'auto-reject']);
+});
+
+test('recovers exact checkpoints through bundles without a sandbox remote and replaces the ref on repair', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'slopify-real-bundle-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const host = join(root, 'host');
+  const sandbox = join(root, 'sandbox');
+  await executeFile('git', ['init', host], root);
+  await writeFile(join(host, 'work.txt'), 'base\n');
+  await executeFile('git', ['add', '.'], host);
+  await executeFile('git', ['-c', 'user.name=Test', '-c', 'user.email=test@localhost', 'commit', '-m', 'base'], host);
+  const baseCommit = (await executeFile('git', ['rev-parse', 'HEAD'], host)).stdout.trim();
+  await executeFile('git', ['clone', host, sandbox], root);
+
+  const calls: SubprocessRequest[] = [];
+  const execute: SubprocessExecutor = async request => {
+    calls.push(request);
+    if (request.command === 'sbx' && request.args[0] === 'exec') {
+      const command = request.args[2]!;
+      return executeFile(command, request.args.slice(3), sandbox, request.env);
+    }
+    if (request.command === 'sbx' && request.args[0] === 'cp') {
+      const source = request.args[1]!.slice(request.args[1]!.indexOf(':') + 1);
+      await cp(source, request.args[2]!);
+      return result();
+    }
+    return executeFile(request.command, request.args, request.cwd, request.env);
+  };
+
+  await writeFile(join(sandbox, 'work.txt'), 'first repair\n');
+  const first = await new GitPromotion(execute).createAgentCheckpoint({
+    workspaceCwd: host, sandboxName: 'real-sandbox', baseCommit,
+    runId: 'run', nodeId: 'node', attempt: 1,
+  });
+  assert.equal(await readFile(join(sandbox, 'work.txt'), 'utf8'), 'first repair\n');
+  assert.equal((await executeFile('git', ['show', `${first.checkpoint.ref}:work.txt`], host)).stdout, 'first repair\n');
+  assert.equal((await executeFile('git', ['remote'], host)).stdout.trim(), '');
+
+  await writeFile(join(sandbox, 'work.txt'), 'second repair\n');
+  const second = await new GitPromotion(execute).createAgentCheckpoint({
+    workspaceCwd: host, sandboxName: 'real-sandbox', baseCommit,
+    runId: 'run', nodeId: 'node', attempt: 1,
+  });
+  assert.equal(second.checkpoint.ref, first.checkpoint.ref);
+  assert.notEqual(second.checkpoint.commit, first.checkpoint.commit);
+  assert.equal((await executeFile('git', ['show', `${second.checkpoint.ref}:work.txt`], host)).stdout, 'second repair\n');
+  assert.equal(calls.filter(call => call.command === 'git' && call.args[0] === 'fetch').every(call => call.args.includes('--force')), true);
 });
 
 test('integrates Agent Checkpoints in the supplied deterministic order without mutating the host workspace', async () => {

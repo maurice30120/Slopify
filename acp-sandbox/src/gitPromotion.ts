@@ -1,4 +1,7 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 import type {
   SubprocessExecutor,
@@ -174,13 +177,63 @@ export class GitPromotion {
 
     const remote = `sandbox-${input.sandboxName}`;
     const ref = `refs/slopify/checkpoints/${input.sandboxName}`;
-    await this.requireSuccess({
-      command: 'git',
-      args: ['fetch', '--no-tags', remote, `HEAD:${ref}`],
-      cwd: input.workspaceCwd,
-      stdin: 'ignore',
-      signal: input.signal,
-    }, 'fetch the Agent Checkpoint');
+    const hostTemporaryDirectory = await mkdtemp(join(tmpdir(), 'slopify-checkpoint-'));
+    const bundleName = 'checkpoint.bundle';
+    const sandboxBundlePath = `/tmp/slopify-checkpoint-${randomUUID()}.bundle`;
+    const hostBundlePath = join(hostTemporaryDirectory, bundleName);
+    let transferError: unknown;
+    try {
+      await this.requireSuccess(sandboxGit([
+        'bundle', 'create', sandboxBundlePath, 'HEAD',
+      ]), 'create the Agent Checkpoint bundle');
+      await this.requireSuccess({
+        command: 'sbx',
+        args: ['cp', `${input.sandboxName}:${sandboxBundlePath}`, hostBundlePath],
+        cwd: input.workspaceCwd,
+        stdin: 'ignore',
+        signal: input.signal,
+      }, 'copy the Agent Checkpoint bundle');
+      await this.requireSuccess({
+        command: 'git',
+        args: ['bundle', 'verify', hostBundlePath],
+        cwd: input.workspaceCwd,
+        stdin: 'ignore',
+        signal: input.signal,
+      }, 'verify the Agent Checkpoint bundle');
+      await this.requireSuccess({
+        command: 'git',
+        args: ['fetch', '--no-tags', '--force', hostBundlePath, `HEAD:${ref}`],
+        cwd: input.workspaceCwd,
+        stdin: 'ignore',
+        signal: input.signal,
+      }, 'read the Agent Checkpoint bundle');
+    } catch (error) {
+      transferError = error;
+      throw error;
+    } finally {
+      const cleanupErrors: string[] = [];
+      try {
+        const sandboxCleanup = await this.execute({
+          command: 'sbx',
+          args: ['exec', input.sandboxName, 'rm', '-f', '--', sandboxBundlePath],
+          cwd: input.workspaceCwd,
+          stdin: 'ignore',
+        });
+        if (sandboxCleanup.exitCode !== 0) {
+          cleanupErrors.push(sandboxCleanup.stderr.trim() || sandboxCleanup.stdout.trim() || `exit code ${sandboxCleanup.exitCode}`);
+        }
+      } catch (error) {
+        cleanupErrors.push(error instanceof Error ? error.message : String(error));
+      }
+      try {
+        await rm(hostTemporaryDirectory, { recursive: true, force: true });
+      } catch (error) {
+        cleanupErrors.push(error instanceof Error ? error.message : String(error));
+      }
+      if (!transferError && cleanupErrors.length > 0) {
+        throw new Error(`Unable to clean up the Agent Checkpoint bundle: ${cleanupErrors.join('; ')}`);
+      }
+    }
 
     const checkpointCommit = (await this.requireSuccess({
       command: 'git',

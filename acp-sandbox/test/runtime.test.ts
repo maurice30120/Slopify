@@ -70,7 +70,10 @@ function sandboxScenario(options: {
   changedFiles?: string[];
   diff?: string;
   checkpointFailure?: string;
-  fetchFailure?: string;
+  bundleCreationFailure?: string;
+  bundleCopyFailure?: string;
+  bundleVerificationFailure?: string;
+  bundleReadFailure?: string;
 } = {}): { respond: (request: SubprocessRequest) => SubprocessResult } {
   let createdSandboxName: string | undefined;
   return {
@@ -80,7 +83,10 @@ function sandboxScenario(options: {
       if (request.command === 'git' && request.args[0] === 'rev-parse') return result('checkpoint456\n');
       if (request.command === 'git' && request.args[0] === 'status') return result();
       if (request.command === 'git' && request.args[0] === 'fetch') {
-        return options.fetchFailure ? result('', options.fetchFailure, 1) : result();
+        return options.bundleReadFailure ? result('', options.bundleReadFailure, 1) : result();
+      }
+      if (request.command === 'git' && request.args[0] === 'bundle' && request.args[1] === 'verify') {
+        return options.bundleVerificationFailure ? result('', options.bundleVerificationFailure, 1) : result();
       }
       if (request.command === 'git' && request.args[0] === 'diff' && request.args.includes('--name-only')) {
         return result((options.changedFiles ?? []).map(filePath => `${filePath}\n`).join(''));
@@ -108,6 +114,12 @@ function sandboxScenario(options: {
       if (sandboxGitArgs[0] === 'git' && sandboxGitArgs.includes('commit')) {
         if (options.checkpointFailure) return result('', options.checkpointFailure, 1);
         return result('[feature checkpoint456] checkpoint\n');
+      }
+      if (sandboxGitArgs[0] === 'git' && sandboxGitArgs[1] === 'bundle') {
+        return options.bundleCreationFailure ? result('', options.bundleCreationFailure, 1) : result();
+      }
+      if (request.command === 'sbx' && request.args[0] === 'cp') {
+        return options.bundleCopyFailure ? result('', options.bundleCopyFailure, 1) : result();
       }
       return result();
     },
@@ -220,12 +232,16 @@ test('creates and previews an attributed Agent Checkpoint without mutating the h
   assert.ok(commit.args.includes('Slopify-Attempt: 2'));
 
   const fetch = fake.calls.find(call => call.command === 'git' && call.args[0] === 'fetch');
-  assert.deepEqual(fetch?.args, [
+  assert.deepEqual(fetch?.args.slice(0, 4), [
     'fetch',
     '--no-tags',
-    `sandbox-${sandboxName}`,
-    `HEAD:${checkpointRef}`,
+    '--force',
+    fetch?.args[3],
   ]);
+  assert.match(fetch?.args[3] ?? '', /slopify-checkpoint-.*checkpoint\.bundle$/u);
+  assert.equal(fetch?.args[4], `HEAD:${checkpointRef}`);
+  assert.equal(fake.calls.some(call => call.command === 'git' && call.args[0] === 'remote'), false);
+  assert.equal(fake.calls.some(call => call.command === 'sbx' && call.args[0] === 'cp'), true);
   assert.deepEqual(hostMutatingGitCalls(fake.calls), []);
   assert.equal(fake.calls.some(call => call.command === 'sbx' && call.args[0] === 'exec' && call.args.includes('slopify-opencode-config')), false);
   assert.deepEqual(fake.calls.at(-1)?.args, ['rm', '--force', sandboxName]);
@@ -297,7 +313,9 @@ test('runs Copilot with host credentials over stdin without copying its state', 
     'slopify-copilot-runner', '-p', 'Inspect the file.', '--silent',
     '--allow-all', '--no-ask-user', '--model', 'auto',
   ]);
-  assert.ok(!fake.calls.some(call => call.command === 'sbx' && call.args[0] === 'cp'));
+  const copies = fake.calls.filter(call => call.command === 'sbx' && call.args[0] === 'cp');
+  assert.equal(copies.length, 1);
+  assert.match(copies[0]?.args[1] ?? '', /:\/tmp\/slopify-.*\.bundle$/u);
 });
 
 test('wraps OpenCode with a provider-error watchdog so quota failures return promptly', async () => {
@@ -400,19 +418,49 @@ test('stops after a checkpoint failure and never fetches or previews implicitly'
   assert.deepEqual(fake.calls.at(-1)?.args.slice(0, 2), ['rm', '--force']);
 });
 
-test('stops after a checkpoint fetch failure and never produces an implicit preview or Promotion', async () => {
-  const fake = fakeExecutor(sandboxScenario({ fetchFailure: 'remote unavailable' }).respond);
+test('stops after a checkpoint bundle read failure and never produces an implicit preview or Promotion', async () => {
+  const fake = fakeExecutor(sandboxScenario({ bundleReadFailure: 'invalid bundle' }).respond);
   await assert.rejects(
     new DockerSandboxRuntime(fake.execute).runCodex({
       workspaceCwd: '/repo', runId: 'run', nodeId: 'node', attempt: 1,
       prompt: 'Change files.', model: 'gpt', workspaceEffects: true,
     }),
-    /Unable to fetch the Agent Checkpoint: remote unavailable/,
+    /Unable to read the Agent Checkpoint bundle: invalid bundle/,
   );
 
   assert.equal(fake.calls.some(call => call.command === 'git' && call.args[0] === 'diff'), false);
   assert.deepEqual(hostMutatingGitCalls(fake.calls), []);
   assert.deepEqual(fake.calls.at(-1)?.args.slice(0, 2), ['rm', '--force']);
+});
+
+test('cleans bundle files without masking creation, copy, verification, or read failures', async t => {
+  for (const failure of [
+    { option: { bundleCreationFailure: 'bundle create failed' }, diagnostic: /Unable to create the Agent Checkpoint bundle: bundle create failed/ },
+    { option: { bundleCopyFailure: 'bundle copy failed' }, diagnostic: /Unable to copy the Agent Checkpoint bundle: bundle copy failed/ },
+    { option: { bundleVerificationFailure: 'bundle verify failed' }, diagnostic: /Unable to verify the Agent Checkpoint bundle: bundle verify failed/ },
+    { option: { bundleReadFailure: 'bundle read failed' }, diagnostic: /Unable to read the Agent Checkpoint bundle: bundle read failed/ },
+  ]) {
+    await t.test(Object.keys(failure.option)[0]!, async () => {
+      const scenario = sandboxScenario(failure.option);
+      const fake = fakeExecutor(request => {
+        if (request.command === 'sbx' && request.args[0] === 'exec' && request.args[2] === 'rm') {
+          return result('', 'cleanup also failed', 1);
+        }
+        return scenario.respond(request);
+      });
+      await assert.rejects(
+        new DockerSandboxRuntime(fake.execute).runCodex({
+          workspaceCwd: '/repo', runId: 'run', nodeId: 'node', attempt: 1,
+          prompt: 'Change files.', model: 'gpt', workspaceEffects: true,
+        }),
+        failure.diagnostic,
+      );
+      const copy = fake.calls.find(call => call.command === 'sbx' && call.args[0] === 'cp');
+      if (copy) assert.equal(fs.existsSync(path.dirname(copy.args[2]!)), false);
+      assert.equal(fake.calls.some(call => call.command === 'sbx' && call.args[0] === 'exec' && call.args[2] === 'rm'), true);
+      assert.equal(fake.calls.some(call => call.command === 'git' && call.args[0] === 'diff'), false);
+    });
+  }
 });
 
 test('rejects a dirty workspace before creating a sandbox with corrective guidance', async () => {
