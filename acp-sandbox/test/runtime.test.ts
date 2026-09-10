@@ -310,6 +310,43 @@ test('runs Copilot CLI non-interactively inside Docker Sandbox', async () => {
   ]);
 });
 
+test('copies the host Copilot config into the sandbox before starting Copilot', async () => {
+  const configDirectory = temporaryDirectory();
+  const configPath = path.join(configDirectory, 'config.json');
+  fs.writeFileSync(configPath, '{"login":"fixture-token"}\n');
+  try {
+    const scenario = sandboxScenario();
+    const fake = fakeExecutor(request => {
+      if (request.command === 'sbx' && request.args[0] === 'exec' && request.args.includes('copilot')) {
+        return result('Copilot completed\n');
+      }
+      return scenario.respond(request);
+    });
+
+    await new DockerSandboxRuntime(fake.execute, { copilotConfigPath: configPath }).runCodex({
+      workspaceCwd: '/repo',
+      runId: 'copilot-config',
+      nodeId: 'implement',
+      attempt: 1,
+      prompt: 'Inspect the file.',
+      model: 'auto',
+      agent: 'copilot',
+    });
+
+    const copyIndex = fake.calls.findIndex(call => call.command === 'sbx' && call.args[0] === 'cp');
+    const agentIndex = fake.calls.findIndex(call => call.command === 'sbx' && call.args[0] === 'exec' && call.args.includes('copilot'));
+    assert.ok(copyIndex >= 0);
+    assert.ok(copyIndex < agentIndex);
+    assert.deepEqual(fake.calls[copyIndex]?.args.slice(1), [
+      configPath,
+      `${stableSandboxName('copilot-config', 'implement', 1)}:/home/agent/.copilot/config.json`,
+    ]);
+    assert.doesNotMatch(JSON.stringify(fake.calls), /fixture-token/);
+  } finally {
+    fs.rmSync(configDirectory, { recursive: true, force: true });
+  }
+});
+
 test('wraps OpenCode with a provider-error watchdog so quota failures return promptly', async () => {
   const scenario = sandboxScenario();
   const fake = fakeExecutor(scenario.respond);

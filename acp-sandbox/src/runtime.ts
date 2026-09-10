@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { access, mkdir, writeFile } from 'node:fs/promises';
+import { homedir } from 'node:os';
 import * as path from 'node:path';
 
 import {
@@ -53,6 +54,7 @@ export interface DockerSandboxRuntimeOptions {
     choices: readonly DockerSandboxNetworkPolicyChoice[],
   ) => DockerSandboxNetworkPolicyChoice | undefined | Promise<DockerSandboxNetworkPolicyChoice | undefined>;
   reportNetworkPolicy?: (message: string) => void;
+  copilotConfigPath?: string;
 }
 
 export interface SubprocessRequest {
@@ -296,6 +298,44 @@ export class DockerSandboxRuntime {
     }, 'install the OpenCode config');
   }
 
+  private async installCopilotConfig(
+    cwd: string,
+    sandboxName: string,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const configPath = this.options.copilotConfigPath
+      ?? path.join(homedir(), '.copilot', 'config.json');
+    try {
+      await access(configPath);
+    } catch (error: unknown) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
+      throw new Error(`Unable to access the host Copilot config at ${configPath}: ${formatUnknownError(error)}`);
+    }
+
+    const home = '/home/agent';
+    await this.requireSuccess({
+      command: 'sbx',
+      args: ['exec', sandboxName, 'sh', '-c', 'mkdir -p -- "$HOME/.copilot"'],
+      cwd,
+      stdin: 'ignore',
+      signal,
+    }, 'prepare the Copilot config directory');
+    await this.requireSuccess({
+      command: 'sbx',
+      args: ['cp', configPath, `${sandboxName}:${home}/.copilot/config.json`],
+      cwd,
+      stdin: 'ignore',
+      signal,
+    }, 'copy the host Copilot config');
+    await this.requireSuccess({
+      command: 'sbx',
+      args: ['exec', sandboxName, 'chmod', '600', `${home}/.copilot/config.json`],
+      cwd,
+      stdin: 'ignore',
+      signal,
+    }, 'protect the Copilot config');
+  }
+
   async runCodex(input: SandboxRunInput): Promise<SandboxRunResult> {
     const agent = input.agent ?? 'codex';
     const sandboxName = input.resumeState?.sandboxName ?? stableSandboxName(input.runId, input.nodeId, input.attempt);
@@ -405,6 +445,9 @@ export class DockerSandboxRuntime {
       await this.installResources(input, sandboxName, execution.signal);
       if (agent === 'opencode' && input.opencodeConfig) {
         await this.installOpenCodeConfig(input.workspaceCwd, sandboxName, input.opencodeConfig, execution.signal);
+      }
+      if (agent === 'copilot') {
+        await this.installCopilotConfig(input.workspaceCwd, sandboxName, execution.signal);
       }
 
       const agentArgs = agent === 'opencode'
