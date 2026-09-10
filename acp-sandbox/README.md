@@ -1,9 +1,9 @@
 # @acp-client/sandbox
 
-Runtime isolé actif de Slopify pour les agents Codex. Il crée un clone privé
-avec Docker Sandbox, exécute `codex exec` sans interaction, produit un Agent
-Checkpoint, prépare l’aperçu du Pipeline Change Set et ne modifie le workspace
-hôte qu’après une Promotion explicite.
+Runtime isolé actif de Slopify pour les agents Codex, OpenCode et Vibe. Il crée
+un clone privé avec Docker Sandbox, exécute l’agent sans interaction, produit
+un Agent Checkpoint, prépare l’aperçu du Pipeline Change Set et ne modifie le
+workspace hôte qu’après une Promotion explicite.
 
 La configuration utilisateur se trouve uniquement dans
 `.acp/acp-agents.json` :
@@ -23,6 +23,17 @@ La configuration utilisateur se trouve uniquement dans
 
 Les méthodes d’extension ACP publiques sont `sandbox/status`,
 `sandbox/preview`, `sandbox/promote` et `sandbox/reject`.
+
+Le kit Vibe local est `.sbx/vibe/spec.yaml`. Il s’installe et s’authentifie
+avec le service de secret Docker Sandbox :
+
+```bash
+sbx kit validate ./.sbx/vibe
+sbx secret set mistral
+```
+
+La clé réelle reste sur l’hôte ; le kit déclare `MISTRAL_API_KEY` comme
+credential géré par le proxy.
 
 ## Smoke test réel
 

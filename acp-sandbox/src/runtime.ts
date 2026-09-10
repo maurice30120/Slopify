@@ -10,7 +10,7 @@ import {
   type AgentCheckpointResult,
 } from './gitPromotion.js';
 
-export type SandboxAgentKind = 'codex' | 'opencode';
+export type SandboxAgentKind = 'codex' | 'opencode' | 'vibe';
 
 export const MINIMUM_SBX_VERSION = '0.35.0';
 export const DEFAULT_SANDBOX_CLEANUP_TIMEOUT_MS = 30_000;
@@ -87,6 +87,7 @@ export interface SandboxRunInput {
   };
   model: string;
   agent?: SandboxAgentKind;
+  kit?: string;
   effort?: 'low' | 'medium' | 'high' | 'xhigh';
   opencodeConfig?: Record<string, unknown>;
   signal?: AbortSignal;
@@ -218,7 +219,7 @@ export class SandboxRunTimeoutError extends Error {
 }
 
 /**
- * Orchestre l'exécution d'un nœud d'agent (Codex ou OpenCode) dans un clone
+ * Orchestre l'exécution d'un nœud d'agent (Codex, OpenCode ou Vibe) dans un clone
  * Docker Sandbox privé.
  *
  * Le runtime crée un Agent Checkpoint attribuable et le récupère côté hôte,
@@ -337,7 +338,7 @@ export class DockerSandboxRuntime {
           if (input.forceRerun && reconciled.status !== 'reusable') {
             await this.requireSuccess({
               command: 'sbx',
-              args: ['create', '--clone', '--name', sandboxName, agent, '.'],
+              args: createSandboxArgs(agent, sandboxName, input.kit),
               cwd: input.workspaceCwd,
               stdin: 'ignore',
               signal: execution.signal,
@@ -367,7 +368,7 @@ export class DockerSandboxRuntime {
         if (!baseCommit) throw new Error('Unable to read the host base commit: git returned an empty commit id.');
         await this.requireSuccess({
           command: 'sbx',
-          args: ['create', '--clone', '--name', sandboxName, agent, '.'],
+          args: createSandboxArgs(agent, sandboxName, input.kit),
           cwd: input.workspaceCwd,
           stdin: 'ignore',
           signal: execution.signal,
@@ -408,16 +409,22 @@ export class DockerSandboxRuntime {
 
       const agentArgs = agent === 'opencode'
         ? ['run', '--auto', '--format', 'json', '--thinking']
-        : ['exec', '--dangerously-bypass-approvals-and-sandbox', '--ephemeral', '--json'];
+        : agent === 'vibe'
+          ? ['-p', input.prompt, '--output', 'streaming', '--agent', 'auto-approve', '--trust']
+          : ['exec', '--dangerously-bypass-approvals-and-sandbox', '--ephemeral', '--json'];
       const execArgs = agent === 'opencode'
         ? ['exec', sandboxName, 'sh', '-c', OPENCODE_WATCHDOG_SCRIPT, 'slopify-opencode-runner', ...agentArgs]
         : ['exec', sandboxName, agent, ...agentArgs];
-      if (input.model) execArgs.push('--model', input.model);
-      if (input.effort) {
-        execArgs.push(agent === 'opencode' ? '--variant' : '--config');
-        execArgs.push(agent === 'opencode' ? input.effort : `model_reasoning_effort=${JSON.stringify(input.effort)}`);
+      if (agent === 'vibe') {
+        execArgs.splice(1, 0, '--env', `VIBE_ACTIVE_MODEL=${input.model}`);
+      } else {
+        execArgs.push('--model', input.model);
+        if (input.effort) {
+          execArgs.push(agent === 'opencode' ? '--variant' : '--config');
+          execArgs.push(agent === 'opencode' ? input.effort : `model_reasoning_effort=${JSON.stringify(input.effort)}`);
+        }
+        execArgs.push(input.prompt);
       }
-      execArgs.push(input.prompt);
       const agentRun = await this.execute({
         command: 'sbx',
         args: execArgs,
@@ -429,7 +436,7 @@ export class DockerSandboxRuntime {
       });
       stdout = agentRun.stdout;
       stderr = agentRun.stderr;
-      this.assertSuccess(agentRun, `run ${agent === 'opencode' ? 'OpenCode' : 'Codex'} non-interactively`);
+      this.assertSuccess(agentRun, `run ${sandboxAgentLabel(agent)} non-interactively`);
 
       const checkpoint = await new GitPromotion(this.execute).createAgentCheckpoint({
         workspaceCwd: input.workspaceCwd,
@@ -772,6 +779,22 @@ export class DockerSandboxRuntime {
 interface ListedSandbox {
   name: string;
   id?: string;
+}
+
+function createSandboxArgs(agent: SandboxAgentKind, sandboxName: string, kit?: string): string[] {
+  return [
+    'create',
+    '--clone',
+    ...(kit ? ['--kit', kit] : []),
+    '--name',
+    sandboxName,
+    agent,
+    '.',
+  ];
+}
+
+function sandboxAgentLabel(agent: SandboxAgentKind): string {
+  return agent === 'opencode' ? 'OpenCode' : agent === 'vibe' ? 'Vibe' : 'Codex';
 }
 
 function parseSandboxList(output: string): ListedSandbox[] {

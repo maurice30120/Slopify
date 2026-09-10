@@ -12,6 +12,18 @@
       "model": "gpt-5.6-codex",
       "effort": "high"
     },
+    "Vibe": {
+      "transport": "acp",
+      "command": "vibe-acp",
+      "args": [],
+      "env": {}
+    },
+    "Vibe Sandbox": {
+      "transport": "sandbox",
+      "agent": "vibe",
+      "model": "mistral-medium-3.5",
+      "kit": "./.sbx/vibe"
+    },
     "OpenCode": {
       "transport": "sandbox",
       "agent": "opencode",

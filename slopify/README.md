@@ -12,7 +12,9 @@ Le pipeline choisit les agents de chaque nœud. La commande n'accepte volontaire
 
 La CLI embarque les pipelines `grill-spec-tickets-implement-review`,
 `implement-ticket` et `review-delivery`, leurs instructions, leurs skills et
-une configuration d’agents OpenCode en Docker Sandbox par défaut. Elle localise ces ressources
+une configuration d’agents Vibe (ACP natif), Vibe Sandbox et OpenCode. Le
+pipeline par défaut et ses pipelines de livraison utilisent Vibe Sandbox ;
+OpenCode reste disponible pour les pipelines personnalisés. Elle localise ces ressources
 relativement à son installation, indépendamment du répertoire courant.
 
 Le projet peut fournir :
@@ -111,6 +113,45 @@ terminal incompatible, utiliser `SLOPIFY_ANSI_STREAM=0`.
 `--yes` ne valide jamais une Promotion. La politique du pipeline décide si le
 Pipeline Change Set est rejeté, présenté à l’utilisateur, appliqué ou rejeté
 automatiquement.
+
+Vibe est disponible comme agent ACP natif lorsque `vibe-acp` est
+installé et que `MISTRAL_API_KEY` est présent dans l’environnement :
+
+```json
+{
+  "agents": {
+    "Vibe": {
+      "transport": "acp",
+      "command": "vibe-acp",
+      "args": [],
+      "env": {}
+    }
+  }
+}
+```
+
+Vibe est aussi disponible dans une sandbox Docker via le kit local
+`.sbx/vibe/spec.yaml` :
+
+```json
+{
+  "agents": {
+    "Vibe Sandbox": {
+      "transport": "sandbox",
+      "agent": "vibe",
+      "model": "mistral-medium-3.5",
+      "kit": "./.sbx/vibe"
+    }
+  }
+}
+```
+
+Le kit doit être validé avec `sbx kit validate ./.sbx/vibe` conformément à la
+[documentation Docker des Sandbox Kits](https://docs.docker.com/ai/sandboxes/customize/).
+Pour configurer l’authentification du sandbox, saisir la clé sur l’hôte une
+seule fois avec `sbx secret set mistral`. La vraie clé reste gérée par Docker
+et n’est pas ajoutée au JSON ni passée directement au conteneur. Le mode ACP
+natif utilise quant à lui `MISTRAL_API_KEY` dans l’environnement du processus.
 
 Un agent isolé accepte Codex ou OpenCode :
 

@@ -28,6 +28,55 @@ test('public entry point parses native configuration', () => {
   assert.deepEqual(config.errors, []);
 });
 
+test('ships Vibe and Vibe Sandbox in the workspace and bundled ACP catalogues', () => {
+  const repoRoot = path.resolve(import.meta.dirname, '../../..');
+  const configPaths = [
+    path.join(repoRoot, '.acp', 'acp-agents.json'),
+    path.join(repoRoot, 'slopify', 'default-agents.json'),
+  ];
+
+  for (const configPath of configPaths) {
+    const config = parseAcpConfig(fs.readFileSync(configPath, 'utf8'), configPath);
+    assert.deepEqual(config.agents.Vibe, {
+      transport: 'acp',
+      command: 'vibe-acp',
+      args: [],
+      env: {},
+    });
+    assert.deepEqual(config.agents['Vibe Sandbox'], {
+      transport: 'sandbox',
+      agent: 'vibe',
+      model: 'mistral-medium-3.5',
+      kit: './.sbx/vibe',
+    });
+    assert.deepEqual(config.errors, []);
+  }
+});
+
+test('accepts Vibe for the sandbox transport when a Docker Sandbox kit is configured', () => {
+  const accepted = parseAcpConfig(JSON.stringify({ agents: {
+    'Vibe Sandbox': {
+      transport: 'sandbox',
+      agent: 'vibe',
+      model: 'mistral-medium-3.5',
+      kit: './.sbx/vibe',
+    },
+  } }));
+  assert.deepEqual(accepted.errors, []);
+  assert.deepEqual(accepted.agents['Vibe Sandbox'], {
+    transport: 'sandbox',
+    agent: 'vibe',
+    model: 'mistral-medium-3.5',
+    kit: './.sbx/vibe',
+  });
+
+  const missingKit = parseAcpConfig(JSON.stringify({ agents: {
+    Vibe: { transport: 'sandbox', agent: 'vibe', model: 'mistral-medium-3.5' },
+  } }));
+  assert.equal(missingKit.agents.Vibe, undefined);
+  assert.match(missingKit.errors.join('\n'), /agents\.Vibe\.kit must be a non-empty string for the Vibe sandbox agent/);
+});
+
 test('accepts Codex and OpenCode for the sandbox transport with corrective errors', () => {
   const acceptedCodex = parseAcpConfig(JSON.stringify({ agents: {
     Isolated: { transport: 'sandbox', agent: 'codex', model: 'gpt-5.6-codex', effort: 'high' },
@@ -68,7 +117,7 @@ test('accepts Codex and OpenCode for the sandbox transport with corrective error
     Other: { transport: 'sandbox', agent: 'pi', model: 'pi-model' },
   } }));
   assert.equal(rejected.agents.Other, undefined);
-  assert.match(rejected.errors.join('\n'), /must be "codex" or "opencode".*other Docker Sandbox agents are not supported yet/);
+  assert.match(rejected.errors.join('\n'), /must be "codex", "opencode", or "vibe".*other Docker Sandbox agents are not supported yet/);
 });
 
 test('writes and removes agents in the single ACP catalogue while preserving its envelope', () => {

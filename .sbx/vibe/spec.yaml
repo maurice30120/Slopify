@@ -1,0 +1,54 @@
+schemaVersion: "2"
+kind: sandbox
+
+name: vibe
+displayName: Mistral Vibe
+description: Mistral Vibe running inside Docker Sandbox
+
+sandbox:
+  image: docker/sandbox-templates:shell-docker
+  entrypoint:
+    - bash
+    - -lc
+    - exec vibe
+
+agentInstructions:
+  filename: AGENTS.md
+  content: |
+    You are running inside an isolated Docker Sandbox.
+    The mounted workspace is the project you should work on.
+    You may install development dependencies inside the sandbox when needed.
+
+credentials:
+  - service: mistral
+    required: true
+    apiKey:
+      name: MISTRAL_API_KEY
+      proxyManaged: true
+      inject:
+        - domain: api.mistral.ai
+          scheme: bearer
+        - domain: console.mistral.ai
+          scheme: bearer
+        - domain: chat.mistral.ai
+          scheme: bearer
+
+permissions:
+  network:
+    allow:
+      - api.mistral.ai
+      - console.mistral.ai
+      - chat.mistral.ai
+      - mistral.ai
+      - astral.sh
+      - github.com
+      - "*.githubusercontent.com"
+      - pypi.org
+      - files.pythonhosted.org
+
+setup:
+  install:
+    - command: |
+        curl -LsSf https://mistral.ai/vibe/install.sh | bash
+      user: "1000"
+      description: Install Mistral Vibe

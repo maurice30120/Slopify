@@ -33,6 +33,7 @@ try {
     copy(relative);
   }
   for (const name of manifest.instructions) copy(`.acp/agents/${name}`);
+  for (const name of manifest.sandboxKits ?? []) copy(`.sbx/${name}`);
   for (const name of manifest.pipelines) {
     const relative = `.acp/pipelines/${name}`;
     const pipeline = yaml.load(fs.readFileSync(path.join(repoRoot, relative), 'utf8'));

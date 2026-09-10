@@ -1040,25 +1040,38 @@ test('suspends reconciliation on identity or base divergence without relaunch, c
   }
 });
 
-for (const agent of ['opencode', 'codex'] as const) {
+for (const agent of ['opencode', 'codex', 'vibe'] as const) {
   test(`streams ${agent} thinking through the runtime and ACP before subprocess completion`, async () => {
     const updates: SessionNotification[] = [];
     const scenario = sandboxScenario();
     const thought = agent === 'opencode'
       ? { type: 'reasoning', part: { text: 'Inspecting host' } }
-      : { type: 'item.completed', item: { type: 'reasoning', text: 'Inspecting host' } };
+      : agent === 'vibe'
+        ? { type: 'reasoning', text: 'Inspecting host' }
+        : { type: 'item.completed', item: { type: 'reasoning', text: 'Inspecting host' } };
     const message = agent === 'opencode'
       ? { type: 'text', part: { text: 'Done' } }
-      : { type: 'item.completed', item: { type: 'agent_message', text: 'Done' } };
+      : agent === 'vibe'
+        ? { type: 'message', role: 'assistant', content: [{ type: 'text', text: 'Done' }] }
+        : { type: 'item.completed', item: { type: 'agent_message', text: 'Done' } };
     const wire = JSON.stringify(thought) + '\n' + JSON.stringify(message);
     const fake = fakeExecutor(request => {
       const isAgentInvocation = request.args[0] === 'exec' && (
         agent === 'opencode'
           ? request.args[2] === 'sh' && request.args[3] === '-c' && request.args[4]?.includes('opencode "$@"')
-          : request.args[2] === agent
+          : request.args.includes(agent)
       );
       if (isAgentInvocation) {
         if (agent === 'opencode') assert.ok(request.args.includes('--thinking'));
+        if (agent === 'vibe') {
+          assert.ok(request.args.includes('--env'));
+          assert.ok(request.args.includes('VIBE_ACTIVE_MODEL=test'));
+          assert.ok(request.args.includes('--output'));
+          assert.ok(request.args.includes('streaming'));
+          assert.ok(request.args.includes('--agent'));
+          assert.ok(request.args.includes('auto-approve'));
+          assert.ok(request.args.includes('--trust'));
+        }
         assert.equal(request.observeOutput, false, 'ACP must own output rendering');
         request.onStdout?.(wire.slice(0, 13));
         assert.equal(updates.length, 0, 'partial JSON is buffered');
@@ -1072,11 +1085,22 @@ for (const agent of ['opencode', 'codex'] as const) {
       sessionUpdate: async (update: SessionNotification) => { updates.push(update); },
     } as AgentSideConnection, new DockerSandboxRuntime(fake.execute), {
       agent, runId: 'stream', nodeId: 'plan', attempt: 1, model: 'test',
+      ...(agent === 'vibe' ? { kit: './.sbx/vibe' } : {}),
     });
     const { sessionId } = await bridge.newSession({ cwd: '/repo', mcpServers: [] });
     await bridge.prompt({ sessionId, prompt: [{ type: 'text', text: 'inspect' }] });
     const preview = await bridge.extMethod('sandbox/preview', { sessionId });
     assert.equal(preview.ok, true, JSON.stringify(preview));
+    if (agent === 'vibe') {
+      const create = fake.calls.find(call => call.command === 'sbx' && call.args[0] === 'create' && call.args.includes('vibe'));
+      assert.equal(create?.args[0], 'create');
+      assert.equal(create?.args[1], '--clone');
+      assert.equal(create?.args[2], '--kit');
+      assert.equal(create?.args[3], './.sbx/vibe');
+      assert.equal(create?.args[4], '--name');
+      assert.equal(create?.args[6], 'vibe');
+      assert.equal(create?.args[7], '.');
+    }
     assert.deepEqual(updates.map(event => event.update), [
       { sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: 'Inspecting host' } },
       { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Done' } },

@@ -77,6 +77,8 @@ export interface SandboxAgentConfig {
   transport: 'sandbox';
   agent: SandboxAgentKind;
   model: string;
+  /** Kit Docker Sandbox qui fournit l'image et l'installation de l'agent. */
+  kit?: string;
   effort?: 'low' | 'medium' | 'high' | 'xhigh';
   displayName?: string;
   skills?: boolean;

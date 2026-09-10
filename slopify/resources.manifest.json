@@ -13,6 +13,9 @@
     "matt-implementer.md",
     "matt-plan-reviewer.md"
   ],
+  "sandboxKits": [
+    "vibe"
+  ],
   "skills": {
     "grill-with-docs": {
       "dependencies": [

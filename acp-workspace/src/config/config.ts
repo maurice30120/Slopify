@@ -161,20 +161,28 @@ function parseAgent(
   }
 
   if (value.transport === 'sandbox') {
-    if (value.agent !== 'codex' && value.agent !== 'opencode') {
-      errors.push(`agents.${name}.agent must be "codex" or "opencode" for transport "sandbox"; other Docker Sandbox agents are not supported yet.`);
+    const agent = value.agent;
+    if (agent !== 'codex' && agent !== 'opencode' && agent !== 'vibe') {
+      errors.push(`agents.${name}.agent must be "codex", "opencode", or "vibe" for transport "sandbox"; other Docker Sandbox agents are not supported yet.`);
       return null;
     }
     const model = readNonEmptyString(value.model, `agents.${name}.model`, errors);
+    const kit = value.kit === undefined
+      ? undefined
+      : readNonEmptyString(value.kit, `agents.${name}.kit`, errors);
+    if (agent === 'vibe' && kit === undefined) {
+      errors.push(`agents.${name}.kit must be a non-empty string for the Vibe sandbox agent.`);
+    }
     const effort = value.effort === undefined
       ? undefined
       : readSandboxEffort(value.effort, `agents.${name}.effort`, errors);
-    const opencodeConfig = readOpenCodeConfig(value.opencodeConfig, value.agent, `agents.${name}.opencodeConfig`, errors);
-    if (!model || effort === null || opencodeConfig === null) return null;
+    const opencodeConfig = readOpenCodeConfig(value.opencodeConfig, agent, `agents.${name}.opencodeConfig`, errors);
+    if (!model || kit === null || (agent === 'vibe' && kit === undefined) || effort === null || opencodeConfig === null) return null;
     return {
       transport: 'sandbox',
-      agent: value.agent,
+      agent,
       model,
+      ...(kit === undefined ? {} : { kit }),
       ...(effort === undefined ? {} : { effort }),
       ...(opencodeConfig === undefined ? {} : { opencodeConfig }),
       ...(typeof value.displayName === 'string' ? { displayName: value.displayName } : {}),

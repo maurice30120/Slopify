@@ -38,6 +38,22 @@ export class SandboxOutputStream {
     if (this.agent === 'opencode') {
       if (event.type === 'reasoning') this.text('agent_thought_chunk', event.part?.text);
       if (event.type === 'text') this.text('agent_message_chunk', event.part?.text);
+    } else if (this.agent === 'vibe') {
+      if (event.type === 'reasoning') this.text('agent_thought_chunk', event.text);
+      if (event.type === 'message' && event.role === 'assistant' && Array.isArray(event.content)) {
+        const text = (event.content as unknown[])
+          .filter((block: unknown): block is { type: string; text: string } => (
+            typeof block === 'object'
+            && block !== null
+            && 'type' in block
+            && 'text' in block
+            && (block as { type?: unknown }).type === 'text'
+            && typeof (block as { text?: unknown }).text === 'string'
+          ))
+          .map((block: { type: string; text: string }) => block.text)
+          .join('');
+        this.text('agent_message_chunk', text);
+      }
     } else if (event.type === 'item.completed') {
       if (event.item?.type === 'reasoning') this.text('agent_thought_chunk', event.item.text);
       if (event.item?.type === 'agent_message') this.text('agent_message_chunk', event.item.text);

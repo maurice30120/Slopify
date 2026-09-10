@@ -144,6 +144,7 @@ export function createWorkspaceRuntime(options: CreateWorkspaceRuntimeOptions): 
           resources: prepared ? { root: prepared.sandboxRoot, files: prepared.files } : undefined,
           agent: config.agent,
           model: config.model,
+          ...(config.kit ? { kit: config.kit } : {}),
           effort: config.effort,
           ...(config.opencodeConfig ? { opencodeConfig: config.opencodeConfig } : {}),
           timeoutMs: resolveTimeouts(catalog.config.pipeline.timeouts).promptMs,
@@ -585,10 +586,14 @@ async function decidePipelinePromotion(
 }
 
 function loadValidCatalog(workspaceCwd: string, embeddedRoot?: string): AgentCatalog {
-  const bundled = embeddedRoot ? loadAgentCatalog(workspaceCwd, embeddedRoot) : undefined;
+  const bundled = embeddedRoot
+    ? resolveCatalogKitPaths(loadAgentCatalog(workspaceCwd, embeddedRoot), embeddedRoot)
+    : undefined;
   const hasProjectConfig = fs.existsSync(path.join(workspaceCwd, '.acp/acp-agents.json'))
     || fs.existsSync(path.join(workspaceCwd, '.acp/.sandcastle/config.json'));
-  const project = hasProjectConfig || !bundled ? loadAgentCatalog(workspaceCwd) : undefined;
+  const project = hasProjectConfig || !bundled
+    ? resolveCatalogKitPaths(loadAgentCatalog(workspaceCwd), workspaceCwd)
+    : undefined;
   const selected = project ?? bundled!;
   const catalog: AgentCatalog = {
     ...selected,
@@ -599,6 +604,20 @@ function loadValidCatalog(workspaceCwd: string, embeddedRoot?: string): AgentCat
     throw new Error(`Invalid workspace ACP configuration:\n- ${catalog.errors.join('\n- ')}`);
   }
   return catalog;
+}
+
+function resolveCatalogKitPaths(catalog: AgentCatalog, configRoot: string): AgentCatalog {
+  const agents = Object.fromEntries(Object.entries(catalog.agents).map(([name, agent]) => {
+    if (agent.transport !== 'sandbox' || !agent.kit || !agent.kit.startsWith('.')) {
+      return [name, agent];
+    }
+    return [name, { ...agent, kit: path.resolve(configRoot, agent.kit) }];
+  }));
+  return {
+    ...catalog,
+    agents,
+    config: { ...catalog.config, agents },
+  };
 }
 
 function resolveAgent(catalog: AgentCatalog, agentName: string): AgentConfigEntry {

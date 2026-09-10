@@ -25,6 +25,14 @@ try {
     'grill-spec-tickets-implement-review', 'implement-ticket', 'review-delivery',
   ]);
   assert.ok(fs.existsSync(path.join(root, 'installed/node_modules/slopify/dist/resources/.agents/skills/domain-modeling/CONTEXT-FORMAT.md')));
+  const vibeKitSpec = path.join(root, 'installed/node_modules/slopify/dist/resources/.sbx/vibe/spec.yaml');
+  assert.ok(fs.existsSync(vibeKitSpec));
+  assert.match(fs.readFileSync(vibeKitSpec, 'utf8'), /name: vibe/);
+  for (const pipeline of ['grill-spec-tickets-implement-review', 'implement-ticket', 'review-delivery']) {
+    const pipelinePath = path.join(root, 'installed/node_modules/slopify/dist/resources/.acp/pipelines', `${pipeline}.yaml`);
+    assert.match(fs.readFileSync(pipelinePath, 'utf8'), /agent: Vibe Sandbox/);
+    assert.doesNotMatch(fs.readFileSync(pipelinePath, 'utf8'), /agent: OpenCode Sandbox/);
+  }
   assert.deepEqual(fs.readdirSync(project), []);
   const agentFile = path.join(root, 'agent.cjs');
   fs.writeFileSync(agentFile, String.raw`

@@ -191,7 +191,7 @@ function textPrompt(params: PromptRequest): string {
 }
 
 function agentLabel(agent: SandboxAgentKind | undefined): string {
-  return agent === 'opencode' ? 'OpenCode' : 'Codex';
+  return agent === 'opencode' ? 'OpenCode' : agent === 'vibe' ? 'Vibe' : 'Codex';
 }
 
 function bridgeFailure(error: unknown): SandboxBridgeFailure {
