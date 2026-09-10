@@ -28,8 +28,8 @@ node slopify/dist/src/cli.js run --yes --keep-sandboxes --verbose \
 - `npm run build` terminé avec succès ;
 - `sbx daemon status` indique `running` ;
 - Copilot CLI authentifié (`copilot login`) ;
-- `~/.copilot/config.json` contient l’état d’authentification Copilot ; Slopify
-  le copie automatiquement dans chaque sandbox Copilot ;
+- `~/.copilot` contient l’état d’authentification Copilot ; Slopify le copie
+  automatiquement dans chaque sandbox Copilot ;
 - workspace propre avant le lancement, car les pipelines qui écrivent exigent un
   commit de base propre.
 
@@ -50,14 +50,13 @@ node slopify/dist/src/cli.js run --yes --keep-sandboxes --verbose \
 - Copilot a ensuite été réauthentifié avec le compte GitHub CLI actif `dhuyet`.
 - Le second lancement a de nouveau atteint `Copilot Sandbox`, mais le secret
   global Docker `github` injecté dans le sandbox est resté expiré.
-- Le runtime a ensuite été ajusté pour copier `~/.copilot/config.json` avant
-  l’appel Copilot ; la suite sandbox vérifie ce transfert.
+- Le runtime a ensuite été ajusté pour copier `~/.copilot` avant l’appel
+  Copilot ; la suite sandbox vérifie ce transfert.
 
 ## Blocage actuel
 
-Si la copie de `config.json` ne suffit pas parce que `GH_TOKEN` est prioritaire,
-le fallback est de remplacer le secret global Docker Sandbox par le token `gh`
-actif :
+Si l’état copié ne suffit pas, le fallback reste de remplacer le secret global
+Docker Sandbox par le token `gh` actif :
 
 ```bash
 sbx secret set github --command 'gh auth token'

@@ -21,12 +21,13 @@ La configuration utilisateur se trouve uniquement dans
 }
 ```
 
-Pour `Copilot Sandbox`, Slopify copie le fichier hôte
-`~/.copilot/config.json` dans `~/.copilot/config.json` de la sandbox avant de
-lancer Copilot CLI. Le fichier est transféré par `sbx cp`, protégé en mode
-`600`, et reste hors du workspace cloné et des Agent Checkpoints. S’il
-n’existe pas, Slopify laisse Copilot utiliser l’authentification Docker
-Sandbox éventuellement disponible.
+Pour `Copilot Sandbox`, Slopify copie le dossier hôte `~/.copilot` dans
+`/home/agent/.copilot` de la sandbox avant de lancer Copilot CLI. L’état est
+transféré par `sbx cp -L`, protégé contre les accès groupe/autres, et reste
+hors du workspace cloné et des Agent Checkpoints. Les variables de token
+injectées par le service Docker sont neutralisées pour laisser Copilot utiliser
+l’état copié. Si le dossier n’existe pas, Slopify laisse Copilot utiliser
+l’authentification Docker Sandbox éventuellement disponible.
 
 Les méthodes d’extension ACP publiques sont `sandbox/status`,
 `sandbox/preview`, `sandbox/promote` et `sandbox/reject`.

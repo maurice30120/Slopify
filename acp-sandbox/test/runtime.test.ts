@@ -299,7 +299,10 @@ test('runs Copilot CLI non-interactively inside Docker Sandbox', async () => {
 
   const invocation = fake.calls.find(call => call.command === 'sbx' && call.args[0] === 'exec' && call.args.includes('copilot'));
   assert.deepEqual(invocation?.args.slice(2), [
-    'copilot',
+    'sh',
+    '-c',
+    'unset GH_TOKEN GITHUB_TOKEN COPILOT_GITHUB_TOKEN; exec copilot "$@"',
+    'slopify-copilot-runner',
     '-p',
     'Inspect the file.',
     '--silent',
@@ -310,10 +313,10 @@ test('runs Copilot CLI non-interactively inside Docker Sandbox', async () => {
   ]);
 });
 
-test('copies the host Copilot config into the sandbox before starting Copilot', async () => {
-  const configDirectory = temporaryDirectory();
-  const configPath = path.join(configDirectory, 'config.json');
-  fs.writeFileSync(configPath, '{"login":"fixture-token"}\n');
+test('copies the host Copilot home into the sandbox before starting Copilot', async () => {
+  const copilotHome = temporaryDirectory();
+  fs.writeFileSync(path.join(copilotHome, 'config.json'), '{"login":"fixture-auth-state"}\n');
+  fs.writeFileSync(path.join(copilotHome, 'data.db'), 'fixture-auth-state\n');
   try {
     const scenario = sandboxScenario();
     const fake = fakeExecutor(request => {
@@ -323,7 +326,7 @@ test('copies the host Copilot config into the sandbox before starting Copilot', 
       return scenario.respond(request);
     });
 
-    await new DockerSandboxRuntime(fake.execute, { copilotConfigPath: configPath }).runCodex({
+    await new DockerSandboxRuntime(fake.execute, { copilotHomePath: copilotHome }).runCodex({
       workspaceCwd: '/repo',
       runId: 'copilot-config',
       nodeId: 'implement',
@@ -338,12 +341,13 @@ test('copies the host Copilot config into the sandbox before starting Copilot', 
     assert.ok(copyIndex >= 0);
     assert.ok(copyIndex < agentIndex);
     assert.deepEqual(fake.calls[copyIndex]?.args.slice(1), [
-      configPath,
-      `${stableSandboxName('copilot-config', 'implement', 1)}:/home/agent/.copilot/config.json`,
+      '-L',
+      copilotHome,
+      `${stableSandboxName('copilot-config', 'implement', 1)}:/home/agent/`,
     ]);
-    assert.doesNotMatch(JSON.stringify(fake.calls), /fixture-token/);
+    assert.doesNotMatch(JSON.stringify(fake.calls), /fixture-auth-state/);
   } finally {
-    fs.rmSync(configDirectory, { recursive: true, force: true });
+    fs.rmSync(copilotHome, { recursive: true, force: true });
   }
 });
 

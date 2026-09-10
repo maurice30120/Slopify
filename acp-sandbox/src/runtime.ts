@@ -54,7 +54,8 @@ export interface DockerSandboxRuntimeOptions {
     choices: readonly DockerSandboxNetworkPolicyChoice[],
   ) => DockerSandboxNetworkPolicyChoice | undefined | Promise<DockerSandboxNetworkPolicyChoice | undefined>;
   reportNetworkPolicy?: (message: string) => void;
-  copilotConfigPath?: string;
+  /** Host Copilot state directory, primarily overridable for isolated tests. */
+  copilotHomePath?: string;
 }
 
 export interface SubprocessRequest {
@@ -298,42 +299,42 @@ export class DockerSandboxRuntime {
     }, 'install the OpenCode config');
   }
 
-  private async installCopilotConfig(
+  private async installCopilotHome(
     cwd: string,
     sandboxName: string,
     signal?: AbortSignal,
   ): Promise<void> {
-    const configPath = this.options.copilotConfigPath
-      ?? path.join(homedir(), '.copilot', 'config.json');
+    const copilotHomePath = this.options.copilotHomePath
+      ?? path.join(homedir(), '.copilot');
     try {
-      await access(configPath);
+      await access(copilotHomePath);
     } catch (error: unknown) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
-      throw new Error(`Unable to access the host Copilot config at ${configPath}: ${formatUnknownError(error)}`);
+      throw new Error(`Unable to access the host Copilot state at ${copilotHomePath}: ${formatUnknownError(error)}`);
     }
 
     const home = '/home/agent';
     await this.requireSuccess({
       command: 'sbx',
-      args: ['exec', sandboxName, 'sh', '-c', 'mkdir -p -- "$HOME/.copilot"'],
+      args: ['exec', sandboxName, 'sh', '-c', 'mkdir -p -- "$HOME"'],
       cwd,
       stdin: 'ignore',
       signal,
-    }, 'prepare the Copilot config directory');
+    }, 'prepare the Copilot home directory');
     await this.requireSuccess({
       command: 'sbx',
-      args: ['cp', configPath, `${sandboxName}:${home}/.copilot/config.json`],
+      args: ['cp', '-L', copilotHomePath, `${sandboxName}:${home}/`],
       cwd,
       stdin: 'ignore',
       signal,
-    }, 'copy the host Copilot config');
+    }, 'copy the host Copilot state');
     await this.requireSuccess({
       command: 'sbx',
-      args: ['exec', sandboxName, 'chmod', '600', `${home}/.copilot/config.json`],
+      args: ['exec', sandboxName, 'chmod', '-R', 'go-rwx', `${home}/.copilot`],
       cwd,
       stdin: 'ignore',
       signal,
-    }, 'protect the Copilot config');
+    }, 'protect the Copilot state');
   }
 
   async runCodex(input: SandboxRunInput): Promise<SandboxRunResult> {
@@ -447,7 +448,7 @@ export class DockerSandboxRuntime {
         await this.installOpenCodeConfig(input.workspaceCwd, sandboxName, input.opencodeConfig, execution.signal);
       }
       if (agent === 'copilot') {
-        await this.installCopilotConfig(input.workspaceCwd, sandboxName, execution.signal);
+        await this.installCopilotHome(input.workspaceCwd, sandboxName, execution.signal);
       }
 
       const agentArgs = agent === 'opencode'
@@ -459,6 +460,8 @@ export class DockerSandboxRuntime {
           : ['exec', '--dangerously-bypass-approvals-and-sandbox', '--ephemeral', '--json'];
       const execArgs = agent === 'opencode'
         ? ['exec', sandboxName, 'sh', '-c', OPENCODE_WATCHDOG_SCRIPT, 'slopify-opencode-runner', ...agentArgs]
+        : agent === 'copilot'
+          ? ['exec', sandboxName, 'sh', '-c', 'unset GH_TOKEN GITHUB_TOKEN COPILOT_GITHUB_TOKEN; exec copilot "$@"', 'slopify-copilot-runner', ...agentArgs]
         : ['exec', sandboxName, agent, ...agentArgs];
       if (agent === 'vibe') {
         execArgs.splice(1, 0, '--env', `VIBE_ACTIVE_MODEL=${input.model}`);
