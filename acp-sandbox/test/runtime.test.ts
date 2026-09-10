@@ -281,7 +281,7 @@ test('runs OpenCode in a cloned sandbox with the opencode non-interactive comman
 test('runs Copilot CLI non-interactively inside Docker Sandbox', async () => {
   const scenario = sandboxScenario();
   const fake = fakeExecutor(request => {
-    if (request.command === 'sbx' && request.args[0] === 'exec' && request.args.includes('copilot')) {
+    if (request.command === 'sbx' && request.args[0] === 'exec' && request.args.some(arg => arg.includes('exec copilot')) ) {
       return result('Copilot completed\n');
     }
     return scenario.respond(request);
@@ -297,7 +297,7 @@ test('runs Copilot CLI non-interactively inside Docker Sandbox', async () => {
     agent: 'copilot',
   });
 
-  const invocation = fake.calls.find(call => call.command === 'sbx' && call.args[0] === 'exec' && call.args.includes('copilot'));
+  const invocation = fake.calls.find(call => call.command === 'sbx' && call.args[0] === 'exec' && call.args.some(arg => arg.includes('exec copilot')));
   assert.deepEqual(invocation?.args.slice(2), [
     'sh',
     '-c',
@@ -320,7 +320,7 @@ test('copies the host Copilot home into the sandbox before starting Copilot', as
   try {
     const scenario = sandboxScenario();
     const fake = fakeExecutor(request => {
-      if (request.command === 'sbx' && request.args[0] === 'exec' && request.args.includes('copilot')) {
+      if (request.command === 'sbx' && request.args[0] === 'exec' && request.args.some(arg => arg.includes('exec copilot')) ) {
         return result('Copilot completed\n');
       }
       return scenario.respond(request);
@@ -337,7 +337,7 @@ test('copies the host Copilot home into the sandbox before starting Copilot', as
     });
 
     const copyIndex = fake.calls.findIndex(call => call.command === 'sbx' && call.args[0] === 'cp');
-    const agentIndex = fake.calls.findIndex(call => call.command === 'sbx' && call.args[0] === 'exec' && call.args.includes('copilot'));
+    const agentIndex = fake.calls.findIndex(call => call.command === 'sbx' && call.args[0] === 'exec' && call.args.some(arg => arg.includes('exec copilot')));
     assert.ok(copyIndex >= 0);
     assert.ok(copyIndex < agentIndex);
     assert.deepEqual(fake.calls[copyIndex]?.args.slice(1), [
