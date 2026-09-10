@@ -24,6 +24,7 @@ export const createRuntimeCliBackend: CliPipelineBackendFactory = (workspaceCwd,
   const runtime = createWorkspaceRuntime({
     workspaceCwd,
     embeddedRoot: fileURLToPath(new URL('../resources/', import.meta.url)),
+    resourcesStateRoot: process.env.SLOPIFY_RESOURCES_STATE_ROOT,
     keepSandboxes: runtimeContext.keepSandboxes,
     onSandboxRetained: sandbox => context.logger.error(formatRetainedSandbox(sandbox)),
     host: {

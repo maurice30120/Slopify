@@ -4,7 +4,7 @@ title: Review Approved Delivery
 
 nodes:
   - id: review
-    agent: Vibe Sandbox
+    agent: Copilot Sandbox
     skills: [code-review]
     instructionsFile: ../agents/matt-plan-reviewer.md
     prompt: |

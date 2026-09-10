@@ -24,6 +24,12 @@
       "model": "mistral-medium-3.5",
       "kit": "./.sbx/vibe"
     },
+    "Copilot Sandbox": {
+      "transport": "sandbox",
+      "agent": "copilot",
+      "model": "auto",
+      "displayName": "GitHub Copilot CLI"
+    },
     "OpenCode": {
       "transport": "sandbox",
       "agent": "opencode",

@@ -4,7 +4,7 @@ title: Grill with Docs → Spec Docs → Ticket Docs → Sequential Implement �
 
 nodes:
   - id: plan
-    agent: Vibe Sandbox
+    agent: Copilot Sandbox
     skills: [grill-with-docs, grilling, domain-modeling]
     interaction:
       protocol: proposed-plan
@@ -41,7 +41,7 @@ nodes:
       format: markdown
 
   - id: spec
-    agent: Vibe Sandbox
+    agent: Copilot Sandbox
     skills: [to-spec, domain-modeling]
     instructionsFile: ../agents/matt-spec-writer.md
     prompt: |
@@ -66,7 +66,7 @@ nodes:
       format: markdown
 
   - id: tasks
-    agent: Vibe Sandbox
+    agent: Copilot Sandbox
     skills: [to-tickets]
     instructionsFile: ../agents/matt-ticket-planner.md
     prompt: |

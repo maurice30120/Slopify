@@ -30,7 +30,8 @@ try {
   assert.match(fs.readFileSync(vibeKitSpec, 'utf8'), /name: vibe/);
   for (const pipeline of ['grill-spec-tickets-implement-review', 'implement-ticket', 'review-delivery']) {
     const pipelinePath = path.join(root, 'installed/node_modules/slopify/dist/resources/.acp/pipelines', `${pipeline}.yaml`);
-    assert.match(fs.readFileSync(pipelinePath, 'utf8'), /agent: Vibe Sandbox/);
+    assert.match(fs.readFileSync(pipelinePath, 'utf8'), /agent: Copilot Sandbox/);
+    assert.doesNotMatch(fs.readFileSync(pipelinePath, 'utf8'), /agent: Vibe Sandbox/);
     assert.doesNotMatch(fs.readFileSync(pipelinePath, 'utf8'), /agent: OpenCode Sandbox/);
   }
   assert.deepEqual(fs.readdirSync(project), []);

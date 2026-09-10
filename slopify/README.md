@@ -13,7 +13,7 @@ Le pipeline choisit les agents de chaque nœud. La commande n'accepte volontaire
 La CLI embarque les pipelines `grill-spec-tickets-implement-review`,
 `implement-ticket` et `review-delivery`, leurs instructions, leurs skills et
 une configuration d’agents Vibe (ACP natif), Vibe Sandbox, Copilot Sandbox et OpenCode. Le
-pipeline par défaut et ses pipelines de livraison utilisent Vibe Sandbox ;
+pipeline par défaut et ses pipelines de livraison utilisent exclusivement Copilot Sandbox ;
 OpenCode reste disponible pour les pipelines personnalisés. Elle localise ces ressources
 relativement à son installation, indépendamment du répertoire courant.
 
@@ -64,6 +64,9 @@ ou des skills du projet. Si les fichiers figés ont disparu ou changé, elle
 échoue explicitement : il faut restaurer la copie d’origine. Les ressources
 restent conservées avec les runs ; aucun nettoyage automatique ni catalogue
 personnel global n’est fourni dans cette version.
+
+`SLOPIFY_RESOURCES_STATE_ROOT` permet de déplacer ce répertoire d’état lorsqu’un
+environnement Git interdit l’écriture sous `.git`.
 
 ## Distribution
 
