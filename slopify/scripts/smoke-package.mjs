@@ -18,6 +18,9 @@ try {
   const project = path.join(root, 'project');
   fs.mkdirSync(project);
   const executable = path.join(root, 'installed/node_modules/slopify/dist/bin/cli.js');
+  const executableSource = fs.readFileSync(executable, 'utf8');
+  assert.match(executableSource, /create the Agent Checkpoint bundle/);
+  assert.doesNotMatch(executableSource, /fetch the Agent Checkpoint/);
   const result = JSON.parse(execFileSync(process.execPath, [executable, 'list', '--cwd', project, '--json'], {
     cwd: project, encoding: 'utf8',
   }));

@@ -10,7 +10,7 @@
     "dist/resources"
   ],
   "scripts": {
-    "build": "npm --prefix .. run build -w @acp-client/workspace && npm --prefix .. exec -- tsc -p tsconfig.json --incremental false && node scripts/build-resources.mjs && node scripts/build-cli.mjs",
+    "build": "npm --prefix .. run build -w @acp-client/sandbox -w @acp-client/runtime -w @acp-client/pipeline -w @acp-client/workspace && npm --prefix .. exec -- tsc -p tsconfig.json --incremental false && node scripts/build-resources.mjs && node scripts/build-cli.mjs",
     "test": "npm run build && node --test \"dist/test/**/*.test.js\"",
     "clean": "node -e \"require('fs').rmSync('dist', { recursive: true, force: true })\"",
     "prepack": "npm --prefix .. run build",
