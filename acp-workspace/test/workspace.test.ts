@@ -53,6 +53,20 @@ test('ships Vibe and Vibe Sandbox in the workspace and bundled ACP catalogues', 
   }
 });
 
+test('ships Copilot Sandbox in the bundled ACP catalogue', () => {
+  const repoRoot = path.resolve(import.meta.dirname, '../../..');
+  const configPath = path.join(repoRoot, 'slopify', 'default-agents.json');
+  const config = parseAcpConfig(fs.readFileSync(configPath, 'utf8'), configPath);
+
+  assert.deepEqual(config.agents['Copilot Sandbox'], {
+    transport: 'sandbox',
+    agent: 'copilot',
+    model: 'auto',
+    displayName: 'GitHub Copilot CLI',
+  });
+  assert.deepEqual(config.errors, []);
+});
+
 test('accepts Vibe for the sandbox transport when a Docker Sandbox kit is configured', () => {
   const accepted = parseAcpConfig(JSON.stringify({ agents: {
     'Vibe Sandbox': {
@@ -117,7 +131,20 @@ test('accepts Codex and OpenCode for the sandbox transport with corrective error
     Other: { transport: 'sandbox', agent: 'pi', model: 'pi-model' },
   } }));
   assert.equal(rejected.agents.Other, undefined);
-  assert.match(rejected.errors.join('\n'), /must be "codex", "opencode", or "vibe".*other Docker Sandbox agents are not supported yet/);
+  assert.match(rejected.errors.join('\n'), /must be "codex", "opencode", "vibe", or "copilot".*other Docker Sandbox agents are not supported yet/);
+});
+
+test('accepts Copilot for the sandbox transport', () => {
+  const accepted = parseAcpConfig(JSON.stringify({ agents: {
+    'Copilot Sandbox': { transport: 'sandbox', agent: 'copilot', model: 'auto' },
+  } }));
+
+  assert.deepEqual(accepted.errors, []);
+  assert.deepEqual(accepted.agents['Copilot Sandbox'], {
+    transport: 'sandbox',
+    agent: 'copilot',
+    model: 'auto',
+  });
 });
 
 test('writes and removes agents in the single ACP catalogue while preserving its envelope', () => {

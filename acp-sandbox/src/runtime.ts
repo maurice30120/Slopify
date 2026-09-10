@@ -10,7 +10,7 @@ import {
   type AgentCheckpointResult,
 } from './gitPromotion.js';
 
-export type SandboxAgentKind = 'codex' | 'opencode' | 'vibe';
+export type SandboxAgentKind = 'codex' | 'opencode' | 'vibe' | 'copilot';
 
 export const MINIMUM_SBX_VERSION = '0.35.0';
 export const DEFAULT_SANDBOX_CLEANUP_TIMEOUT_MS = 30_000;
@@ -219,7 +219,7 @@ export class SandboxRunTimeoutError extends Error {
 }
 
 /**
- * Orchestre l'exécution d'un nœud d'agent (Codex, OpenCode ou Vibe) dans un clone
+ * Orchestre l'exécution d'un nœud d'agent (Codex, OpenCode, Vibe ou Copilot) dans un clone
  * Docker Sandbox privé.
  *
  * Le runtime crée un Agent Checkpoint attribuable et le récupère côté hôte,
@@ -411,12 +411,17 @@ export class DockerSandboxRuntime {
         ? ['run', '--auto', '--format', 'json', '--thinking']
         : agent === 'vibe'
           ? ['-p', input.prompt, '--output', 'streaming', '--agent', 'auto-approve', '--trust']
+          : agent === 'copilot'
+            ? ['-p', input.prompt, '--silent', '--allow-all', '--no-ask-user']
           : ['exec', '--dangerously-bypass-approvals-and-sandbox', '--ephemeral', '--json'];
       const execArgs = agent === 'opencode'
         ? ['exec', sandboxName, 'sh', '-c', OPENCODE_WATCHDOG_SCRIPT, 'slopify-opencode-runner', ...agentArgs]
         : ['exec', sandboxName, agent, ...agentArgs];
       if (agent === 'vibe') {
         execArgs.splice(1, 0, '--env', `VIBE_ACTIVE_MODEL=${input.model}`);
+      } else if (agent === 'copilot') {
+        execArgs.push('--model', input.model);
+        if (input.effort) execArgs.push('--reasoning-effort', input.effort);
       } else {
         execArgs.push('--model', input.model);
         if (input.effort) {
@@ -794,7 +799,7 @@ function createSandboxArgs(agent: SandboxAgentKind, sandboxName: string, kit?: s
 }
 
 function sandboxAgentLabel(agent: SandboxAgentKind): string {
-  return agent === 'opencode' ? 'OpenCode' : agent === 'vibe' ? 'Vibe' : 'Codex';
+  return agent === 'opencode' ? 'OpenCode' : agent === 'vibe' ? 'Vibe' : agent === 'copilot' ? 'Copilot' : 'Codex';
 }
 
 function parseSandboxList(output: string): ListedSandbox[] {

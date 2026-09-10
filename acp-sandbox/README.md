@@ -1,6 +1,6 @@
 # @acp-client/sandbox
 
-Runtime isolé actif de Slopify pour les agents Codex, OpenCode et Vibe. Il crée
+Runtime isolé actif de Slopify pour les agents Codex, Copilot, OpenCode et Vibe. Il crée
 un clone privé avec Docker Sandbox, exécute l’agent sans interaction, produit
 un Agent Checkpoint, prépare l’aperçu du Pipeline Change Set et ne modifie le
 workspace hôte qu’après une Promotion explicite.

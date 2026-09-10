@@ -12,7 +12,7 @@ Le pipeline choisit les agents de chaque nœud. La commande n'accepte volontaire
 
 La CLI embarque les pipelines `grill-spec-tickets-implement-review`,
 `implement-ticket` et `review-delivery`, leurs instructions, leurs skills et
-une configuration d’agents Vibe (ACP natif), Vibe Sandbox et OpenCode. Le
+une configuration d’agents Vibe (ACP natif), Vibe Sandbox, Copilot Sandbox et OpenCode. Le
 pipeline par défaut et ses pipelines de livraison utilisent Vibe Sandbox ;
 OpenCode reste disponible pour les pipelines personnalisés. Elle localise ces ressources
 relativement à son installation, indépendamment du répertoire courant.

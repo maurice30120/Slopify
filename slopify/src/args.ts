@@ -148,7 +148,7 @@ export function parseCliArgs(argv: string[], baseCwd = process.cwd()): CliComman
 
 export function formatHelp(): string {
   return [
-    'slopify - run ACP v3 pipelines and Docker Sandbox agents (Codex, OpenCode) from a terminal.',
+    'slopify - run ACP v3 pipelines and Docker Sandbox agents (Codex, Copilot, OpenCode, Vibe) from a terminal.',
     '',
     'The pipeline selects every native ACP or Docker Sandbox agent used by its',
     'nodes, based on the workspace configuration. There is intentionally no --agent option.',

@@ -278,6 +278,38 @@ test('runs OpenCode in a cloned sandbox with the opencode non-interactive comman
   assert.ok(fake.calls.indexOf(inject!) < fake.calls.indexOf(exec!), 'the declared config must be installed before the agent runs');
 });
 
+test('runs Copilot CLI non-interactively inside Docker Sandbox', async () => {
+  const scenario = sandboxScenario();
+  const fake = fakeExecutor(request => {
+    if (request.command === 'sbx' && request.args[0] === 'exec' && request.args.includes('copilot')) {
+      return result('Copilot completed\n');
+    }
+    return scenario.respond(request);
+  });
+
+  await new DockerSandboxRuntime(fake.execute).runCodex({
+    workspaceCwd: '/repo',
+    runId: 'copilot',
+    nodeId: 'implement',
+    attempt: 1,
+    prompt: 'Inspect the file.',
+    model: 'auto',
+    agent: 'copilot',
+  });
+
+  const invocation = fake.calls.find(call => call.command === 'sbx' && call.args[0] === 'exec' && call.args.includes('copilot'));
+  assert.deepEqual(invocation?.args.slice(2), [
+    'copilot',
+    '-p',
+    'Inspect the file.',
+    '--silent',
+    '--allow-all',
+    '--no-ask-user',
+    '--model',
+    'auto',
+  ]);
+});
+
 test('wraps OpenCode with a provider-error watchdog so quota failures return promptly', async () => {
   const scenario = sandboxScenario();
   const fake = fakeExecutor(scenario.respond);

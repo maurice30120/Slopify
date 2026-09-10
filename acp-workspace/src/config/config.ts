@@ -162,8 +162,8 @@ function parseAgent(
 
   if (value.transport === 'sandbox') {
     const agent = value.agent;
-    if (agent !== 'codex' && agent !== 'opencode' && agent !== 'vibe') {
-      errors.push(`agents.${name}.agent must be "codex", "opencode", or "vibe" for transport "sandbox"; other Docker Sandbox agents are not supported yet.`);
+    if (agent !== 'codex' && agent !== 'opencode' && agent !== 'vibe' && agent !== 'copilot') {
+      errors.push(`agents.${name}.agent must be "codex", "opencode", "vibe", or "copilot" for transport "sandbox"; other Docker Sandbox agents are not supported yet.`);
       return null;
     }
     const model = readNonEmptyString(value.model, `agents.${name}.model`, errors);
