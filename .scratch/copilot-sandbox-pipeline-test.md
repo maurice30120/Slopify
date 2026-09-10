@@ -28,8 +28,8 @@ node slopify/dist/src/cli.js run --yes --keep-sandboxes --verbose \
 - `npm run build` terminé avec succès ;
 - `sbx daemon status` indique `running` ;
 - Copilot CLI authentifié (`copilot login`) ;
-- `~/.copilot` contient l’état d’authentification Copilot ; Slopify le copie
-  automatiquement dans chaque sandbox Copilot ;
+- Credential hôte valide : variable de token, trousseau macOS `copilot-cli`
+  ou `gh auth token`. Le runtime le transmet par stdin au processus sandbox ;
 - workspace propre avant le lancement, car les pipelines qui écrivent exigent un
   commit de base propre.
 
@@ -53,15 +53,17 @@ node slopify/dist/src/cli.js run --yes --keep-sandboxes --verbose \
 - Le runtime a ensuite été ajusté pour copier `~/.copilot` avant l’appel
   Copilot ; la suite sandbox vérifie ce transfert.
 
-## Blocage actuel
+## Solution validée pour l’authentification
 
-Si l’état copié ne suffit pas, le fallback reste de remplacer le secret global
-Docker Sandbox par le token `gh` actif :
+Le credential hôte est dans le trousseau macOS, pas dans la copie de
+`~/.copilot`. La lecture SQLite incluant le WAL ne trouve aucun `access_token`
+renseigné. La copie du dossier a été supprimée du runtime.
 
-```bash
-sbx secret set github --command 'gh auth token'
-```
+Une requête réelle dans `slopify-copilot-auth-probe`, avec le credential du
+trousseau transmis par stdin puis exporté dans `COPILOT_GITHUB_TOKEN`, a répondu
+`AUTH_OK` avec un code retour 0, sans `/login`. Les essais via les secrets
+dynamiques du proxy ont échoué ; ils ne constituent pas la solution retenue.
 
-Cette commande modifie le credential global utilisé par tous les sandboxes. Ne
-la lancer qu’après validation explicite de ce périmètre, puis reprendre avec la
-commande ci-dessus.
+Le pipeline complet avec modification et promotion du commentaire reste à
+valider séparément après cette correction. Aucun succès de pipeline complet
+n’est déduit du seul test d’authentification.

@@ -278,77 +278,26 @@ test('runs OpenCode in a cloned sandbox with the opencode non-interactive comman
   assert.ok(fake.calls.indexOf(inject!) < fake.calls.indexOf(exec!), 'the declared config must be installed before the agent runs');
 });
 
-test('runs Copilot CLI non-interactively inside Docker Sandbox', async () => {
+test('runs Copilot with host credentials over stdin without copying its state', async () => {
   const scenario = sandboxScenario();
-  const fake = fakeExecutor(request => {
-    if (request.command === 'sbx' && request.args[0] === 'exec' && request.args.some(arg => arg.includes('exec copilot')) ) {
-      return result('Copilot completed\n');
-    }
-    return scenario.respond(request);
+  const fake = fakeExecutor(request => request.command === 'sh'
+    && request.args.includes('slopify-host-auth') ? result('AUTH_OK\n') : scenario.respond(request));
+  const output = await new DockerSandboxRuntime(fake.execute).runCodex({
+    workspaceCwd: '/repo', runId: 'copilot', nodeId: 'implement', attempt: 1,
+    prompt: 'Inspect the file.', model: 'auto', agent: 'copilot',
   });
-
-  await new DockerSandboxRuntime(fake.execute).runCodex({
-    workspaceCwd: '/repo',
-    runId: 'copilot',
-    nodeId: 'implement',
-    attempt: 1,
-    prompt: 'Inspect the file.',
-    model: 'auto',
-    agent: 'copilot',
-  });
-
-  const invocation = fake.calls.find(call => call.command === 'sbx' && call.args[0] === 'exec' && call.args.some(arg => arg.includes('exec copilot')));
-  assert.deepEqual(invocation?.args.slice(2), [
-    'sh',
-    '-c',
-    'unset GH_TOKEN GITHUB_TOKEN COPILOT_GITHUB_TOKEN; exec copilot "$@"',
-    'slopify-copilot-runner',
-    '-p',
-    'Inspect the file.',
-    '--silent',
-    '--allow-all',
-    '--no-ask-user',
-    '--model',
-    'auto',
+  assert.equal(output.stdout, 'AUTH_OK\n');
+  const invocation = fake.calls.find(call => call.args.includes('slopify-host-auth'));
+  assert.ok(invocation);
+  assert.match(invocation.args[1]!, /security find-generic-password -s copilot-cli -w/);
+  assert.match(invocation.args[1]!, /resolve_token \| sbx/);
+  assert.deepEqual(invocation.args.slice(3, 6), ['exec', '-i', output.sandboxName]);
+  assert.match(invocation.args[8]!, /read -r COPILOT_GITHUB_TOKEN/);
+  assert.deepEqual(invocation.args.slice(-8), [
+    'slopify-copilot-runner', '-p', 'Inspect the file.', '--silent',
+    '--allow-all', '--no-ask-user', '--model', 'auto',
   ]);
-});
-
-test('copies the host Copilot home into the sandbox before starting Copilot', async () => {
-  const copilotHome = temporaryDirectory();
-  fs.writeFileSync(path.join(copilotHome, 'config.json'), '{"login":"fixture-auth-state"}\n');
-  fs.writeFileSync(path.join(copilotHome, 'data.db'), 'fixture-auth-state\n');
-  try {
-    const scenario = sandboxScenario();
-    const fake = fakeExecutor(request => {
-      if (request.command === 'sbx' && request.args[0] === 'exec' && request.args.some(arg => arg.includes('exec copilot')) ) {
-        return result('Copilot completed\n');
-      }
-      return scenario.respond(request);
-    });
-
-    await new DockerSandboxRuntime(fake.execute, { copilotHomePath: copilotHome }).runCodex({
-      workspaceCwd: '/repo',
-      runId: 'copilot-config',
-      nodeId: 'implement',
-      attempt: 1,
-      prompt: 'Inspect the file.',
-      model: 'auto',
-      agent: 'copilot',
-    });
-
-    const copyIndex = fake.calls.findIndex(call => call.command === 'sbx' && call.args[0] === 'cp');
-    const agentIndex = fake.calls.findIndex(call => call.command === 'sbx' && call.args[0] === 'exec' && call.args.some(arg => arg.includes('exec copilot')));
-    assert.ok(copyIndex >= 0);
-    assert.ok(copyIndex < agentIndex);
-    assert.deepEqual(fake.calls[copyIndex]?.args.slice(1), [
-      '-L',
-      copilotHome,
-      `${stableSandboxName('copilot-config', 'implement', 1)}:/home/agent/`,
-    ]);
-    assert.doesNotMatch(JSON.stringify(fake.calls), /fixture-auth-state/);
-  } finally {
-    fs.rmSync(copilotHome, { recursive: true, force: true });
-  }
+  assert.ok(!fake.calls.some(call => call.command === 'sbx' && call.args[0] === 'cp'));
 });
 
 test('wraps OpenCode with a provider-error watchdog so quota failures return promptly', async () => {

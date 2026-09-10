@@ -1,7 +1,6 @@
 import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
-import { access, mkdir, writeFile } from 'node:fs/promises';
-import { homedir } from 'node:os';
+import { mkdir, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 
 import {
@@ -16,6 +15,18 @@ export type SandboxAgentKind = 'codex' | 'opencode' | 'vibe' | 'copilot';
 export const MINIMUM_SBX_VERSION = '0.35.0';
 export const DEFAULT_SANDBOX_CLEANUP_TIMEOUT_MS = 30_000;
 export const DOCKER_SANDBOX_NETWORK_POLICY_CHOICES = ['Open', 'Balanced', 'Locked Down'] as const;
+
+// Resolve credentials on the host and send them over stdin, never command arguments.
+const COPILOT_HOST_AUTH_SCRIPT = `set -e
+resolve_token() {
+  if [ -n "\${COPILOT_GITHUB_TOKEN:-}" ]; then printf '%s\\n' "$COPILOT_GITHUB_TOKEN"
+  elif [ -n "\${GH_TOKEN:-}" ]; then printf '%s\\n' "$GH_TOKEN"
+  elif [ -n "\${GITHUB_TOKEN:-}" ]; then printf '%s\\n' "$GITHUB_TOKEN"
+  elif [ "$(uname -s)" = Darwin ]; then security find-generic-password -s copilot-cli -w 2>/dev/null || gh auth token
+  else gh auth token
+  fi
+}
+resolve_token | sbx "$@"`;
 
 // OpenCode peut conserver son processus ACP ouvert après une erreur terminale
 // du fournisseur. Le wrapper surveille le journal local du sandbox, remonte un
@@ -54,8 +65,6 @@ export interface DockerSandboxRuntimeOptions {
     choices: readonly DockerSandboxNetworkPolicyChoice[],
   ) => DockerSandboxNetworkPolicyChoice | undefined | Promise<DockerSandboxNetworkPolicyChoice | undefined>;
   reportNetworkPolicy?: (message: string) => void;
-  /** Host Copilot state directory, primarily overridable for isolated tests. */
-  copilotHomePath?: string;
 }
 
 export interface SubprocessRequest {
@@ -299,44 +308,6 @@ export class DockerSandboxRuntime {
     }, 'install the OpenCode config');
   }
 
-  private async installCopilotHome(
-    cwd: string,
-    sandboxName: string,
-    signal?: AbortSignal,
-  ): Promise<void> {
-    const copilotHomePath = this.options.copilotHomePath
-      ?? path.join(homedir(), '.copilot');
-    try {
-      await access(copilotHomePath);
-    } catch (error: unknown) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
-      throw new Error(`Unable to access the host Copilot state at ${copilotHomePath}: ${formatUnknownError(error)}`);
-    }
-
-    const home = '/home/agent';
-    await this.requireSuccess({
-      command: 'sbx',
-      args: ['exec', sandboxName, 'sh', '-c', 'mkdir -p -- "$HOME"'],
-      cwd,
-      stdin: 'ignore',
-      signal,
-    }, 'prepare the Copilot home directory');
-    await this.requireSuccess({
-      command: 'sbx',
-      args: ['cp', '-L', copilotHomePath, `${sandboxName}:${home}/`],
-      cwd,
-      stdin: 'ignore',
-      signal,
-    }, 'copy the host Copilot state');
-    await this.requireSuccess({
-      command: 'sbx',
-      args: ['exec', sandboxName, 'chmod', '-R', 'go-rwx', `${home}/.copilot`],
-      cwd,
-      stdin: 'ignore',
-      signal,
-    }, 'protect the Copilot state');
-  }
-
   async runCodex(input: SandboxRunInput): Promise<SandboxRunResult> {
     const agent = input.agent ?? 'codex';
     const sandboxName = input.resumeState?.sandboxName ?? stableSandboxName(input.runId, input.nodeId, input.attempt);
@@ -447,9 +418,6 @@ export class DockerSandboxRuntime {
       if (agent === 'opencode' && input.opencodeConfig) {
         await this.installOpenCodeConfig(input.workspaceCwd, sandboxName, input.opencodeConfig, execution.signal);
       }
-      if (agent === 'copilot') {
-        await this.installCopilotHome(input.workspaceCwd, sandboxName, execution.signal);
-      }
 
       const agentArgs = agent === 'opencode'
         ? ['run', '--auto', '--format', 'json', '--thinking']
@@ -461,7 +429,7 @@ export class DockerSandboxRuntime {
       const execArgs = agent === 'opencode'
         ? ['exec', sandboxName, 'sh', '-c', OPENCODE_WATCHDOG_SCRIPT, 'slopify-opencode-runner', ...agentArgs]
         : agent === 'copilot'
-          ? ['exec', sandboxName, 'sh', '-c', 'unset GH_TOKEN GITHUB_TOKEN COPILOT_GITHUB_TOKEN; exec copilot "$@"', 'slopify-copilot-runner', ...agentArgs]
+          ? ['exec', '-i', sandboxName, 'sh', '-c', 'IFS= read -r COPILOT_GITHUB_TOKEN && [ -n "$COPILOT_GITHUB_TOKEN" ] || { echo "Missing host Copilot credential" >&2; exit 1; }; export COPILOT_GITHUB_TOKEN; unset GH_TOKEN GITHUB_TOKEN; exec copilot "$@"', 'slopify-copilot-runner', ...agentArgs]
         : ['exec', sandboxName, agent, ...agentArgs];
       if (agent === 'vibe') {
         execArgs.splice(1, 0, '--env', `VIBE_ACTIVE_MODEL=${input.model}`);
@@ -477,8 +445,8 @@ export class DockerSandboxRuntime {
         execArgs.push(input.prompt);
       }
       const agentRun = await this.execute({
-        command: 'sbx',
-        args: execArgs,
+        command: agent === 'copilot' ? 'sh' : 'sbx',
+        args: agent === 'copilot' ? ['-c', COPILOT_HOST_AUTH_SCRIPT, 'slopify-host-auth', ...execArgs] : execArgs,
         cwd: input.workspaceCwd,
         stdin: 'ignore',
         observeOutput: !input.onStdout,

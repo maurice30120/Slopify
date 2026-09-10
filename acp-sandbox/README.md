@@ -21,13 +21,13 @@ La configuration utilisateur se trouve uniquement dans
 }
 ```
 
-Pour `Copilot Sandbox`, Slopify copie le dossier hôte `~/.copilot` dans
-`/home/agent/.copilot` de la sandbox avant de lancer Copilot CLI. L’état est
-transféré par `sbx cp -L`, protégé contre les accès groupe/autres, et reste
-hors du workspace cloné et des Agent Checkpoints. Les variables de token
-injectées par le service Docker sont neutralisées pour laisser Copilot utiliser
-l’état copié. Si le dossier n’existe pas, Slopify laisse Copilot utiliser
-l’authentification Docker Sandbox éventuellement disponible.
+Pour `Copilot Sandbox`, Slopify résout le credential sur l’hôte : variables
+`COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, `GITHUB_TOKEN`, puis trousseau macOS
+(`copilot-cli`), puis `gh auth token`. Il le transmet par stdin à `sbx exec -i`
+et l’exporte dans `COPILOT_GITHUB_TOKEN` pour le processus Copilot.
+Aucun `/login` dans le sandbox n’est nécessaire si le credential hôte est valide.
+Le secret est accessible au processus agent, mais absent des arguments et des
+fichiers écrits par le runtime. Le dossier `~/.copilot` n’est plus copié.
 
 Les méthodes d’extension ACP publiques sont `sandbox/status`,
 `sandbox/preview`, `sandbox/promote` et `sandbox/reject`.
