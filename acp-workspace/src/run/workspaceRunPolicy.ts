@@ -340,7 +340,7 @@ function prepareSequentialDelivery(workspaceCwd: string, result: Extract<Pipelin
   const issuesAbsolute = resolveScratchPath(workspaceCwd, issuesDirectory);
   if (!fs.statSync(specificationAbsolute).isFile()) throw new Error(`Sequential delivery specification is not a file: ${specificationPath}`);
   if (!fs.statSync(issuesAbsolute).isDirectory()) throw new Error(`Sequential delivery issues path is not a directory: ${issuesDirectory}`);
-  const ticketGraph = readTicketGraph(result);
+  const ticketGraph = readTicketGraph(workspaceCwd, result);
   const markdownByTicketId = indexTicketMarkdown(issuesAbsolute, issuesDirectory);
   const tickets = orderTicketsByDependencies(ticketGraph.tickets).map(ticket => {
     const markdownPath = markdownByTicketId.get(ticket.id);
@@ -367,10 +367,22 @@ function orderTicketsByDependencies(tickets: TicketGraphArtifact['tickets']): Ti
 }
 
 function readTicketGraph(
+  workspaceCwd: string,
   result: Extract<PipelineRuntimeResult, { status: 'completed' }>,
 ): TicketGraphArtifact {
-  const artifact = Object.values(result.snapshot.artifacts).reverse()
+  const artifacts = Object.values(result.snapshot.artifacts).reverse();
+  let artifact = artifacts
     .find(candidate => candidate.type === 'acp.ticket-graph/v1');
+  if (!artifact) {
+    const ticketsHandoff = artifacts.find(candidate =>
+      candidate.type === 'acp.workspace-files/v1'
+      && typeof candidate.value === 'string'
+      && collectScratchReferences(candidate.value).some(reference => /\/issues\/?$/.test(reference)),
+    );
+    artifact = ticketsHandoff
+      ? synthesizeTicketGraphArtifact(workspaceCwd, ticketsHandoff) ?? undefined
+      : undefined;
+  }
   if (!artifact) throw new Error('Sequential delivery requires an acp.ticket-graph/v1 artifact in the run snapshot.');
   const validation = validateMultiAgentArtifact('acp.ticket-graph/v1', artifact.value);
   if (!validation.ok || validation.value?.contract !== 'acp.ticket-graph/v1') {
@@ -397,7 +409,11 @@ export function synthesizeTicketGraphArtifact(
   const references = collectScratchReferences(artifact.value).map(normalizeReference);
   const issueDirs = [...new Set(references.filter(reference => /\/issues$/.test(reference)))];
   if (issueDirs.length !== 1) return null;
-  const issuesAbsolute = resolveScratchPath(workspaceCwd, issueDirs[0]);
+  const issuesAbsolute = path.resolve(workspaceCwd, issueDirs[0]);
+  if (!isChildPath(path.resolve(workspaceCwd, '.scratch'), issuesAbsolute)) {
+    throw new Error(`Sequential delivery path escapes .scratch: ${issueDirs[0]}`);
+  }
+  if (!fs.existsSync(issuesAbsolute)) return null;
   if (!fs.statSync(issuesAbsolute).isDirectory()) return null;
   const derived = deriveTicketGraphFromIssues(issuesAbsolute);
   const validation = validateMultiAgentArtifact('acp.ticket-graph/v1', derived);

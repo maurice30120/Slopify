@@ -342,6 +342,35 @@ test('WorkspaceRun uses Ticket Graph identities and dependencies regardless of M
   assert.equal(final.status === 'completed' ? final.artifact?.value : undefined, 'review complete');
 });
 
+test('WorkspaceRun reconstructs a missing Ticket Graph after document Promotion', async () => {
+  const cwd = workspace();
+  const feature = path.join(cwd, '.scratch', 'feature');
+  const issues = path.join(feature, 'issues');
+  fs.mkdirSync(issues, { recursive: true });
+  fs.writeFileSync(path.join(feature, 'spec.md'), '# Spec\n');
+  fs.writeFileSync(path.join(issues, '01-first.md'), '# 01: First\n\n**What to build:** first slice\n\n**Blocked by:** None\n\n- [ ] first passes\n');
+  const handoff = '- `.scratch/feature/spec.md`\n- `.scratch/feature/issues/`';
+  const delivery = completedResult(handoff, 'acp.sequential-delivery/v1');
+  delivery.snapshot.artifacts['tasks.tickets'] = {
+    name: 'tickets', type: 'acp.workspace-files/v1', format: 'markdown', value: handoff, producerNodeId: 'tasks',
+  };
+  const starts: string[] = [];
+  const run = createWorkspaceRun({
+    workspaceCwd: cwd,
+    start: async pipelineName => {
+      starts.push(pipelineName);
+      if (pipelineName === 'delivery') return delivery;
+      return completedResult(pipelineName === 'review-delivery' ? 'review complete' : 'ticket complete');
+    },
+    resume: async () => { throw new Error('not paused'); },
+  });
+
+  const final = await run.start('delivery', 'ship it');
+
+  assert.equal(final.status, 'completed');
+  assert.deepEqual(starts, ['delivery', 'implement-ticket', 'review-delivery']);
+});
+
 test('synthesizeTicketGraphArtifact reconstructs an acp.ticket-graph/v1 artifact from a workspace-files handoff', () => {
   const cwd = workspace();
   const issuesDir = path.join(cwd, '.scratch', 'feature', 'issues');
@@ -395,6 +424,19 @@ test('synthesizeTicketGraphArtifact returns null for non-workspace-files artifac
   const graph = synthesizeTicketGraphArtifact(cwd, {
     name: 'plan', type: 'acp.grill-decision/v1', format: 'markdown', value: 'plan', producerNodeId: 'plan',
   });
+  assert.equal(graph, null);
+});
+
+test('synthesizeTicketGraphArtifact defers when the issues directory is not promoted yet', () => {
+  const cwd = workspace();
+  const graph = synthesizeTicketGraphArtifact(cwd, {
+    name: 'tickets',
+    type: 'acp.workspace-files/v1',
+    format: 'markdown',
+    value: '- `.scratch/not-promoted/spec.md`\n- `.scratch/not-promoted/issues/`',
+    producerNodeId: 'tasks',
+  });
+
   assert.equal(graph, null);
 });
 
