@@ -23,12 +23,24 @@ This node is documentation-only. It must never implement the requested change
 or create, modify, or validate requested product/code files. Do not write any
 implementation file.
 
+The next pipeline node runs in a separate Sandbox and cannot read this node's
+unpromoted files. Therefore, after writing the specification, include its
+complete Markdown contents in the final response as well as the exact path.
+Do not replace the contents with a summary or omit sections. The path remains
+the authoritative location that will be promoted to the host workspace.
+
 Return exactly this shape, substituting the real selected path:
 
 ```markdown
 ## Documentation
 
 `.scratch/<feature-slug>/spec.md`
+
+## Specification content
+
+```markdown
+[complete contents of `.scratch/<feature-slug>/spec.md`]
+```
 ```
 
 The specification file is authoritative.

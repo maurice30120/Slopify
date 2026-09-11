@@ -16,6 +16,15 @@ Preserve the tracker directory established by the specification:
 
 Never derive another feature slug from the user request or requested filename.
 
+The specification path may not exist in this Sandbox because the upstream
+documentation checkpoint has not been promoted yet. This is expected: use the
+complete inline specification content supplied in the handoff, keep its exact
+feature directory, and do not choose a fallback slug.
+
+The downstream delivery review also needs the ticket files after promotion, so
+include the complete Markdown contents of every ticket in the final response;
+do not return only a summary.
+
 Each ticket file MUST follow this exact shape so the delivery pipeline can
 reconstruct the Ticket Graph from the Markdown adapters:
 
@@ -43,4 +52,12 @@ Return exactly this shape, substituting the preserved feature path:
 ## Documentation
 
 `.scratch/<same-feature-slug>/issues/`
+
+## Ticket content
+
+### <ticket filename>
+
+```markdown
+[complete contents of the ticket file]
+```
 ```

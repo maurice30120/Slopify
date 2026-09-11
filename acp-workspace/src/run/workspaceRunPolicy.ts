@@ -196,7 +196,19 @@ export function createWorkspaceRunPolicy(options: WorkspaceRunPolicyOptions): Wo
     preparePause(pause) {
       const content = expandWorkspaceMarkdownReferences(options.workspaceCwd, pause.content);
       if (pause.handoff) {
-        const handoffError = validateWorkspaceHandoff(options.workspaceCwd, pause.content, pause.handoff);
+        // Les nœuds documentaires s'exécutent dans des Sandboxes séparées :
+        // leurs fichiers n'entrent dans le workspace hôte qu'après
+        // l'approbation, lors de la Promotion du pipeline. Vérifier la forme
+        // du handoff maintenant, mais différer l'existence des cibles jusqu'à
+        // la préparation de la livraison.
+        const requireExistingTargets = pause.workspaceGuard !== 'documentation-only'
+          || pause.handoff.layout !== 'delivery';
+        const handoffError = validateWorkspaceHandoff(
+          options.workspaceCwd,
+          pause.content,
+          pause.handoff,
+          requireExistingTargets,
+        );
         if (handoffError) {
           return { content, error: { code: 'invalid_workspace_handoff', message: handoffError } };
         }
@@ -255,6 +267,7 @@ function validateWorkspaceHandoff(
   workspaceCwd: string,
   content: string,
   handoff: NonNullable<PipelinePauseSnapshot['handoff']>,
+  requireExistingTargets = true,
 ): string | undefined {
   const references = collectScratchReferences(content);
   const validTargets = new Set<string>();
@@ -263,7 +276,10 @@ function validateWorkspaceHandoff(
     const scratchRoot = path.resolve(workspaceCwd, '.scratch');
     const target = path.resolve(workspaceCwd, normalized);
     if (!isChildPath(scratchRoot, target)) return `Workspace handoff path escapes .scratch: ${reference}`;
-    if (!fs.existsSync(target)) return `Workspace handoff path does not exist: ${reference}`;
+    if (!fs.existsSync(target)) {
+      if (requireExistingTargets) return `Workspace handoff path does not exist: ${reference}`;
+      continue;
+    }
     const stat = fs.statSync(target);
     if (stat.isFile()) {
       if (!target.endsWith('.md')) return `Workspace handoff file is not Markdown: ${reference}`;
@@ -278,7 +294,8 @@ function validateWorkspaceHandoff(
     }
   }
   const required = handoff.minimumReferences ?? 1;
-  if (validTargets.size < required) {
+  const targetCount = requireExistingTargets ? validTargets.size : new Set(references.map(normalizeReference)).size;
+  if (targetCount < required) {
     return `Workspace handoff requires at least ${required} existing .scratch Markdown reference(s), but found ${validTargets.size}.`;
   }
   return handoff.layout === 'delivery' ? validateDeliveryLayout(references) : undefined;

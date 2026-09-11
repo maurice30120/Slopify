@@ -77,6 +77,47 @@ test('dispatches one implement-ticket run per ticket before review', async () =>
   assert.match(terminal.errors.join('\n'), /starting review/);
 });
 
+test('defers delivery handoff existence until sandbox artifacts are promoted', async () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'acp-sequential-delivery-'));
+  const handoff = deliveryHandoff();
+  const starts: string[] = [];
+
+  const host = {
+    start: async (pipelineName: string): Promise<PipelineRuntimeResult> => {
+      starts.push(pipelineName);
+      if (pipelineName === 'grill-spec-tickets-implement-review') return pausedResult(handoff);
+      if (pipelineName === 'implement-ticket') return completedResult('implementation', 'acp.implementation-result/v1', 'ticket complete');
+      if (pipelineName === 'review-delivery') return completedResult('review', 'acp.verification-report/v1', 'review complete');
+      throw new Error(`Unexpected pipeline ${pipelineName}`);
+    },
+    resume: async (): Promise<PipelineRuntimeResult> => {
+      materializeDeliveryWorkspace(cwd);
+      return completedResult(
+        'delivery_approval',
+        'acp.sequential-delivery/v1',
+        handoff,
+        'run-main',
+        ticketGraph(),
+      );
+    },
+  };
+  const terminal = new FakeTerminal();
+
+  try {
+    const result = await runPipelineInteractive(host, terminal, command(cwd));
+
+    assert.equal(result.status, 'completed');
+    assert.deepEqual(starts, [
+      'grill-spec-tickets-implement-review',
+      'implement-ticket',
+      'implement-ticket',
+      'review-delivery',
+    ]);
+  } finally {
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 test('fails before child execution when a Ticket Graph node has no Markdown adapter', async () => {
   const cwd = createDeliveryWorkspace([{ name: '02-second.md', id: 'T02' }]);
   const handoff = deliveryHandoff();
@@ -115,6 +156,15 @@ function createDeliveryWorkspace(tickets: Array<{ name: string; id: string }>): 
     fs.writeFileSync(path.join(issuesDir, ticket.name), `# ${ticket.name}\n\n**Ticket ID:** ${ticket.id}\n`);
   }
   return cwd;
+}
+
+function materializeDeliveryWorkspace(cwd: string): void {
+  const featureDir = path.join(cwd, '.scratch', 'feature');
+  const issuesDir = path.join(featureDir, 'issues');
+  fs.mkdirSync(issuesDir, { recursive: true });
+  fs.writeFileSync(path.join(featureDir, 'spec.md'), '# Specification\n');
+  fs.writeFileSync(path.join(issuesDir, '01-first.md'), '# First\n\n**Ticket ID:** T01\n');
+  fs.writeFileSync(path.join(issuesDir, '02-second.md'), '# Second\n\n**Ticket ID:** T02\n');
 }
 
 function deliveryHandoff(): string {

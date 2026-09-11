@@ -1,6 +1,7 @@
 version: 3
 id: implement-ticket
 title: Implement One Approved Ticket
+promotion: auto-apply
 
 nodes:
   - id: implementation

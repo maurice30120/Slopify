@@ -1,6 +1,7 @@
 version: 3
 id: grill-spec-tickets-implement-review
 title: Grill with Docs → Spec Docs → Ticket Docs → Sequential Implement → Review
+promotion: auto-apply
 
 nodes:
   - id: plan
