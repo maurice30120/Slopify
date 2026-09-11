@@ -528,7 +528,9 @@ function normalizeReference(reference: string): string {
 }
 
 function featureRoot(reference: string): string | undefined {
-  return /^(\.scratch\/[^/]+)\/.+$/.exec(reference)?.[1];
+  // Inline workspace-file handoffs may mention the feature directory itself;
+  // treat that root reference the same as one of its descendants.
+  return /^(\.scratch\/[^/]+)(?:\/.*)?$/.exec(reference)?.[1];
 }
 
 function resolveScratchPath(workspaceCwd: string, workspacePath: string): string {

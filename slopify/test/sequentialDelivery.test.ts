@@ -171,6 +171,7 @@ function deliveryHandoff(): string {
   return [
     '- `.scratch/feature/spec.md`',
     '- `.scratch/feature/issues/`',
+    '- Existing feature directory: `.scratch/feature`',
   ].join('\n');
 }
 
