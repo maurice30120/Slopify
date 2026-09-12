@@ -1,6 +1,6 @@
 # Roadmap Slopify
 
-> Dernière mise à jour : 24 juillet 2026
+> Dernière mise à jour : 12 septembre 2026
 
 ## Vision
 
@@ -20,7 +20,7 @@ Le socle actuel est déjà correctement séparé :
 
 - `@acp-client/pipeline` compile et exécute les DAG ;
 - `@acp-client/runtime` porte le protocole et les processus ACP ;
-- `@acp-client/sandcastle` porte actuellement l’isolation et la promotion ;
+- `@acp-client/sandbox` porte l’isolation Docker, les checkpoints et la promotion ;
 - `@acp-client/workspace` charge et compose la configuration du projet ;
 - `slopify` adapte le moteur au terminal.
 
