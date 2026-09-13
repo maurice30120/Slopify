@@ -1,0 +1,20 @@
+version: 3
+id: simple
+title: Simple Implementation → Verify
+
+nodes:
+  - id: implementation
+    agent: Codex Sandbox
+    skills: [implement]
+    instructionsFile: ../agents/simple-implementer.md
+    prompt: |
+      User request:
+      {{userPrompt}}
+    policy:
+      filesystem: workspace-write
+      terminal: workspace-write
+      promotion: auto-apply
+    output:
+      name: result
+      type: acp.simple-implementation/v1
+      format: markdown

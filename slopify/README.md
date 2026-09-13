@@ -8,6 +8,28 @@ slopify run "pipeline-name" "the user prompt"
 
 Le pipeline choisit les agents de chaque nœud. La commande n'accepte volontairement aucun argument `--agent`.
 
+## Niveaux de pipeline
+
+Les trois niveaux recommandés sont disponibles directement par leur identifiant :
+
+- `simple` : implémentation ciblée et vérification ;
+- `moyen` : plan court, approbation, implémentation et revue ;
+- `full` : clarification, spécification, tickets, implémentation séquentielle et revue.
+
+L’identifiant historique `grill-spec-tickets-implement-review` reste disponible
+avec le même déroulement que `full`. `implement-ticket` et `review-delivery`
+restent des pipelines spécialisés utilisés par les livraisons fondées sur des
+tickets.
+
+Après un checkout neuf, installez les dépendances et construisez les workspaces
+avant de lister ou lancer les pipelines :
+
+```bash
+npm ci
+npm run build
+npm run slopify -- list --json --cwd .
+```
+
 ## Sources de configuration
 
 Le CLI suit exactement la configuration du workspace :

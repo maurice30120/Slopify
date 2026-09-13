@@ -1,0 +1,95 @@
+version: 3
+id: moyen
+title: Short Plan → Implement → Review
+
+nodes:
+  - id: plan
+    agent: Codex CLI
+    instructionsFile: ../agents/medium-planner.md
+    prompt: |
+      User request:
+      {{userPrompt}}
+    policy:
+      filesystem: read-only
+      terminal: none
+      network: disabled
+      promotion: discard
+    output:
+      name: plan
+      type: acp.plan/v1
+      format: markdown
+
+  - id: plan_approval
+    type: pause
+    pause: approval
+    content: |
+      {{inputs.plan}}
+    format: proposed-plan
+    needs: [plan]
+    inputs:
+      - name: plan
+        from: plan.plan
+        type: acp.plan/v1
+        format: markdown
+    output:
+      name: approvedPlan
+      type: acp.plan/v1
+      format: markdown
+
+  - id: implementation
+    agent: Codex Sandbox
+    skills: [implement]
+    instructionsFile: ../agents/medium-implementer.md
+    prompt: |
+      User request:
+      {{userPrompt}}
+
+      Approved plan:
+      {{inputs.approvedPlan}}
+    needs: [plan_approval]
+    inputs:
+      - name: approvedPlan
+        from: plan_approval.approvedPlan
+        type: acp.plan/v1
+        format: markdown
+    policy:
+      filesystem: workspace-write
+      terminal: workspace-write
+      promotion: auto-apply
+    output:
+      name: result
+      type: acp.medium-implementation/v1
+      format: markdown
+
+  - id: review
+    agent: Codex CLI
+    skills: [code-review]
+    instructionsFile: ../agents/medium-reviewer.md
+    prompt: |
+      User request:
+      {{userPrompt}}
+
+      Approved plan:
+      {{inputs.approvedPlan}}
+
+      Implementation report:
+      {{inputs.implementationResult}}
+    needs: [implementation]
+    inputs:
+      - name: approvedPlan
+        from: plan_approval.approvedPlan
+        type: acp.plan/v1
+        format: markdown
+      - name: implementationResult
+        from: implementation.result
+        type: acp.medium-implementation/v1
+        format: markdown
+    policy:
+      filesystem: read-only
+      terminal: workspace-write
+      network: disabled
+      promotion: discard
+    output:
+      name: report
+      type: acp.verification-report/v1
+      format: markdown
