@@ -1,6 +1,6 @@
 # 01: Clarifier le cycle de vie, la reprise et le nettoyage
 
-**What to build:** Réviser les commentaires qui expliquent le cycle de vie des runs et de leur état en mémoire, afin qu’un mainteneur puisse distinguer une Reprise d’une Réparation ou d’une nouvelle tentative et comprendre quand un runtime reste disponible ou est nettoyé.
+**What to build:** Réviser les commentaires existants sur le cycle de vie des runs et leur état en mémoire, afin qu’un mainteneur distingue une Reprise d’une Réparation ou d’une nouvelle tentative et comprenne quand un runtime reste disponible ou est nettoyé.
 
 **Blocked by:** None (can start immediately)
 
@@ -12,4 +12,3 @@
 - [ ] Le nettoyage terminal explique le retrait du runtime, des journaux et des caches indexés par `runId:nodeId`, tandis qu’un run en pause n’est pas nettoyé prématurément.
 - [ ] Les termes `Reprise`, `Réparation`, `Agent Checkpoint`, `Pipeline Change Set`, `Promotion`, `Rejection` et `Cancellation` sont employés uniquement lorsqu’ils décrivent l’invariant concerné.
 - [ ] Seul le texte des commentaires de la zone de cycle de vie est modifié.
-

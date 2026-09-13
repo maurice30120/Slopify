@@ -1,6 +1,6 @@
 # 02: Clarifier la journalisation et l’assainissement
 
-**What to build:** Réviser les commentaires qui décrivent l’association des événements ACP aux runs et aux nœuds, les journaux de diagnostic et la frontière de confidentialité des notifications, afin que les évolutions de l’observabilité conservent le contexte global sans persister le raisonnement de l’agent.
+**What to build:** Réviser les commentaires existants sur l’association des événements ACP aux runs et aux nœuds, les journaux de diagnostic et la frontière de confidentialité des notifications, afin que l’observabilité conserve le contexte global sans persister le raisonnement de l’agent.
 
 **Blocked by:** None (can start immediately)
 
@@ -12,4 +12,3 @@
 - [ ] Le message `Agent "…" exited (code=…, signal=SIGTERM)` est décrit comme potentiellement normal lors d’une pause : conservé dans les logs, mais filtré de l’affichage terminal pour ne pas évoquer un échec.
 - [ ] `sanitizeSessionNotification` indique que `agent_message_chunk` reste journalisé, tandis que `agent_thought_chunk` ne conserve que son type et sa taille en octets ; son affichage verbose suit un chemin distinct.
 - [ ] Les noms techniques et événements ACP restent inchangés, et seul le texte des commentaires de la zone de journalisation est modifié.
-
