@@ -1,0 +1,4 @@
+interface:
+  display_name: "Supervise Pipeline Run"
+  short_description: "Lancer et superviser un pipeline Slopify"
+  default_prompt: "Use $supervise-pipeline-run to launch and supervise a Slopify pipeline from a clean workspace."

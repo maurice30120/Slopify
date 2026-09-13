@@ -12,13 +12,11 @@ import {
   type CompiledPipelineNode,
   type PipelineAgentRunInput,
   type PipelineAgentRunner,
-  type PipelineArtifact,
   type PipelineNodeArtifactSummary,
   type PipelineResumeDecision,
   type PipelineRuntimeResult,
   type PipelineRunStore,
 } from '@acp-client/pipeline';
-import { synthesizeTicketGraphArtifact } from '@acp-client/workspace';
 
 import type { LogLevel } from './args.js';
 import { MarkdownBlockStream } from './markdownBlockStream.js';
@@ -244,10 +242,9 @@ export class CliPipelineHost {
       runIdFactory: () => runId,
       programs: [program],
       store: this.runStore,
-      synthesizeArtifacts: (artifact: PipelineArtifact) => {
-        const graph = synthesizeTicketGraphArtifact(this.workspaceCwd, artifact);
-        return graph ? [graph] : [];
-      },
+      // Les tickets du sandbox ne sont visibles sur l'hôte qu'après Promotion.
+      // WorkspaceRun reconstruit leur graphe au démarrage de la livraison ;
+      // le synthétiser ici lirait les tickets d'une exécution précédente.
       onEvent: event => {
         const log = this.runLogs.get(event.runId);
         const eventNode = event.nodeId ? program.nodesById.get(event.nodeId) : undefined;

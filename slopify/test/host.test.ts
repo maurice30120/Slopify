@@ -14,6 +14,58 @@ import {
 
 import { CliPipelineHost, type CliPipelineBackendFactory } from '../src/host.js';
 import type { CliTerminal } from '../src/terminal.js';
+import { createWorkspaceRun } from '@acp-client/workspace';
+
+test('delivers newly promoted tickets instead of synthesizing the old host graph', async () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'acp-ticket-promotion-'));
+  const issues = path.join(cwd, '.scratch', 'feature', 'issues');
+  fs.mkdirSync(issues, { recursive: true });
+  fs.writeFileSync(path.join(issues, '..', 'spec.md'), '# Spec');
+  const writeTicket = (id: number) => fs.writeFileSync(path.join(issues, `${id}.md`),
+    `# ${id}: Ticket\n\n**What to build:** Comments\n\n**Blocked by:** None\n\n- [ ] Comments clarified\n`);
+  for (let id = 1; id <= 8; id++) writeTicket(id);
+  const handoff = '`.scratch/feature/spec.md`\n`.scratch/feature/issues/`';
+  const compiled = compilePipelineV3Definition({
+    version: 3, id: 'delivery', title: 'Delivery', promotion: 'auto-apply',
+    nodes: [
+      { id: 'tasks', agent: 'Planner', prompt: 'Tickets', output: { name: 'tickets', type: 'acp.workspace-files/v1', format: 'markdown' } },
+      { id: 'approval', type: 'pause', pause: 'approval', needs: ['tasks'], content: handoff,
+        output: { name: 'approved', type: 'acp.sequential-delivery/v1', format: 'markdown' } },
+    ],
+  }, { Planner: {} });
+  assert.ok(compiled.program);
+  const pipeline = compiled.program;
+  const runner: PipelineAgentRunner = async () => ({ text: handoff });
+  runner.finalizePipelineChangeSet = async () => {
+    for (let id = 5; id <= 8; id++) fs.unlinkSync(path.join(issues, `${id}.md`));
+    return { promotion: 'no_changes', preview: { baseCommit: '', changeSetCommit: '', fileCount: 0, files: [], diff: '' }, integratedNodeIds: ['tasks'] };
+  };
+  const host = new CliPipelineHost(cwd, {
+    terminal: new FakeTerminal(), backendFactory: () => ({ programs: [pipeline], runAgent: runner }),
+  });
+  try {
+    const paused = await host.start('delivery', 'comments');
+    assert.equal(paused.status, 'paused');
+    if (paused.status !== 'paused') assert.fail('Expected approval');
+    const completed = await host.resume(paused.runId, { pauseId: paused.pause.id, kind: 'approve', value: handoff });
+    assert.equal(completed.status, 'completed');
+    const dispatched: string[] = [];
+    const run = createWorkspaceRun({ workspaceCwd: cwd,
+      start: async (name, prompt) => {
+        if (name === 'delivery') return completed;
+        dispatched.push(name === 'implement-ticket' ? /Ticket ID: (\d+)/.exec(prompt)?.[1] ?? '' : name);
+        return { ...completed, artifact: undefined };
+      },
+      resume: async () => { throw new Error('Unexpected pause'); },
+    });
+    const result = await run.start('delivery', 'comments');
+    assert.equal(result.status, 'completed');
+    assert.deepEqual(dispatched, ['1', '2', '3', '4', 'review-delivery']);
+  } finally {
+    await host.dispose();
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
+});
 
 class FakeTerminal implements CliTerminal {
   readonly errors: string[] = [];
