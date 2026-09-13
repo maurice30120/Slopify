@@ -15,6 +15,7 @@ import {
   synthesizeTicketGraphArtifact,
   upsertAgentConfig,
 } from '../src/index.js';
+import { createWorkspaceRunPolicy } from '../src/run/workspaceRunPolicy.js';
 import type { PipelineArtifact, PipelineRuntimeResult } from '@acp-client/pipeline';
 import type { SubprocessRequest, SubprocessResult } from '@acp-client/sandbox';
 
@@ -76,7 +77,7 @@ test('ships Codex Sandbox in the bundled ACP catalogue', () => {
     transport: 'sandbox',
     agent: 'codex',
     model: 'gpt-5.6-luna',
-    effort: 'high',
+    effort: 'low',
   });
   assert.deepEqual(config.errors, []);
 });
@@ -635,3 +636,54 @@ for (const change of ['unchanged', 'modified', 'restored', 'deleted', 'untracked
     if (change === 'untracked') assert.doesNotMatch(outcome.error.message, /target\.txt/);
   });
 }
+
+
+test('delivery handoff ignores illustrative scratch placeholders in agent commentary', async () => {
+  const cwd = workspace();
+  const run = createWorkspaceRun({
+    workspaceCwd: cwd,
+    start: async () => ({
+      status: 'paused', runId: 'run-placeholder',
+      pause: {
+        id: 'approval', nodeId: 'delivery_approval', type: 'approval',
+        content: 'Progress: `.scratch/.../spec.md`\n- `.scratch/improve-host-comments/spec.md`\n- `.scratch/improve-host-comments/issues/`',
+        format: 'markdown', workspaceGuard: 'documentation-only',
+        handoff: { kind: 'workspace-files', minimumReferences: 2, layout: 'delivery' },
+      },
+      snapshot: runtimeSnapshot('paused'),
+    }),
+    resume: async () => { throw new Error('approval remains pending'); },
+  });
+  const outcome = await run.start('delivery', 'ship');
+  assert.equal(outcome.status, 'interaction-required', JSON.stringify(outcome));
+});
+
+for (const [reference, expectedError] of [
+  ['.scratch/../outside.md', /escapes/],
+  ['.scratch/.../../../outside.md', /escapes/],
+  ['.scratch/other/spec.md', /one feature directory/],
+] as const) {
+  test(`delivery handoff still rejects ${reference}`, () => {
+    const policy = createWorkspaceRunPolicy({ workspaceCwd: workspace(), start: async () => { throw new Error('unused'); } });
+    const result = policy.preparePause({
+      id: 'approval', nodeId: 'delivery_approval', type: 'approval',
+      content: `Example: \`.scratch/.../spec.md\`\n- \`.scratch/feature/spec.md\`\n- \`.scratch/feature/issues/\`\n- \`${reference}\``,
+      format: 'markdown', workspaceGuard: 'documentation-only',
+      handoff: { kind: 'workspace-files', minimumReferences: 2, layout: 'delivery' },
+    });
+    assert.equal(result.error?.code, 'invalid_workspace_handoff');
+    assert.match(result.error?.message ?? '', expectedError);
+  });
+}
+
+test('scratch placeholders do not satisfy minimum handoff references', () => {
+  const policy = createWorkspaceRunPolicy({ workspaceCwd: workspace(), start: async () => { throw new Error('unused'); } });
+  const result = policy.preparePause({
+    id: 'approval', nodeId: 'delivery_approval', type: 'approval',
+    content: '- `.scratch/.../spec.md`\n- `.scratch/.../issues/`',
+    format: 'markdown', workspaceGuard: 'documentation-only',
+    handoff: { kind: 'workspace-files', minimumReferences: 2, layout: 'delivery' },
+  });
+  assert.equal(result.error?.code, 'invalid_workspace_handoff');
+  assert.match(result.error?.message ?? '', /at least 2/);
+});

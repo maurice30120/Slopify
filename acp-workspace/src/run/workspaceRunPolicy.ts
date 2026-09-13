@@ -519,7 +519,14 @@ function readTicketValidation(text: string, title: string): string[] {
 }
 
 function collectScratchReferences(content: string): string[] {
-  return [...content.matchAll(SCRATCH_REFERENCE)].map(match => match[1]);
+  return [...content.matchAll(SCRATCH_REFERENCE)]
+    .map(match => match[1])
+    .filter(reference => {
+      const segments = normalizeReference(reference).split('/');
+      // Agent commentary can include illustrative paths such as .scratch/.../spec.md.
+      // Never hide traversal attempts, even if they also contain a placeholder.
+      return segments.includes('..') || !segments.includes('...');
+    });
 }
 
 function collectReferencedMarkdownFiles(workspaceCwd: string, content: string): string[] {

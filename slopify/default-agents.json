@@ -4,7 +4,7 @@
       "transport": "sandbox",
       "agent": "codex",
       "model": "gpt-5.6-luna",
-      "effort": "high"
+      "effort": "low"
     },
     "Vibe": {
       "transport": "acp",
