@@ -22,7 +22,7 @@ export async function runPipelineInteractive(
 ): Promise<CliRunResult> {
   const workspaceRun = createWorkspaceRun({
     workspaceCwd: command.cwd,
-    start: (pipelineName, prompt) => host.start(pipelineName, prompt),
+    start: (pipelineName, prompt) => host.start(pipelineName, prompt, command.kind === 'run' ? command.briefFile : undefined),
     ...(host.recover ? { recover: runId => host.recover!(runId) } : {}),
     resume: (runId, decision) => host.resume(runId, decision),
     onDeliveryProgress: message => terminal.writeError(`[slopify] ${message}`),

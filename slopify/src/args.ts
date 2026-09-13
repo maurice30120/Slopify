@@ -16,7 +16,12 @@ export interface CliRunCommand extends CliCommonOptions {
   prompt: string;
   yes: boolean;
   keepSandboxes?: boolean;
+  briefFile?: string;
 }
+
+export type CliInspectCommand = { [K in 'inspect' | 'logs' | 'cancel' | 'retry']: CliCommonOptions & { kind: K; runId: string; nodeId?: string } }['inspect' | 'logs' | 'cancel' | 'retry'];
+
+export interface CliCatalogCommand extends CliCommonOptions { kind: 'catalog'; }
 
 export interface CliResumeCommand extends CliCommonOptions {
   kind: 'resume';
@@ -29,7 +34,7 @@ export interface CliHelpCommand {
   kind: 'help';
 }
 
-export type CliCommand = CliListCommand | CliRunCommand | CliResumeCommand | CliHelpCommand;
+export type CliCommand = CliListCommand | CliRunCommand | CliResumeCommand | CliHelpCommand | CliInspectCommand | CliCatalogCommand;
 
 export function parseCliArgs(argv: string[], baseCwd = process.cwd()): CliCommand {
   if (argv.length === 0 || argv.includes('--help') || argv.includes('-h')) {
@@ -37,7 +42,7 @@ export function parseCliArgs(argv: string[], baseCwd = process.cwd()): CliComman
   }
 
   const kind = argv[0];
-  if (kind !== 'list' && kind !== 'run' && kind !== 'resume') {
+  if (!['list', 'run', 'resume', 'catalog', 'inspect', 'logs', 'cancel', 'retry'].includes(kind)) {
     throw new Error(`Unknown command "${kind}".\n\n${formatHelp()}`);
   }
 
@@ -46,6 +51,7 @@ export function parseCliArgs(argv: string[], baseCwd = process.cwd()): CliComman
   let verbose = false;
   let yes = false;
   let keepSandboxes = false;
+  let briefFile: string | undefined;
   const positional: string[] = [];
   let positionalOnly = false;
 
@@ -66,6 +72,12 @@ export function parseCliArgs(argv: string[], baseCwd = process.cwd()): CliComman
       }
       cwd = path.resolve(baseCwd, next);
       index += 1;
+      continue;
+    }
+    if (value === '--brief') {
+      const next = argv[++index];
+      if (!next || next.startsWith('-')) throw new Error('--brief requires a file.');
+      briefFile = path.resolve(baseCwd, next);
       continue;
     }
     if (value === '--json') {
@@ -90,7 +102,14 @@ export function parseCliArgs(argv: string[], baseCwd = process.cwd()): CliComman
     positional.push(value);
   }
 
-  if (kind === 'list') {
+  if (briefFile && kind !== 'run') throw new Error('--brief is only valid with run.');
+  if (kind === 'inspect' || kind === 'logs' || kind === 'cancel' || kind === 'retry') {
+    if (positional.length !== (kind === 'retry' ? 2 : 1) || yes || keepSandboxes) {
+      throw new Error(`Usage: slopify ${kind} <run-id>${kind === 'retry' ? ' <node-id>' : ''} [--cwd <path>] [--json]`);
+    }
+    return { kind, runId: positional[0], ...(kind === 'retry' ? { nodeId: positional[1] } : {}), cwd, json, verbose };
+  }
+  if (kind === 'list' || kind === 'catalog') {
     if (positional.length > 0 || yes || keepSandboxes) {
       throw new Error('Usage: slopify list [--cwd <path>] [--json] [--verbose]');
     }
@@ -108,14 +127,14 @@ export function parseCliArgs(argv: string[], baseCwd = process.cwd()): CliComman
 
   const pipelineName = positional[0]?.trim();
   const prompt = positional.slice(1).join(' ').trim();
-  if (!pipelineName || !prompt) {
+  if (!pipelineName || (!prompt && !briefFile) || (briefFile && prompt)) {
     throw new Error(
       'Usage: slopify run <pipeline-name> <prompt> [--cwd <path>] [--yes] [--keep-sandboxes] [--json] [--verbose]',
     );
   }
 
   return {
-    kind,
+    kind: 'run',
     pipelineName,
     prompt,
     cwd,
@@ -123,6 +142,7 @@ export function parseCliArgs(argv: string[], baseCwd = process.cwd()): CliComman
     verbose,
     yes,
     keepSandboxes,
+    ...(briefFile ? { briefFile } : {}),
   };
 }
 
@@ -131,6 +151,12 @@ export function formatHelp(): string {
     'Slopify',
     '',
     'Usage:',
+    '  slopify catalog [--cwd <path>] --json',
+    '  slopify run <pipeline-name> --brief <confirmed-brief.json> [--cwd <path>] [--json]',
+    '  slopify inspect <run-id> [--cwd <path>] [--json]',
+    '  slopify logs <run-id> [--cwd <path>] [--json]',
+    '  slopify cancel <run-id> [--cwd <path>] [--json]',
+    '  slopify retry <run-id> <node-id> [--cwd <path>] [--json]',
     '  slopify list [--cwd <path>] [--json] [--verbose]',
     '  slopify run <pipeline-name> <prompt> [--cwd <path>] [--yes] [--keep-sandboxes] [--json] [--verbose]',
     '  slopify resume <run-id> [--cwd <path>] [--yes] [--keep-sandboxes] [--json] [--verbose]',

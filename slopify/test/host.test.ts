@@ -245,7 +245,7 @@ test('logs agent failures with RPC details', async () => {
   ));
 });
 
-test('clears run logs through the backend hook', async () => {
+test('preserves earlier run logs and does not invoke the destructive cleanup hook', async () => {
   const cwd = workspace();
   const logsDir = path.join(cwd, '.acp', 'logs');
   fs.mkdirSync(logsDir, { recursive: true });
@@ -258,10 +258,10 @@ test('clears run logs through the backend hook', async () => {
   });
   const result = await host.start('question-flow', 'add a CLI');
   assert.equal(result.status, 'paused');
-  assert.equal(cleanupCalls, 1);
+  assert.equal(cleanupCalls, 0);
   const files = fs.readdirSync(logsDir);
-  assert.equal(files.length, 2);
-  assert.ok(!files.includes('stale.jsonl'));
+  assert.equal(files.length, 3);
+  assert.ok(files.includes('stale.jsonl'));
 });
 
 test('rejects resume and cancel for unknown runs', async () => {

@@ -145,6 +145,7 @@ export interface PipelineCompileResult {
 }
 
 export interface PipelineRuntimeSnapshot {
+  progress?: Record<string, { activity: PipelineProgress; at: string; attempt: number }>;
   runId: string;
   pipelineId: string;
   status: "running" | "paused" | "completed" | "failed" | "cancelled";
@@ -306,6 +307,16 @@ export interface AgentNodeSessionTurnInput extends PipelineNodeExecutionInput {
 export interface AgentNodeSessionActivity {
   kind: "message" | "thought" | "status";
   content: string;
+  progress?: PipelineProgress;
+}
+
+export interface PipelineProgress {
+  action: string;
+  target: string;
+  result: string;
+  next: string;
+  source: 'agent' | 'runtime';
+  observation?: string;
 }
 
 export interface PipelineNodeExecutionSuccess {

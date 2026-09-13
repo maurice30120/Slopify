@@ -1,0 +1,31 @@
+version: 3
+id: quick
+title: Quick — Implement and verify a confirmed brief
+nodes:
+  - id: implement
+    agent: Codex Sandbox
+    prompt: |
+      Implement this confirmed brief. Stay within its scope and acceptance criteria:
+      {{userPrompt}}
+      Return a concise implementation report with changed files and validations.
+    policy:
+      filesystem: workspace-write
+      terminal: workspace-write
+      promotion: auto-apply
+    output: {name: result, type: acp.implementation-result/v1, format: markdown}
+  - id: verify-light
+    agent: Codex Sandbox
+    needs: [implement]
+    inputs:
+      - {name: implementation, from: implement.result, type: acp.implementation-result/v1, format: markdown}
+    prompt: |
+      Run focused checks of the integrated implementation against this confirmed brief:
+      {{userPrompt}}
+      Implementation report:
+      {{inputs.implementation}}
+      Do not change product code. Report checks, outcomes and unmet acceptance criteria.
+    policy:
+      filesystem: read-only
+      terminal: workspace-write
+      promotion: discard
+    output: {name: report, type: acp.verification-report/v1, format: markdown}

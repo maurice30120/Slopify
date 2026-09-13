@@ -1,0 +1,25 @@
+version: 3
+id: full
+title: Full — Specify, decompose, integrate and verify a confirmed brief
+nodes:
+  - id: spec
+    agent: Codex CLI
+    prompt: |
+      Produce a technical specification from this confirmed brief by inspecting the repository.
+      Include behaviors, interfaces, edge cases and acceptance checks. Return Markdown without modifying files.
+      {{userPrompt}}
+    output: {name: specification, type: acp.specification/v1, format: markdown}
+  - id: ticket-graph
+    agent: Codex CLI
+    needs: [spec]
+    inputs:
+      - {name: specification, from: spec.specification, type: acp.specification/v1, format: markdown}
+    prompt: |
+      Decompose the specification into self-contained implementation tickets. Include all necessary brief and specification context in each ticket's scope and validation.
+      {{userPrompt}}
+      {{inputs.specification}}
+      Return ONLY a JSON object, without Markdown fences:
+      {"contract":"acp.ticket-graph/v1","tickets":[{"id":"ticket-example","title":"Concrete deliverable","scope":["Detailed scope"],"needs":[],"validation":["Observable acceptance check"],"agent":"Codex Sandbox"}]}
+      Replace the example with actual tickets. Use stable ticket-* IDs, acyclic dependencies, and no IDs named spec, ticket-graph or final-review.
+      The runtime expands this graph into implementation nodes, integrates their isolated checkpoints and runs final-review on the integrated result. Do not launch agents yourself.
+    output: {name: tickets, type: acp.ticket-graph/v1, format: json}

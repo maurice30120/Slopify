@@ -150,6 +150,12 @@ export class PipelineRuntime extends CorePipelineRuntime {
     }
   }
 
+  override async retryNode(runId: string, nodeId: string, pauseId: string): Promise<PipelineRuntimeResult> {
+    const result = await super.retryNode(runId, nodeId, pauseId);
+    const program = this.programsByRunId.get(runId) ?? this.coordinatedProgramsById.get(result.snapshot.pipelineId);
+    return program ? this.finalizeTerminalResult(result, program) : result;
+  }
+
   override async recover(runId: string): Promise<PipelineRuntimeResult> {
     const before = await this.inspect(runId);
     const program = before

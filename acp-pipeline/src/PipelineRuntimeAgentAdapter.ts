@@ -21,6 +21,8 @@ import type {
   PipelineRuntimeAdapter,
 } from "./PipelineV3Types";
 import { resolvePipelineStepText } from "./PipelineStepCompletion";
+import { PipelineProgressDecoder, PROGRESS_INSTRUCTIONS, stripProgress } from './PipelineProgress';
+import type { AgentNodeSessionActivity } from './PipelineV3Types';
 
 export interface PipelineRuntimeAgentAdapterOptions {
   workspaceCwd: () => string;
@@ -77,6 +79,12 @@ class PipelineRuntimeAgentNodeSession implements AgentNodeSession {
   readonly nodeId: string;
   private closed = false;
   private controller: AbortController;
+  private readonly activityHandlers = new Set<(activity: AgentNodeSessionActivity) => void>();
+
+  onActivity(handler: (activity: AgentNodeSessionActivity) => void): () => void {
+    this.activityHandlers.add(handler);
+    return () => { this.activityHandlers.delete(handler); };
+  }
 
   constructor(
     input: AgentNodeSessionFactoryInput,
@@ -114,6 +122,9 @@ class PipelineRuntimeAgentNodeSession implements AgentNodeSession {
     }
 
     try {
+      const progress = new PipelineProgressDecoder(activity => {
+        for (const handler of this.activityHandlers) handler(activity);
+      });
       const result = await this.options.runAgent({
         runId: input.runId,
         nodeId: node.id,
@@ -125,12 +136,15 @@ class PipelineRuntimeAgentNodeSession implements AgentNodeSession {
           skills: [...node.skills],
           // Le catalogue résout instructionsFile dans ce champ de compatibilité
           // avant la compilation afin de ne pas modifier le contrat du runtime.
-          instructions: node.promptFile,
+          instructions: [node.promptFile, PROGRESS_INSTRUCTIONS].filter(Boolean).join('\n\n'),
           task: input.prompt,
           context: Object.values(input.inputs),
         },
         signal: this.controller.signal,
-        onSessionUpdate: update => this.options.onSessionUpdate?.(input.runId, node, update),
+        onSessionUpdate: update => {
+          progress.accept(update);
+          this.options.onSessionUpdate?.(input.runId, node, update);
+        },
         onStatus: update => this.options.onStatus?.(input.runId, node, update),
         sideEffects: mapPolicyToLegacySideEffects(node.policy),
         permissions: mapPolicyToLegacyPermissions(node.policy),
@@ -145,7 +159,7 @@ class PipelineRuntimeAgentNodeSession implements AgentNodeSession {
           name: node.output.name,
           type: node.output.type,
           format: node.output.format,
-          value: resolvePipelineStepText(result),
+          value: node.output.format === 'json' ? JSON.parse(stripProgress(resolvePipelineStepText(result))) : stripProgress(resolvePipelineStepText(result)),
         },
       };
     } catch (e: unknown) {
@@ -163,6 +177,7 @@ class PipelineRuntimeAgentNodeSession implements AgentNodeSession {
   }
 
   async close(): Promise<void> {
+    this.activityHandlers.clear();
     this.closed = true;
     this.controller.abort();
   }

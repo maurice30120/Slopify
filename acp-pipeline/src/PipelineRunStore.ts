@@ -92,6 +92,16 @@ export class FilePipelineRunStore implements PipelineRunStore {
     await writeFile(path, `${JSON.stringify(event)}\n`, { flag: "a", encoding: "utf8" });
   }
 
+  async readEvents(runId: string): Promise<PipelineRuntimeEvent[]> {
+    let text: string;
+    try { text = await readFile(this.eventsPath(runId), 'utf8'); }
+    catch (error) { if (isMissingFile(error)) return []; throw error; }
+    // Ignore only an unfinished final append while a writer is active.
+    const lines = text.split('\n');
+    if (lines.at(-1) !== '') lines.pop();
+    return lines.filter(line => line.trim()).map(line => JSON.parse(line) as PipelineRuntimeEvent);
+  }
+
   async listResumable(): Promise<PipelineRuntimeSnapshot[]> {
     let entries: string[];
     try {

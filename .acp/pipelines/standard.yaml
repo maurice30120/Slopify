@@ -1,0 +1,43 @@
+version: 3
+id: standard
+title: Standard — Specify, implement and verify a confirmed brief
+nodes:
+  - id: spec
+    agent: Codex CLI
+    prompt: |
+      Turn this confirmed brief into a technical specification. Inspect the repository.
+      Detail behaviors, edge cases, affected interfaces and acceptance checks. Return the specification as Markdown without modifying files.
+      {{userPrompt}}
+    output: {name: specification, type: acp.specification/v1, format: markdown}
+  - id: implement
+    agent: Codex Sandbox
+    needs: [spec]
+    inputs:
+      - {name: specification, from: spec.specification, type: acp.specification/v1, format: markdown}
+    prompt: |
+      Implement this technical specification within the confirmed brief:
+      {{userPrompt}}
+      {{inputs.specification}}
+      Return a concise implementation report with validations.
+    policy:
+      filesystem: workspace-write
+      terminal: workspace-write
+      promotion: auto-apply
+    output: {name: result, type: acp.implementation-result/v1, format: markdown}
+  - id: verify
+    agent: Codex Sandbox
+    needs: [implement]
+    inputs:
+      - {name: specification, from: spec.specification, type: acp.specification/v1, format: markdown}
+      - {name: implementation, from: implement.result, type: acp.implementation-result/v1, format: markdown}
+    prompt: |
+      Verify the integrated implementation against the specification and brief. Run relevant checks, including edge cases. Do not change product code.
+      {{userPrompt}}
+      {{inputs.specification}}
+      {{inputs.implementation}}
+      Report checks, outcomes and unmet acceptance criteria.
+    policy:
+      filesystem: read-only
+      terminal: workspace-write
+      promotion: discard
+    output: {name: report, type: acp.verification-report/v1, format: markdown}
