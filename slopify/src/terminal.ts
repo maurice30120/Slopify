@@ -3,6 +3,8 @@ import { stdin as input, stdout as output } from 'node:process';
 import type { Readable, Writable } from 'node:stream';
 
 export interface CliTerminal {
+  progress?(key: string, message: string): void;
+  clearProgress?(): void;
   write(message: string): void;
   writeError(message: string): void;
   ask(question: string): Promise<string>;
@@ -12,6 +14,26 @@ export interface CliTerminal {
 }
 
 export class NodeCliTerminal implements CliTerminal {
+  private readonly progressRows = new Map<string, string>();
+  private renderedRows = 0;
+
+  progress(key: string, message: string): void {
+    const text = `[${key}] ${message}`.replace(/[\x00-\x1f\x7f]/g, ' ');
+    if (!(this.errorStream as NodeJS.WriteStream).isTTY) { this.writeError(text); return; }
+    this.eraseProgress();
+    this.progressRows.set(key, text);
+    this.drawProgress();
+  }
+  clearProgress(): void { this.eraseProgress(); this.progressRows.clear(); }
+  private eraseProgress(): void {
+    if (this.renderedRows) this.errorStream.write(`\x1b[${this.renderedRows}A\r\x1b[J`);
+    this.renderedRows = 0;
+  }
+  private drawProgress(): void {
+    const width = (this.errorStream as NodeJS.WriteStream).columns || 80;
+    for (const text of this.progressRows.values()) this.errorStream.write(`${text.slice(0, Math.max(1, Math.floor((width - 1) / 2)))}\n`);
+    this.renderedRows = this.progressRows.size;
+  }
   private readonly readline: Interface;
   private readonly inputClosed = new AbortController();
   private readonly abortInput = () => this.inputClosed.abort(new Error('Terminal input closed.'));
@@ -28,10 +50,12 @@ export class NodeCliTerminal implements CliTerminal {
   }
 
   write(message: string): void {
+    this.clearProgress();
     this.outputStream.write(`${message}\n`);
   }
 
   writeError(message: string): void {
+    this.clearProgress();
     this.errorStream.write(`${message}\n`);
   }
 
@@ -62,6 +86,7 @@ export class NodeCliTerminal implements CliTerminal {
   }
 
   close(): void {
+    this.clearProgress();
     if (this.closed) {
       return;
     }
@@ -75,6 +100,7 @@ export class NodeCliTerminal implements CliTerminal {
   }
 
   private async question(query: string): Promise<string> {
+    this.clearProgress();
     try {
       return await this.readline.question(query, { signal: this.inputClosed.signal });
     } catch (error: unknown) {

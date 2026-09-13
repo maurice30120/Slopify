@@ -18,6 +18,8 @@ import {
 } from '@acp-client/pipeline';
 
 import type { CliTerminal } from './terminal.js';
+import { readLaunchBrief, readPipelineCatalog } from './catalog.js';
+import { CliProgress } from './progress.js';
 
 type SessionNotification = Parameters<NonNullable<PipelineAgentRunInput['onSessionUpdate']>>[0];
 
@@ -64,6 +66,7 @@ export interface CliPipelineHostOptions {
  * runs terminaux sont retirés immédiatement pour ne pas conserver de processus.
  */
 export class CliPipelineHost {
+  private readonly progress: CliProgress;
   private readonly backend: CliPipelineBackend;
   private readonly programs: CompiledPipelineProgram[];
   private readonly runtimes = new Map<string, PipelineRuntime>();
@@ -78,6 +81,7 @@ export class CliPipelineHost {
     private readonly workspaceCwd: string,
     private readonly options: CliPipelineHostOptions,
   ) {
+    this.progress = new CliProgress(options.terminal);
     this.runStore = workspacePipelineRunStore(workspaceCwd);
     this.logger = {
       log: message => {
@@ -122,7 +126,9 @@ export class CliPipelineHost {
     }));
   }
 
-  async start(pipelineName: string, prompt: string): Promise<PipelineRuntimeResult> {
+  catalog() { return readPipelineCatalog(this.workspaceCwd, this.programs); }
+
+  async start(pipelineName: string, prompt: string, briefFile?: string): Promise<PipelineRuntimeResult> {
     const program = this.programs.find(candidate =>
       candidate.id === pipelineName || candidate.title === pipelineName,
     );
@@ -130,10 +136,18 @@ export class CliPipelineHost {
       throw new Error(`ACP pipeline "${pipelineName}" was not found in .acp/pipelines.`);
     }
 
+    const brief = briefFile ? readLaunchBrief(briefFile) : undefined;
+    if (brief) {
+      const catalog = this.catalog();
+      if (brief.selection.pipeline !== program.id || brief.selection.catalogVersion !== catalog.version
+        || brief.selection.catalogDigest !== catalog.digest || !catalog.pipelines.some(entry => entry.id === program.id)) {
+        throw new Error('Launch brief selection does not match the current pipeline catalogue.');
+      }
+      prompt = JSON.stringify(brief, null, 2);
+    }
+
     const runId = this.options.runIdFactory?.() ?? randomUUID();
     await this.backend.preflightPipeline?.(program, runId);
-    PipelineRunLog.clear(this.workspaceCwd);
-    this.backend.clearRunLogs?.();
     const runLog = PipelineRunLog.create(this.workspaceCwd, runId, program.id);
     this.runLogs.set(runId, runLog);
     runLog.append('run_started', {
@@ -144,7 +158,7 @@ export class CliPipelineHost {
     });
     const runtime = this.createRuntime(program, runId);
     this.runtimes.set(runId, runtime);
-    const result = await runtime.start(program, { inputs: { userPrompt: prompt } });
+    const result = await runtime.start(program, { inputs: { userPrompt: prompt, ...(brief ? { brief, selection: brief.selection } : {}) } });
     runLog.append('run_result', summarizeRuntimeResult(result));
     this.cleanupTerminalResult(result);
     return result;
@@ -168,6 +182,7 @@ export class CliPipelineHost {
   }
 
   async dispose(): Promise<void> {
+    this.progress.close();
     const entries = [...this.runtimes.entries()];
     this.runtimes.clear();
     await Promise.all(entries.map(async ([runId, runtime]) => {
@@ -200,12 +215,27 @@ export class CliPipelineHost {
     return result;
   }
 
+  async retry(runId: string, nodeId: string): Promise<PipelineRuntimeResult> {
+    const snapshot = await this.runStore.load(runId);
+    if (!snapshot?.pendingPause || snapshot.pendingPause.nodeId !== nodeId) throw new Error('Retry requires the current pause for this node.');
+    const runtime = await this.requireRuntime(runId);
+    const result = await runtime.retryNode(runId, nodeId, snapshot.pendingPause.id);
+    this.cleanupTerminalResult(result);
+    return result;
+  }
+
+  detach(runId: string): void {
+    this.runtimes.delete(runId);
+    this.runLogs.delete(runId);
+  }
+
   private createRuntime(program: CompiledPipelineProgram, runId: string): PipelineRuntime {
     return new PipelineRuntime({ createSession: this.createSession }, {
       runIdFactory: () => runId,
       programs: [program],
       store: this.runStore,
       onEvent: event => {
+        this.progress.accept(event);
         const log = this.runLogs.get(event.runId);
         const eventNode = event.nodeId ? program.nodesById.get(event.nodeId) : undefined;
         if (event.type === 'node_started' && eventNode?.agent) {
@@ -319,6 +349,7 @@ export class CliPipelineHost {
   }
 
   private reportSessionUpdate(runId: string, node: CompiledPipelineNode, notification: SessionNotification): void {
+    if (!this.options.verbose) return;
     const update = notification.update;
     const kind = update?.sessionUpdate;
     if (kind !== 'agent_thought_chunk' && kind !== 'agent_message_chunk') {

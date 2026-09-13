@@ -6,6 +6,7 @@ import {
   validateAdapterSupportsPolicy,
 } from "./PipelinePolicy";
 import { getPipelineInterviewProtocol } from "./PipelineInterviewProtocol";
+import { validProgress } from './PipelineProgress';
 import {
   compileExecutionPlan,
   markExecutionPlanExpanded,
@@ -103,6 +104,8 @@ type NodeTaskResult =
  * Voir `docs/adr/0003-keep-acp-as-the-sandbox-runtime-boundary.md`.
  */
 export class PipelineRuntime {
+  private writes: Promise<void> = Promise.resolve();
+  private writeError: unknown;
   private readonly runs = new Map<string, ActiveRun>();
   private readonly programsById = new Map<string, CompiledPipelineProgram>();
   private readonly now: () => Date;
@@ -999,7 +1002,17 @@ export class PipelineRuntime {
   }
 
   private async persist(snapshot: PipelineRuntimeSnapshot): Promise<void> {
-    await this.store?.save(cloneSnapshot(snapshot));
+    const copy = cloneSnapshot(snapshot);
+    await this.queueWrite(async () => { await this.store?.save(copy); });
+  }
+
+  private queueWrite(write: () => Promise<void>): Promise<void> {
+    const pending = this.writes.then(async () => {
+      if (this.writeError) throw this.writeError;
+      await write();
+    });
+    this.writes = pending.catch(error => { this.writeError = error; });
+    return pending;
   }
 
   private async persistSandboxRunState(
@@ -1093,6 +1106,23 @@ export class PipelineRuntime {
       return;
     }
     const unsubscribe = session.onActivity(activity => {
+      if (activity.progress && validProgress(activity.progress)) {
+        const at = this.isoNow();
+        const previous = active.snapshot.progress?.[session.nodeId];
+        const attempt = active.snapshot.nodeStates[session.nodeId]?.attempts ?? 0;
+        if (previous?.attempt === attempt && JSON.stringify(previous.activity) === JSON.stringify(activity.progress)) return;
+        active.snapshot.progress ??= {};
+        active.snapshot.progress[session.nodeId] = { activity: { ...activity.progress }, at, attempt };
+        active.snapshot.updatedAt = at;
+        const snapshot = cloneSnapshot(active.snapshot);
+        const event: PipelineRuntimeEvent = { runId: snapshot.runId, type: 'agent_activity', nodeId: session.nodeId, activity, message: activity.content, at };
+        void this.queueWrite(async () => {
+          await this.store?.save(snapshot);
+          await this.store?.appendEvent(snapshot.runId, event);
+          await this.onEvent?.(event);
+        }).catch(() => { /* Surfaced by the next awaited persistence boundary. */ });
+        return;
+      }
       void this.emitRuntimeEvent({
         runId: active.snapshot.runId,
         type: "agent_activity",
@@ -1100,7 +1130,7 @@ export class PipelineRuntime {
         activity,
         message: activity.content,
         at: this.isoNow(),
-      });
+      }).catch(error => { this.writeError = error; });
     });
     active.activityUnsubscribers.set(session, unsubscribe);
   }
@@ -1193,7 +1223,7 @@ function executionPlanNodes(plan: ExecutionPlan): CompiledPipelineNode[] {
     id: node.id,
     kind: "agent" as const,
     agent: node.ticket.agent ?? "Codex Sandbox",
-    prompt: `Implement the approved ticket from the immutable Execution Plan:\n${JSON.stringify(node.ticket, null, 2)}`,
+    prompt: `Implement the approved ticket from the immutable Execution Plan:\n${JSON.stringify(node.ticket, null, 2)}\nReturn ONLY JSON with contract "acp.implementation-result/v1", ticketId, branch, commits (array), summary, and validations (array). Use actual observations.`,
     skills: ["implement"],
     needs: [...node.needs],
     inputs: [],
@@ -1205,13 +1235,13 @@ function executionPlanNodes(plan: ExecutionPlan): CompiledPipelineNode[] {
     id: plan.finalReview.id,
     kind: "agent" as const,
     agent: "Codex Sandbox",
-    prompt: "Review the complete integrated result produced by the immutable Execution Plan.",
+    prompt: `Run the relevant verification checks on the complete integrated result. Do not modify product code. Check these ticket requirements:\n${JSON.stringify(plan.nodes.map(node => node.ticket))}\nReturn ONLY JSON with contract "acp.verification-report/v1", verdict (passed or failed), and categories: [{name, required: true, status: passed/failed/skipped, details}].`,
     skills: ["code-review"],
     needs: [...plan.finalReview.needs],
     inputs: [],
     output: { name: "review", type: "acp.verification-report/v1", format: "json" as const },
     retry: { maxAttempts: 1, backoffMs: 0 },
-    policy: READ_ONLY_PIPELINE_POLICY,
+    policy: { ...READ_ONLY_PIPELINE_POLICY, terminal: 'workspace-write' },
   }];
 }
 

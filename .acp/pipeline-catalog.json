@@ -1,0 +1,33 @@
+{
+  "contract": "slopify.pipeline-catalog/v1",
+  "version": "1.0.0",
+  "pipelines": [
+    {
+      "id": "quick",
+      "intention": "Changement local et clair, directement exécutable à partir du brief confirmé.",
+      "steps": ["implement", "verify-light"],
+      "prerequisites": ["Brief confirmé après grilling", "Codex Sandbox disponible"],
+      "capabilities": ["implémentation isolée", "tests ciblés"],
+      "results": ["implémentation", "rapport de vérification ciblée"],
+      "approximateCost": "Faible : une implémentation et une vérification ciblée."
+    },
+    {
+      "id": "standard",
+      "intention": "Changement nécessitant un contrat technique détaillé, sans découpage en tickets indépendants.",
+      "steps": ["spec", "implement", "verify"],
+      "prerequisites": ["Brief confirmé après grilling", "Codex CLI et Codex Sandbox disponibles"],
+      "capabilities": ["spécification technique", "implémentation isolée", "vérification"],
+      "results": ["spécification", "implémentation", "rapport de vérification"],
+      "approximateCost": "Moyen : spécification, implémentation et vérification."
+    },
+    {
+      "id": "full",
+      "intention": "Travail à décomposer en tickets, avec dépendances, intégration des modifications isolées et vérification globale.",
+      "steps": ["spec", "ticket-graph", "implement", "integration", "verify"],
+      "prerequisites": ["Brief confirmé après grilling", "Codex CLI et Codex Sandbox disponibles"],
+      "capabilities": ["spécification technique", "DAG de tickets", "implémentations isolées", "intégration des checkpoints", "vérification globale"],
+      "results": ["spécification", "graphe de tickets", "changements intégrés", "rapport de vérification globale"],
+      "approximateCost": "Élevé et variable selon le nombre de tickets et de sandboxes."
+    }
+  ]
+}

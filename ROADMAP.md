@@ -1,6 +1,6 @@
 # Roadmap Slopify
 
-> Dernière mise à jour : 24 juillet 2026
+> Dernière mise à jour : 13 septembre 2026
 
 ## Vision
 
@@ -991,6 +991,41 @@ slopify doctor
 
 ---
 
+## M7 — Pilotage agentique des pipelines
+
+**Priorité : après M6, par étapes**
+
+### Principe
+
+La compréhension de la demande, le choix du pipeline et le résumé d’exécution appartiennent à l’agent et à son skill de lancement. Slopify reste un moteur d’exécution simple et déterministe : il expose les pipelines, les données de statut et des actions explicites, sans intégrer de classifieur de demandes.
+
+### Actions
+
+- [ ] **A1 — Définir les pipelines cibles** avec une intention claire : `quick` pour une demande limitée (`grill → implement`), `standard` pour une demande nécessitant une spécification (`spec → implement`), `full` pour un travail nécessitant décomposition et intégration (`spec → ticket-graph → implement → integration → vérification`) ;
+- [ ] **A2 — Documenter l’intention de chaque pipeline** dans le skill : cas d’usage, prérequis, résultats attendus et limites, pour permettre un choix sans connaître son implémentation ;
+- [ ] **A3 — Enrichir le skill de lancement** pour interpréter la consigne, estimer sa complexité, choisir un pipeline disponible et appeler Slopify avec ce choix explicite ; respecter un pipeline demandé explicitement par l’utilisateur ;
+- [ ] **A4 — Permettre la découverte des pipelines** via une sortie structurée lisible par machine, avec identifiant, intention, entrées requises et résultats attendus ; l’ajout d’un pipeline doit pouvoir être compris par l’agent sans modifier la logique du moteur ;
+- [ ] **A5 — Exposer un état de run interprétable** à partir des commandes de statut prévues en M1 et M2 : statut global, nœuds terminés ou actifs, blocages, erreurs, artefacts et actions disponibles, avec un schéma documenté ;
+- [ ] **A6 — Étendre le skill pour résumer un run** en langage naturel à partir de ces données : travail réalisé, exécution en cours, blocages et prochaine action ; les données restent dans Slopify et leur interprétation dans l’agent ;
+- [ ] **A7 — Préparer des actions de supervision bornées** pour relancer un nœud, annuler ou reprendre un run via une API explicite, avec préconditions et effets documentés, en conservant les garanties de reprise et de promotion de M2 et M5.
+
+### Ordre de livraison
+
+1. Définir et documenter les intentions (A1–A2), puis livrer un premier skill choisissant entre `quick` et `full` à partir d’une consigne simple (A3).
+2. Ajouter la découverte structurée et étendre le choix à `standard` et aux futurs pipelines (A4).
+3. Stabiliser les données de statut, puis ajouter le résumé d’exécution dans le skill (A5–A6), en s’appuyant sur M1 et M2.
+4. Ajouter la supervision bornée lorsque les opérations de reprise et d’annulation sont disponibles (A7).
+
+### Critères d’acceptation
+
+- [ ] des exemples de demandes permettent à l’agent de choisir et d’appeler `quick` ou `full` avec une justification fondée sur leur intention ;
+- [ ] aucun classifieur ni sélection sémantique de pipeline n’est ajouté dans Slopify ;
+- [ ] un nouveau pipeline peut être découvert et sélectionné grâce à sa description, sans modification du moteur ;
+- [ ] le résumé d’un run reflète les statuts et artefacts exposés, et signale les données manquantes sans inventer une progression ;
+- [ ] les actions de supervision passent uniquement par les opérations explicites de Slopify et respectent leurs préconditions.
+
+---
+
 # Priorités par workspace
 
 ## `@acp-client/pipeline`
@@ -1095,6 +1130,13 @@ slopify doctor
 - exemples ;
 - stratégie de versions ;
 - dépréciation progressive de Sandcastle.
+
+## Phase 6 — Pilotage agentique
+
+- M7 : sélection du pipeline dans le skill de lancement ;
+- découverte structurée des pipelines ;
+- résumé des runs par l’agent ;
+- supervision via des actions explicites.
 
 ---
 

@@ -1,4 +1,5 @@
 export * from './PipelineEvents';
+export * from './PipelineProgress';
 export * from './PipelineAgentRunner';
 export * from './PipelineService';
 export * from './PipelineStepCompletion';
