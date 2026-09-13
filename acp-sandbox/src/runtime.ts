@@ -434,7 +434,11 @@ export class DockerSandboxRuntime {
             ? ['exec', sandboxName, 'sh', '-c', 'exec "$@" </dev/null', 'slopify-codex-runner', 'codex', ...agentArgs]
           : ['exec', sandboxName, agent, ...agentArgs];
       if (agent === 'vibe') {
-        execArgs.splice(1, 0, '--env', `VIBE_ACTIVE_MODEL=${input.model}`);
+        const envFlags = ['--env', `VIBE_ACTIVE_MODEL=${input.model}`];
+        if (process.env.MISTRAL_API_KEY) {
+          envFlags.push('--env', `MISTRAL_API_KEY=${process.env.MISTRAL_API_KEY}`);
+        }
+        execArgs.splice(1, 0, ...envFlags);
       } else if (agent === 'copilot') {
         execArgs.push('--model', input.model);
         if (input.effort) execArgs.push('--reasoning-effort', input.effort);
