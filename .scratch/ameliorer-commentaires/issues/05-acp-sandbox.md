@@ -1,14 +1,13 @@
-# 05: Commenter les exports publics d'acp-sandbox
+# 05: Documenter gitPromotion en français
 
-**What to build:** Le package `acp-sandbox`, plus petit et plus simple, reçoit les commentaires manquants sur ses exports publics, en suivant la convention du ticket 01. Les services d'isolation, types, enums et constantes exportés documentent en JSDoc français leur rôle et les invariants qu'ils garantissent pour l'exécution isolée (Sandbox Run). Les logiques locales non triviales reçoivent des commentaires `//` expliquant le *pourquoi*. Les commentaires existants ne sont pas réécrits. Le build et la relecture valident le résultat.
+**What to build:** Le module de promotion Git reçoit des commentaires explicatifs en français documentant le rôle et l'intention de chaque classe, interface, alias de type, méthode publique et fonction utilitaire, ainsi que des constantes exportées lorsque leur usage le nécessite. Les identifiants, messages, commentaires existants, signatures, logique et comportements restent strictement inchangés.
 
 **Blocked by:** 01
 
 **Status:** ready-for-agent
 
-- [ ] Les exports publics de `acp-sandbox` portent un JSDoc structuré en français décrivant leur rôle.
-- [ ] Les types (interfaces, enums, type aliases) et constantes exportés ont un JSDoc décrivant leur rôle et leurs valeurs.
-- [ ] Les fonctions garantissant des invariants d'isolation ou de sécurité documentent ces invariants si non triviaux.
-- [ ] Les commentaires liés au concept « Sandbox Run » utilisent le terme canonique français du glossaire `CONTEXT.md`.
-- [ ] Les commentaires existants (français ou anglais) ne sont pas réécrits ; les symboles privés non exportés ne sont pas surchargés de JSDoc.
-- [ ] `tsc --noEmit` passe sans erreur sur `acp-sandbox`.
+- [ ] Chaque classe, interface, alias de type, méthode publique et fonction utilitaire du module ciblé est documenté en français, avec son rôle et son intention.
+- [ ] Les constantes exportées pertinentes sont commentées lorsque cela clarifie leur usage ou leur impact.
+- [ ] Les commentaires ajoutés préservent la terminologie de domaine pertinente, notamment `Sandbox Run` et `Promotion`.
+- [ ] Aucun identifiant, message, commentaire existant, import, signature, type, logique, ordre d'exécution ou comportement observable n'est modifié.
+- [ ] Le diff du module ciblé contient uniquement des ajouts ou modifications de commentaires ; aucun autre fichier n'est créé ou modifié.
