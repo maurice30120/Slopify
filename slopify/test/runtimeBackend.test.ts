@@ -57,7 +57,13 @@ test('creates the standalone CLI backend without loading an editor plugin', () =
     const backend = createRuntimeCliBackend(cwd, context);
 
     assert.deepEqual(backend.programs.map(program => program.id), [
-      'grill-spec-tickets-implement-review', 'implement-ticket', 'review-delivery', 'plan',
+      'grill-spec-tickets-implement-review-codex-sandbox',
+      'grill-spec-tickets-implement-review-copilot-sandbox',
+      'grill-spec-tickets-implement-review-vibe-sandbox',
+      'grill-spec-tickets-implement-review',
+      'implement-ticket',
+      'review-delivery',
+      'plan',
     ]);
     assert.equal(typeof backend.runAgent, 'function');
     assert.equal(typeof backend.clearRunLogs, 'function');

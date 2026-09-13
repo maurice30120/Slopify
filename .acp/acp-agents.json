@@ -3,13 +3,13 @@
     "Codex CLI": {
       "transport": "sandbox",
       "agent": "codex",
-      "model": "gpt-5.6-codex",
+      "model": "gpt-5.6-luna",
       "effort": "high"
     },
     "Codex Sandbox": {
       "transport": "sandbox",
       "agent": "codex",
-      "model": "gpt-5.6-codex",
+      "model": "gpt-5.6-luna",
       "effort": "high"
     },
     "Vibe": {

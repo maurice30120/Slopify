@@ -139,10 +139,10 @@ test('installs complete binary resources outside the clone before starting the a
   const scenario = sandboxScenario();
   let inspected = false;
   const fake = fakeExecutor(request => {
-    if (request.args[0] === 'exec' && ['sh', 'chmod'].includes(request.args[2])) {
+    if (request.args[0] === 'exec' && ['sh', 'chmod'].includes(request.args[2]) && !request.args.includes('codex')) {
       execFileSync(request.args[2], request.args.slice(3));
     }
-    if (request.args[0] === 'exec' && request.args[2] === 'codex') {
+    if (request.args[0] === 'exec' && request.args.includes('codex')) {
       assert.deepEqual(fs.readFileSync(`${root}/review/templates/binary.bin`), binary);
       assert.equal(execFileSync(`${root}/review/scripts/example.sh`, { encoding: 'utf8' }), 'frozen');
       assert.equal(fs.statSync(`${root}/review/templates/binary.bin`).mode & 0o222, 0);
@@ -989,7 +989,7 @@ test('relaunches the agent and returns the new run output when forceRerun repair
   const sandboxName = stableSandboxName('run-repair', 'work', 1);
   const scenario = sandboxScenario({ changedFiles: ['work.ts'], diff: 'diff' });
   const fake = fakeExecutor(request => {
-    if (request.args[0] === 'exec' && request.args[2] === 'codex') {
+    if (request.args[0] === 'exec' && request.args.includes('codex')) {
       return result('repaired output\n');
     }
     return scenario.respond(request);
@@ -1133,6 +1133,10 @@ for (const agent of ['opencode', 'codex', 'vibe'] as const) {
       );
       if (isAgentInvocation) {
         if (agent === 'opencode') assert.ok(request.args.includes('--thinking'));
+        if (agent === 'codex') {
+          assert.ok(request.args.includes('exec "$@" </dev/null'));
+          assert.ok(request.args.includes('slopify-codex-runner'));
+        }
         if (agent === 'vibe') {
           assert.ok(request.args.includes('--env'));
           assert.ok(request.args.includes('VIBE_ACTIVE_MODEL=test'));

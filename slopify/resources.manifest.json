@@ -1,8 +1,12 @@
 {
   "version": 1,
+  "defaultPipeline": "grill-spec-tickets-implement-review-codex-sandbox",
   "agentConfig": "default-agents.json",
   "pipelines": [
     "grill-spec-tickets-implement-review.yaml",
+    "grill-spec-tickets-implement-review-codex-sandbox.yaml",
+    "grill-spec-tickets-implement-review-copilot-sandbox.yaml",
+    "grill-spec-tickets-implement-review-vibe-sandbox.yaml",
     "implement-ticket.yaml",
     "review-delivery.yaml"
   ],

@@ -14,7 +14,7 @@ La configuration utilisateur se trouve uniquement dans
     "Codex Sandbox": {
       "transport": "sandbox",
       "agent": "codex",
-      "model": "gpt-5.6-codex",
+      "model": "gpt-5.6-luna",
       "effort": "high"
     }
   }
@@ -53,5 +53,5 @@ Promotion ou le rejet, puis vérifie que la sandbox a bien été supprimée.
 ```bash
 SLOPIFY_SBX_SMOKE=1 npm run smoke:docker-sandbox-codex
 SLOPIFY_SBX_SMOKE=1 SLOPIFY_SBX_SMOKE_ACTION=promote npm run smoke:docker-sandbox-codex
-SLOPIFY_SBX_SMOKE=1 SLOPIFY_SBX_SMOKE_MODEL=gpt-5.4 npm run smoke:docker-sandbox-codex
+SLOPIFY_SBX_SMOKE=1 SLOPIFY_SBX_SMOKE_MODEL=gpt-5.6-luna npm run smoke:docker-sandbox-codex
 ```

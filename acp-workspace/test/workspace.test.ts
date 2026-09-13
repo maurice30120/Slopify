@@ -67,6 +67,20 @@ test('ships Copilot Sandbox in the bundled ACP catalogue', () => {
   assert.deepEqual(config.errors, []);
 });
 
+test('ships Codex Sandbox in the bundled ACP catalogue', () => {
+  const repoRoot = path.resolve(import.meta.dirname, '../../..');
+  const configPath = path.join(repoRoot, 'slopify', 'default-agents.json');
+  const config = parseAcpConfig(fs.readFileSync(configPath, 'utf8'), configPath);
+
+  assert.deepEqual(config.agents['Codex Sandbox'], {
+    transport: 'sandbox',
+    agent: 'codex',
+    model: 'gpt-5.6-luna',
+    effort: 'high',
+  });
+  assert.deepEqual(config.errors, []);
+});
+
 test('accepts Vibe for the sandbox transport when a Docker Sandbox kit is configured', () => {
   const accepted = parseAcpConfig(JSON.stringify({ agents: {
     'Vibe Sandbox': {

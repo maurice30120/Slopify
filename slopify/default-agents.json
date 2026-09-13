@@ -1,5 +1,11 @@
 {
   "agents": {
+    "Codex Sandbox": {
+      "transport": "sandbox",
+      "agent": "codex",
+      "model": "gpt-5.6-luna",
+      "effort": "high"
+    },
     "Vibe": {
       "transport": "acp",
       "command": "vibe-acp",

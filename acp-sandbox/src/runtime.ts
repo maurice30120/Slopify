@@ -430,7 +430,9 @@ export class DockerSandboxRuntime {
         ? ['exec', sandboxName, 'sh', '-c', OPENCODE_WATCHDOG_SCRIPT, 'slopify-opencode-runner', ...agentArgs]
         : agent === 'copilot'
           ? ['exec', '-i', sandboxName, 'sh', '-c', 'IFS= read -r COPILOT_GITHUB_TOKEN && [ -n "$COPILOT_GITHUB_TOKEN" ] || { echo "Missing host Copilot credential" >&2; exit 1; }; export COPILOT_GITHUB_TOKEN; unset GH_TOKEN GITHUB_TOKEN; exec copilot "$@"', 'slopify-copilot-runner', ...agentArgs]
-        : ['exec', sandboxName, agent, ...agentArgs];
+          : agent === 'codex'
+            ? ['exec', sandboxName, 'sh', '-c', 'exec "$@" </dev/null', 'slopify-codex-runner', 'codex', ...agentArgs]
+          : ['exec', sandboxName, agent, ...agentArgs];
       if (agent === 'vibe') {
         execArgs.splice(1, 0, '--env', `VIBE_ACTIVE_MODEL=${input.model}`);
       } else if (agent === 'copilot') {
@@ -777,7 +779,8 @@ export class DockerSandboxRuntime {
 
   private assertSuccess(result: SubprocessResult, action: string): void {
     if (result.exitCode !== 0) {
-      const detail = result.stderr.trim() || result.stdout.trim() || `exit code ${result.exitCode}`;
+      const detail = [result.stderr.trim(), result.stdout.trim()].filter(Boolean).join('\n')
+        || `exit code ${result.exitCode}`;
       throw new Error(`Unable to ${action}: ${detail}`);
     }
   }

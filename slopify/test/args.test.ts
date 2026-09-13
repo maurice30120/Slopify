@@ -2,7 +2,8 @@ import assert from 'node:assert/strict';
 import * as path from 'node:path';
 import test from 'node:test';
 
-import { parseCliArgs, formatHelp, DEFAULT_PIPELINE } from '../src/args.js';
+import { parseCliArgs, formatHelp } from '../src/args.js';
+import { cliConfig } from '../src/config.js';
 
 test('parses the exact run contract without an agent option', () => {
   assert.deepEqual(
@@ -143,7 +144,7 @@ test('run with a single positional defaults the pipeline', () => {
   const result = parseCliArgs(['run', 'add comments'], '/repo');
   assert.deepEqual(result, {
     kind: 'run',
-    pipelineName: DEFAULT_PIPELINE,
+    pipelineName: cliConfig.defaultPipeline,
     prompt: 'add comments',
     cwd: '/repo',
     json: false,
@@ -176,7 +177,7 @@ test('run -p short form selects the pipeline', () => {
 
 test('run joins all positionals into the prompt', () => {
   const result = parseCliArgs(['run', 'grill-spec-tickets-implement-review', 'do', 'it', 'now'], '/repo');
-  assert.equal((result as any).pipelineName, DEFAULT_PIPELINE);
+  assert.equal((result as any).pipelineName, cliConfig.defaultPipeline);
   assert.equal((result as any).prompt, 'grill-spec-tickets-implement-review do it now');
 });
 

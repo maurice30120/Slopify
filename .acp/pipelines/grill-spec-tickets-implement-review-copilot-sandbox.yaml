@@ -1,0 +1,57 @@
+version: 3
+id: grill-spec-tickets-implement-review-copilot-sandbox
+title: Grill with Docs → Spec Docs → Ticket Docs → Sequential Implement → Review (Copilot Sandbox)
+promotion: auto-apply
+
+nodes:
+  - id: plan
+    agent: Copilot Sandbox
+    skills: [grill-with-docs, grilling, domain-modeling]
+    interaction:
+      protocol: proposed-plan
+      repairAttempts: 3
+    instructionsFile: ../agents/interactive-planner.md
+    prompt: |
+      User request:
+      {{userPrompt}}
+    policy: { filesystem: workspace-write, terminal: none, promotion: auto-apply }
+    output: { name: plan, type: acp.grill-decision/v1, format: markdown }
+  - id: plan_approval
+    type: pause
+    pause: approval
+    content: "{{inputs.plan}}"
+    workspaceGuard: documentation-only
+    format: proposed-plan
+    needs: [plan]
+    inputs: [{ name: plan, from: plan.plan, type: acp.grill-decision/v1, format: markdown }]
+    output: { name: approved, type: acp.grill-decision/v1, format: markdown }
+  - id: spec
+    agent: Copilot Sandbox
+    skills: [to-spec, domain-modeling]
+    instructionsFile: ../agents/matt-spec-writer.md
+    prompt: "User request:\n{{userPrompt}}\n\nApproved decisions:\n{{inputs.approvedDecisions}}"
+    needs: [plan_approval]
+    inputs: [{ name: approvedDecisions, from: plan_approval.approved, type: acp.grill-decision/v1, format: markdown }]
+    policy: { filesystem: workspace-write, terminal: none, promotion: auto-apply }
+    output: { name: specification, type: acp.workspace-files/v1, format: markdown }
+  - id: tasks
+    agent: Copilot Sandbox
+    skills: [to-tickets]
+    instructionsFile: ../agents/matt-ticket-planner.md
+    prompt: "User request:\n{{userPrompt}}\n\nSpecification files:\n{{inputs.specification}}"
+    needs: [spec]
+    inputs: [{ name: specification, from: spec.specification, type: acp.workspace-files/v1, format: markdown }]
+    policy: { filesystem: workspace-write, terminal: none, promotion: auto-apply }
+    output: { name: tickets, type: acp.workspace-files/v1, format: markdown }
+  - id: delivery_approval
+    type: pause
+    pause: approval
+    content: "<proposed_plan>\n<interview_state>ready</interview_state>\n\n## Specification files\n\n{{inputs.specification}}\n\n## Ticket files\n\n{{inputs.tickets}}\n</proposed_plan>"
+    handoff: { kind: workspace-files, minimumReferences: 2, layout: delivery }
+    workspaceGuard: documentation-only
+    format: proposed-plan
+    needs: [tasks]
+    inputs:
+      - { name: specification, from: spec.specification, type: acp.workspace-files/v1, format: markdown }
+      - { name: tickets, from: tasks.tickets, type: acp.workspace-files/v1, format: markdown }
+    output: { name: approved, type: acp.sequential-delivery/v1, format: markdown }

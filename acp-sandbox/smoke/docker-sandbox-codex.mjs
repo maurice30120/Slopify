@@ -18,7 +18,7 @@ const repo = mkdtempSync(join(tmpdir(), 'slopify-sbx-smoke-'));
 const marker = 'codex-smoke-marker.txt';
 const scriptDirectory = dirname(fileURLToPath(import.meta.url));
 const cli = resolve(scriptDirectory, '../../slopify/dist/src/cli.js');
-const model = process.env.SLOPIFY_SBX_SMOKE_MODEL ?? 'gpt-5.4';
+const model = process.env.SLOPIFY_SBX_SMOKE_MODEL ?? 'gpt-5.6-luna';
 
 function run(command, args, options = {}) {
   const result = spawnSync(command, args, {
@@ -101,7 +101,7 @@ nodes:
   const result = run(process.execPath, [
     cli,
     'run',
-    'docker-sandbox-smoke',
+    '--pipeline', 'docker-sandbox-smoke',
     'Run the Docker Sandbox smoke path.',
     '--cwd', repo,
     '--json',

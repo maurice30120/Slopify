@@ -6,7 +6,7 @@
 slopify run "the user prompt"
 ```
 
-Le pipeline choisit les agents de chaque nœud. La commande n'accepte volontairement aucun argument `--agent`. Le pipeline se fixe avec `--pipeline`/`-p` (défaut : `grill-spec-tickets-implement-review`) ; tous les arguments positionnels forment le prompt.
+Le pipeline choisit les agents de chaque nœud. La commande n'accepte volontairement aucun argument `--agent`. Le pipeline se fixe avec `--pipeline`/`-p` (défaut : `grill-spec-tickets-implement-review-codex-sandbox`) ; tous les arguments positionnels forment le prompt.
 
 ## Sources de configuration
 
@@ -99,7 +99,7 @@ slopify resume <run-id>
 Options :
 
 ```text
---pipeline, -p <name>  choisit le pipeline (défaut : grill-spec-tickets-implement-review)
+--pipeline, -p <name>  choisit le pipeline (défaut : grill-spec-tickets-implement-review-codex-sandbox)
 --cwd, -c <path>       choisit le workspace
 --yes, -y              approuve les pauses d'approbation uniquement
 --keep-sandboxes, -k   conserve les Docker Sandboxes et affiche les commandes de diagnostic
@@ -164,7 +164,7 @@ Un agent isolé accepte Codex ou OpenCode :
     "Codex Sandbox": {
       "transport": "sandbox",
       "agent": "codex",
-      "model": "gpt-5.6-codex",
+      "model": "gpt-5.6-luna",
       "effort": "high"
     }
   }

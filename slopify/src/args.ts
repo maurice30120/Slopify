@@ -1,4 +1,5 @@
 import * as path from 'node:path';
+import { cliConfig } from './config.js';
 
 export type LogLevel = 'quiet' | 'default' | 'verbose' | 'debug';
 
@@ -32,8 +33,6 @@ export interface CliHelpCommand {
 }
 
 export type CliCommand = CliListCommand | CliRunCommand | CliResumeCommand | CliHelpCommand;
-
-export const DEFAULT_PIPELINE = 'grill-spec-tickets-implement-review';
 
 export function parseCliArgs(argv: string[], baseCwd = process.cwd()): CliCommand {
   if (argv.length === 0 || argv.includes('--help') || argv.includes('-h')) {
@@ -136,7 +135,7 @@ export function parseCliArgs(argv: string[], baseCwd = process.cwd()): CliComman
 
   return {
     kind,
-    pipelineName: pipelineOption ?? DEFAULT_PIPELINE,
+    pipelineName: pipelineOption ?? cliConfig.defaultPipeline,
     prompt,
     cwd,
     json,
@@ -162,7 +161,7 @@ export function formatHelp(): string {
     '  resume <run-id>      Resume an interrupted run by its persisted run id.',
     '',
     'Options:',
-    '  --pipeline, -p <name>  Pipeline to run (default: grill-spec-tickets-implement-review).',
+    `  --pipeline, -p <name>  Pipeline to run (default: ${cliConfig.defaultPipeline}).`,
     '  --cwd, -c <path>       Workspace to use (default: current directory).',
     '  --yes, -y              Approve approval pauses only; never approves a Promotion.',
     '  --keep-sandboxes, -k   Keep Docker Sandboxes for local diagnostics.',
@@ -174,7 +173,7 @@ export function formatHelp(): string {
     '',
     'Notes:',
     '  The pipeline is selected with --pipeline/-p and defaults to',
-    '  grill-spec-tickets-implement-review when omitted. All positional arguments form the',
+    `  ${cliConfig.defaultPipeline} when omitted. All positional arguments form the`,
     '  prompt. --yes never approves a Promotion. The pipeline policy decides whether the',
     '  Pipeline Change Set is rejected, presented, applied, or auto-rejected.',
     '  --keep-sandboxes preserves every Docker Sandbox created by the run.',
