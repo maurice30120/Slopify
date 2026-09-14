@@ -1,6 +1,7 @@
 version: 3
 id: simple
 title: Simple Implementation → Verify
+promotion: auto-apply
 
 nodes:
   - id: implementation
@@ -13,7 +14,6 @@ nodes:
     policy:
       filesystem: workspace-write
       terminal: workspace-write
-      promotion: auto-apply
     output:
       name: result
       type: acp.simple-implementation/v1
