@@ -22,6 +22,7 @@ export const createRuntimeCliBackend: CliPipelineBackendFactory = (workspaceCwd,
     : undefined;
   const runtime = createWorkspaceRuntime({
     workspaceCwd,
+    agentName: runtimeContext.agentName,
     keepSandboxes: runtimeContext.keepSandboxes,
     onSandboxRetained: sandbox => context.logger.error(formatRetainedSandbox(sandbox)),
     host: {

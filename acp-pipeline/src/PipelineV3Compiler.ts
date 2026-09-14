@@ -60,6 +60,27 @@ export function appendCompiledPipelineNodes(
     : createCompiledProgram(program, [...program.nodes, ...appended]);
 }
 
+/**
+ * Binds the agent selected by the host to every agent node in a pipeline.
+ * Agent selection is deliberately kept outside the pipeline definition so
+ * the same pipeline can run with different ACP or Sandbox configurations.
+ */
+export function bindPipelineAgent(
+  program: CompiledPipelineProgram,
+  agentName: string,
+): CompiledPipelineProgram {
+  const normalized = agentName.trim();
+  if (!normalized) {
+    throw new Error("Pipeline agent name must not be empty.");
+  }
+  const nodes = program.nodes.map(node => node.kind === "agent"
+    ? { ...node, agent: normalized }
+    : node);
+  return nodes.every((node, index) => node === program.nodes[index])
+    ? program
+    : createCompiledProgram(program, nodes);
+}
+
 function createCompiledProgram(
   metadata: Pick<CompiledPipelineProgram, "version" | "id" | "title" | "promotion">,
   nodes: readonly CompiledPipelineNode[],
@@ -172,7 +193,7 @@ function readNodes(
       continue;
     }
 
-    const agent = readRequiredString(nodeValue, "agent", id ? `node "${id}"` : label, errors);
+    const agent = readOptionalString(nodeValue.agent, "agent", id ? `node "${id}"` : label, errors);
     if (agent && !agentConfigs[agent]) {
       errors.push(`node "${id}" references missing ACP agent "${agent}".`);
     }
@@ -183,7 +204,7 @@ function readNodes(
     if (!prompt && !promptFile) {
       errors.push(`${id ? `node "${id}"` : label} must define either prompt or promptFile.`);
     }
-    if (id && agent && output && (prompt || promptFile)) {
+    if (id && output && (prompt || promptFile)) {
       nodes.push(deepFreeze({
         id,
         kind,

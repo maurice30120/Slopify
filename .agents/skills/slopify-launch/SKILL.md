@@ -35,11 +35,25 @@ l’autorisation d’exécution.
 Après sélection, exécuter uniquement le pipeline demandé ou retenu :
 
 ```text
-slopify run <niveau> "<demande confirmée>" --cwd <workspace>
+slopify run <niveau> "<demande confirmée>" --agent "<agent configuré>" --cwd <workspace>
 ```
 
 Utiliser `npm run slopify -- run ...` lorsque le binaire local est nécessaire.
 Passer les arguments séparément ou avec un échappement shell sûr.
+Le pipeline ne porte plus le choix de l’agent : `--agent` est obligatoire pour
+`run` et sélectionne un nom défini dans `.acp/acp-agents.json`. Tous les nœuds
+agent du pipeline utilisent ce choix, quel que soit leur transport. Pour
+`resume`, fournir le même `--agent` afin de reconstruire le programme après un
+redémarrage du processus :
+
+```text
+slopify resume <run-id> --agent "<agent configuré>" --cwd <workspace>
+```
+
+Utiliser la clé exacte de `agents` dans
+`<workspace>/.acp/acp-agents.json` (par exemple `Codex CLI` ou
+`Codex Sandbox`). Ne pas réintroduire `agent:` dans les fichiers
+`.acp/pipelines/*.yaml` pour choisir un transport.
 
 `--yes` approuve les pauses ordinaires uniquement ; il ne valide jamais une
 promotion finale. Après une erreur, ne pas reprendre, annuler, relancer ou

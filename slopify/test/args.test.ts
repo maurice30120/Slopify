@@ -4,13 +4,14 @@ import test from 'node:test';
 
 import { parseCliArgs } from '../src/args.js';
 
-test('parses the exact run contract without an agent option', () => {
+test('parses the run contract with an explicit agent', () => {
   assert.deepEqual(
-    parseCliArgs(['run', 'plan-execute-verify', '--yes', '--verbose', '--', 'add', 'a', 'CLI'], '/repo'),
+    parseCliArgs(['run', 'plan-execute-verify', '--agent', 'Vibe', '--yes', '--verbose', '--', 'add', 'a', 'CLI'], '/repo'),
     {
       kind: 'run',
       pipelineName: 'plan-execute-verify',
       prompt: 'add a CLI',
+      agent: 'Vibe',
       cwd: '/repo',
       json: false,
       verbose: true,
@@ -29,10 +30,18 @@ test('resolves cwd portably', () => {
   });
 });
 
-test('rejects the obsolete agent selection option', () => {
+test('requires an agent for run and resume', () => {
+  assert.deepEqual(parseCliArgs(['run', 'pipeline', 'prompt', '--agent', 'Vibe']), {
+    kind: 'run', pipelineName: 'pipeline', prompt: 'prompt', agent: 'Vibe',
+    cwd: process.cwd(), json: false, verbose: false, yes: false, keepSandboxes: false,
+  });
   assert.throws(
-    () => parseCliArgs(['run', 'pipeline', 'prompt', '--agent', 'Vibe']),
-    /Unknown option "--agent"/,
+    () => parseCliArgs(['run', 'pipeline', 'prompt']),
+    /Usage: slopify run.*--agent/,
+  );
+  assert.throws(
+    () => parseCliArgs(['run', 'pipeline', 'prompt', '--agent']),
+    /--agent requires a name/,
   );
 });
 
@@ -62,10 +71,11 @@ test('parses list json and verbose options without accepting run-only flags', ()
 });
 
 test('keeps prompt-looking options after the positional delimiter', () => {
-  assert.deepEqual(parseCliArgs(['run', 'grill', '--', '--fix', 'pipeline-cli'], '/repo'), {
+  assert.deepEqual(parseCliArgs(['run', 'grill', '--agent', 'Vibe', '--', '--fix', 'pipeline-cli'], '/repo'), {
     kind: 'run',
     pipelineName: 'grill',
     prompt: '--fix pipeline-cli',
+    agent: 'Vibe',
     cwd: '/repo',
     json: false,
     verbose: false,
@@ -132,11 +142,12 @@ test('list with all valid options', () => {
 });
 
 test('run with all valid options', () => {
-  const result = parseCliArgs(['run', 'pipeline', 'prompt', '--cwd', 'demo', '--json', '--verbose', '--yes', '--keep-sandboxes'], '/repo');
+  const result = parseCliArgs(['run', 'pipeline', 'prompt', '--agent', 'Vibe', '--cwd', 'demo', '--json', '--verbose', '--yes', '--keep-sandboxes'], '/repo');
   assert.deepEqual(result, {
     kind: 'run',
     pipelineName: 'pipeline',
     prompt: 'prompt',
+    agent: 'Vibe',
     cwd: path.resolve('/repo', 'demo'),
     json: true,
     verbose: true,
@@ -146,28 +157,28 @@ test('run with all valid options', () => {
 });
 
 test('run with -y short option', () => {
-  const result = parseCliArgs(['run', 'pipeline', 'prompt', '-y'], '/repo');
+  const result = parseCliArgs(['run', 'pipeline', 'prompt', '--agent', 'Vibe', '-y'], '/repo');
   assert.equal(result.kind, 'run');
   assert.equal((result as any).yes, true);
   assert.equal((result as any).keepSandboxes, false);
 });
 
 test('parses crash recovery by persisted run id', () => {
-  assert.deepEqual(parseCliArgs(['resume', 'run-42', '--yes', '--json'], '/repo'), {
-    kind: 'resume', runId: 'run-42', cwd: '/repo', json: true, verbose: false,
+  assert.deepEqual(parseCliArgs(['resume', 'run-42', '--agent', 'Vibe', '--yes', '--json'], '/repo'), {
+    kind: 'resume', runId: 'run-42', agent: 'Vibe', cwd: '/repo', json: true, verbose: false,
     yes: true, keepSandboxes: false,
   });
 });
 
 test('parses --keep-sandboxes independently from --yes', () => {
-  const result = parseCliArgs(['run', 'pipeline', 'prompt', '--keep-sandboxes'], '/repo');
+  const result = parseCliArgs(['run', 'pipeline', 'prompt', '--agent', 'Vibe', '--keep-sandboxes'], '/repo');
   assert.equal(result.kind, 'run');
   assert.equal((result as any).yes, false);
   assert.equal((result as any).keepSandboxes, true);
 });
 
 test('positional delimiter stops option parsing', () => {
-  const result = parseCliArgs(['run', 'pipeline', '--', '--fix', 'something'], '/repo');
+  const result = parseCliArgs(['run', 'pipeline', '--agent', 'Vibe', '--', '--fix', 'something'], '/repo');
   assert.equal(result.kind, 'run');
   assert.equal((result as any).prompt, '--fix something');
   assert.equal((result as any).keepSandboxes, false);

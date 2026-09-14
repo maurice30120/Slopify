@@ -18,7 +18,7 @@ test('loads the simple, moyen, and full pipeline levels from the workspace catal
   assert.ok(simple);
   assert.equal(simple.promotion, 'auto-apply');
   assert.deepEqual(simple.nodes.map(node => node.id), ['implementation']);
-  assert.equal(simple.nodes[0]?.agent, 'Codex Sandbox');
+  assert.equal(simple.nodes[0]?.agent, undefined);
   assert.equal(simple.nodes[0]?.policy.filesystem, 'workspace-write');
 
   const moyen = byId.get('moyen');

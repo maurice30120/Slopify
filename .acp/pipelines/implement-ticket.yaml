@@ -4,7 +4,6 @@ title: Implement One Approved Ticket
 
 nodes:
   - id: implementation
-    agent: Codex Sandbox
     skills: [implement]
     instructionsFile: ../agents/matt-implementer.md
     prompt: |

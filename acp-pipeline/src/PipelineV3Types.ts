@@ -56,7 +56,8 @@ export interface PipelineWorkspaceHandoffDefinition {
 export interface PipelineAgentNodeDefinition {
   id: string;
   type?: "agent";
-  agent: string;
+  /** Optional legacy override; hosts normally bind the CLI-selected agent. */
+  agent?: string;
   /** Tâche et données propres au run. */
   prompt?: string;
   /** Rôle et règles invariants, chargés séparément de la tâche. */

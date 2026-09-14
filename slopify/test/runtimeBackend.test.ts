@@ -29,7 +29,6 @@ id: plan
 title: Plan
 nodes:
   - id: planner
-    agent: Planner
     prompt: Plan {{userPrompt}}
     output:
       name: plan
@@ -39,6 +38,7 @@ nodes:
 }
 
 const context = {
+  agentName: 'Planner',
   terminal: {
     async confirm(): Promise<boolean> { return false; },
     async select(): Promise<string | undefined> { return undefined; },
@@ -59,6 +59,20 @@ test('creates the standalone CLI backend without loading an editor plugin', () =
     assert.deepEqual(backend.programs.map(program => program.id), ['plan']);
     assert.equal(typeof backend.runAgent, 'function');
     assert.equal(typeof backend.clearRunLogs, 'function');
+  } finally {
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test('rejects a CLI-selected agent that is not configured in the workspace', () => {
+  const cwd = workspace();
+  try {
+    writeWorkspaceConfig(cwd);
+
+    assert.throws(
+      () => createRuntimeCliBackend(cwd, { ...context, agentName: 'Missing Agent' }),
+      /Agent "Missing Agent" is not configured in \.acp\/acp-agents\.json/,
+    );
   } finally {
     fs.rmSync(cwd, { recursive: true, force: true });
   }

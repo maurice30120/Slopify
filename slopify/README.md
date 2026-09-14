@@ -3,10 +3,13 @@
 `slopify` exécute les pipelines ACP version 3 présents dans le workspace courant, sans lancer VS Code ni charger le plugin Pi comme extension.
 
 ```bash
-slopify run "pipeline-name" "the user prompt"
+slopify run "pipeline-name" "the user prompt" --agent "Codex CLI"
 ```
 
-Le pipeline choisit les agents de chaque nœud. La commande n'accepte volontairement aucun argument `--agent`.
+Le pipeline ne choisit pas de transport ni d'agent. `--agent` sélectionne
+l'agent configuré dans `.acp/acp-agents.json` et l'applique à tous les nœuds
+agent du pipeline. Le même choix doit être fourni lors d'une reprise après
+redémarrage du processus.
 
 ## Niveaux de pipeline
 
@@ -45,14 +48,15 @@ Il n'existe aucun pipeline ou catalogue d'agents embarqué. Un workspace non con
 
 ```bash
 slopify list
-slopify run plan-execute-verify "Ajouter une commande export"
-slopify resume <run-id>
+slopify run moyen "Ajouter une commande export" --agent "Codex CLI"
+slopify resume <run-id> --agent "Codex CLI"
 ```
 
 Options :
 
 ```text
 --cwd <path>  choisit le workspace
+--agent <name> sélectionne l'agent configuré pour tous les nœuds agent
 --yes, -y     approuve les pauses d'approbation uniquement
 --keep-sandboxes conserve les Docker Sandboxes et affiche les commandes de diagnostic
 --verbose     affiche les événements runtime

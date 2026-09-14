@@ -5,7 +5,6 @@ promotion: auto-apply
 
 nodes:
   - id: implementation
-    agent: Codex Sandbox
     skills: [implement]
     instructionsFile: ../agents/simple-implementer.md
     prompt: |

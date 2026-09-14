@@ -89,6 +89,9 @@ export interface CreateWorkspaceRuntimeOptions extends WorkspaceRuntimeOptions {
  */
 export function createWorkspaceRuntime(options: CreateWorkspaceRuntimeOptions): WorkspaceRuntime {
   const catalog = options.resolvedCatalog ?? loadValidCatalog(options.workspaceCwd);
+  if (options.agentName) {
+    resolveAgent(catalog, options.agentName);
+  }
   const programs = getPipelinePrograms(options.workspaceCwd, options.host.logger);
   const runner = new AcpRunner();
   const sandboxRuntime = new DockerSandboxRuntime(options.sandboxExecutor, {
@@ -209,12 +212,17 @@ export function createWorkspaceRuntime(options: CreateWorkspaceRuntimeOptions): 
     runAgent,
     preflightPipeline: async (program, runId) => {
       const plannedSandboxNames = program.nodes.flatMap(node => {
-        if (
-          node.kind !== 'agent'
-          || !node.agent
-          || mapPolicyToLegacySideEffects(node.policy) !== 'workspace'
-          || resolveAgent(catalog, node.agent).transport !== 'sandbox'
-        ) return [];
+        if (node.kind !== 'agent') return [];
+        if (!node.agent) {
+          throw new Error(`Pipeline node "${node.id}" has no selected ACP agent.`);
+        }
+        const config = resolveAgent(catalog, node.agent);
+        if (config.transport === 'sandbox' && node.policy.network === 'enabled') {
+          throw new Error(`node "${node.id}" network policy is not supported for Docker Sandbox Runs; configure the global policy with "sbx policy".`);
+        }
+        if (mapPolicyToLegacySideEffects(node.policy) !== 'workspace' || config.transport !== 'sandbox') {
+          return [];
+        }
         return [stableSandboxName(runId, node.id, 1)];
       });
       if (plannedSandboxNames.length > 0) {

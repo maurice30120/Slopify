@@ -4,7 +4,6 @@ title: Short Plan → Implement → Review
 
 nodes:
   - id: plan
-    agent: Codex CLI
     instructionsFile: ../agents/medium-planner.md
     prompt: |
       User request:
@@ -37,7 +36,6 @@ nodes:
       format: markdown
 
   - id: implementation
-    agent: Codex Sandbox
     skills: [implement]
     instructionsFile: ../agents/medium-implementer.md
     prompt: |
@@ -62,7 +60,6 @@ nodes:
       format: markdown
 
   - id: review
-    agent: Codex CLI
     skills: [code-review]
     instructionsFile: ../agents/medium-reviewer.md
     prompt: |

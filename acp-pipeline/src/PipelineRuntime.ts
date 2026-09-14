@@ -43,6 +43,8 @@ export interface PipelineRuntimeOptions {
   adapterName?: string;
   adapterCapabilities?: PipelineAdapterPolicyCapabilities;
   resolveNodeSkills?: (node: CompiledPipelineNode) => string[] | Promise<string[]>;
+  /** Agent selected by the host for dynamically expanded execution-plan nodes. */
+  agentName?: string;
 }
 
 export interface PipelineRuntimeEvent {
@@ -112,6 +114,7 @@ export class PipelineRuntime {
   private readonly adapterName: string;
   private readonly adapterCapabilities?: PipelineAdapterPolicyCapabilities;
   private readonly resolveNodeSkills?: (node: CompiledPipelineNode) => string[] | Promise<string[]>;
+  private readonly agentName?: string;
 
   constructor(
     private readonly adapter: PipelineRuntimeAdapter,
@@ -124,6 +127,7 @@ export class PipelineRuntime {
     this.adapterName = options.adapterName ?? "pipeline";
     this.adapterCapabilities = options.adapterCapabilities;
     this.resolveNodeSkills = options.resolveNodeSkills;
+    this.agentName = options.agentName;
     for (const program of options.programs ?? []) {
       this.programsById.set(program.id, program);
     }
@@ -486,7 +490,7 @@ export class PipelineRuntime {
   private async expandExecutionPlan(active: ActiveRun): Promise<PipelineRuntimeDiagnostic | undefined> {
     const snapshot = active.snapshot.executionPlan;
     if (!snapshot) return undefined;
-    const dynamicNodes = executionPlanNodes(snapshot.plan);
+    const dynamicNodes = executionPlanNodes(snapshot.plan, this.agentName);
     if (snapshot.expansion.status === "expanded") {
       if (!dynamicNodes.every(node => active.program.nodesById.has(node.id))) {
         active.program = appendCompiledPipelineNodes(active.program, dynamicNodes);
@@ -1188,11 +1192,11 @@ function requiredCheckpointDiagnostic(
   };
 }
 
-function executionPlanNodes(plan: ExecutionPlan): CompiledPipelineNode[] {
+function executionPlanNodes(plan: ExecutionPlan, selectedAgent?: string): CompiledPipelineNode[] {
   const implementationNodes = plan.nodes.map(node => ({
     id: node.id,
     kind: "agent" as const,
-    agent: node.ticket.agent ?? "Codex Sandbox",
+    agent: selectedAgent ?? node.ticket.agent ?? "Codex Sandbox",
     prompt: `Implement the approved ticket from the immutable Execution Plan:\n${JSON.stringify(node.ticket, null, 2)}`,
     skills: ["implement"],
     needs: [...node.needs],
@@ -1204,7 +1208,7 @@ function executionPlanNodes(plan: ExecutionPlan): CompiledPipelineNode[] {
   return [...implementationNodes, {
     id: plan.finalReview.id,
     kind: "agent" as const,
-    agent: "Codex Sandbox",
+    agent: selectedAgent ?? "Codex Sandbox",
     prompt: "Review the complete integrated result produced by the immutable Execution Plan.",
     skills: ["code-review"],
     needs: [...plan.finalReview.needs],

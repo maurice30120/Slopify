@@ -27,6 +27,7 @@ export async function main(
         workspaceCwd,
         Object.assign(context, { keepSandboxes }),
       ),
+      agentName: command.kind === 'run' || command.kind === 'resume' ? command.agent : undefined,
       verbose: command.verbose,
     });
 
