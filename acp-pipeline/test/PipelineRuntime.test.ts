@@ -826,6 +826,7 @@ test("PipelineRuntime pauses an interview question, records the answer, then pro
         id: "plan",
         agent: "Codex",
         prompt: "Plan {{userPrompt}}",
+        policy: { filesystem: "workspace-write", terminal: "none", network: "disabled", promotion: "auto-apply" },
         interaction: { protocol: "proposed-plan", repairAttempts: 0 },
         output: { name: "plan", type: "acp.grill-decision/v1", format: "markdown" },
       },
@@ -842,8 +843,9 @@ test("PipelineRuntime pauses an interview question, records the answer, then pro
     ],
   }, agents).program!;
   const prompts: string[] = [];
-  const runtime = new PipelineRuntime(sessionAdapter(async ({ prompt }) => {
+  const runtime = new PipelineRuntime(sessionAdapter(async ({ prompt, resumeSandboxRun }) => {
       prompts.push(prompt);
+      assert.equal(resumeSandboxRun, undefined, 'a completed checkpoint must not replay the previous interview answer');
       if (prompts.length === 1) {
         return { artifact: { name: "plan", type: "acp.grill-decision/v1", format: "markdown", value: proposedQuestion("Which API?", "Use the public API.") } };
       }

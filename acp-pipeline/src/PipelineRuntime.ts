@@ -716,7 +716,11 @@ export class PipelineRuntime {
           inputs,
           signal: active.controller.signal,
           onSandboxRunState: state => this.persistSandboxRunState(active, state),
-          resumeSandboxRun: this.resumeSandboxRun(active, node.id, attempt),
+          // Each interview send carries new history (or a repair request). A
+          // completed sandbox belongs to the previous send, not this prompt.
+          resumeSandboxRun: this.resumeSandboxRun(active, node.id, attempt)?.integrationState === "sandbox_created"
+            ? this.resumeSandboxRun(active, node.id, attempt)
+            : undefined,
           replay: isReplay,
         });
         if (!("artifact" in result)) {
