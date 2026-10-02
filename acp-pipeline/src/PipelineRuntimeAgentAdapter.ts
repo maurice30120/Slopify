@@ -144,7 +144,9 @@ class PipelineRuntimeAgentNodeSession implements AgentNodeSession {
       let value: unknown = text;
       if (node.output.format === "json") {
         const trimmed = text.trim();
-        const fenced = trimmed.match(/^```(?:json)?\s*\n([\s\S]*?)\n```$/i);
+        const fenced = (trimmed.match(/```/g)?.length === 2)
+          ? trimmed.match(/(?:^|\n)```(?:json)?[ \t]*\n([\s\S]*?)\n```(?:\n|$)/i)
+          : null;
         try {
           value = JSON.parse(fenced ? fenced[1] : trimmed);
         } catch {
