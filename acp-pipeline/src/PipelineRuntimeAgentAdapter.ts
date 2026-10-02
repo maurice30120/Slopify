@@ -1,6 +1,7 @@
 import type { SessionNotification } from "@agentclientprotocol/sdk";
 
 import {
+  READ_ONLY_PIPELINE_POLICY,
   mapPolicyToLegacyPermissions,
   mapPolicyToLegacySideEffects,
 } from "./PipelinePolicy";
@@ -19,6 +20,7 @@ import type {
   PipelineNodeExecutionInput,
   PipelineNodeExecutionResult,
   PipelineRuntimeAdapter,
+  PipelineSandboxRunSnapshot,
 } from "./PipelineV3Types";
 import { resolvePipelineStepText } from "./PipelineStepCompletion";
 
@@ -114,6 +116,7 @@ class PipelineRuntimeAgentNodeSession implements AgentNodeSession {
     }
 
     try {
+      let checkpointState: PipelineSandboxRunSnapshot | undefined;
       const result = await this.options.runAgent({
         runId: input.runId,
         nodeId: node.id,
@@ -136,21 +139,37 @@ class PipelineRuntimeAgentNodeSession implements AgentNodeSession {
         permissions: mapPolicyToLegacyPermissions(node.policy),
         promotion: node.policy.promotion,
         skills: [...node.skills],
-        onSandboxRunState: input.onSandboxRunState,
+        onSandboxRunState: async state => {
+          if (state.checkpoint) checkpointState = state;
+          await input.onSandboxRunState?.(state);
+        },
         resumeSandboxRun: input.resumeSandboxRun,
         dependencyCheckpoints: input.dependencyCheckpoints,
       });
       const text = resolvePipelineStepText(result);
       let value: unknown = text;
       if (node.output.format === "json") {
-        const trimmed = text.trim();
-        const fenced = (trimmed.match(/```/g)?.length === 2)
-          ? trimmed.match(/(?:^|\n)```(?:json)?[ \t]*\n([\s\S]*?)\n```(?:\n|$)/i)
-          : null;
         try {
-          value = JSON.parse(fenced ? fenced[1] : trimmed);
+          value = decodeJsonOutput(text);
         } catch {
-          return { code: "invalid_json_output", message: `Agent output for node "${node.id}" is not valid JSON.`, retryable: false };
+          const template = JSON_OUTPUT_TEMPLATES[node.output.type];
+          if (!template) return invalidJsonOutput(node.id);
+          const repairPrompt = `Repair only the missing JSON delivery artifact. Do not implement, modify files, add dependencies, run tests or commit. Read the existing checkpoint files if needed. Return the actual JSON object itself, without prose. Never invent validations or commits. Required shape (replace examples with actual evidence): ${JSON.stringify(template)}\nOriginal task:\n${input.prompt}\nOriginal response:\n${text}`;
+          const dependencyCheckpoints = checkpointState?.checkpoint
+            ? [{ runId: checkpointState.runId, nodeId: checkpointState.nodeId, attempt: checkpointState.attempt, sandboxName: checkpointState.sandboxName, baseCommit: checkpointState.baseCommit, checkpoint: checkpointState.checkpoint }]
+            : input.dependencyCheckpoints;
+          const repaired = await this.options.runAgent({
+            runId: input.runId, nodeId: `${node.id}-output-repair`, attempt: input.attempt,
+            workspaceCwd: this.options.workspaceCwd(), agentName: node.agent,
+            promptText: repairPrompt, prompt: { skills: [], instructions: "Deliver one JSON object only. This is a read-only formatting repair, not implementation.", task: repairPrompt, context: Object.values(input.inputs) },
+            signal: this.controller.signal,
+            sideEffects: "none", permissions: mapPolicyToLegacyPermissions(READ_ONLY_PIPELINE_POLICY), promotion: "discard", skills: [],
+            dependencyCheckpoints,
+            onSessionUpdate: update => this.options.onSessionUpdate?.(input.runId, node, update),
+            onStatus: update => this.options.onStatus?.(input.runId, node, update),
+          });
+          try { value = decodeJsonOutput(resolvePipelineStepText(repaired)); }
+          catch { return invalidJsonOutput(node.id); }
         }
       }
       return {
@@ -179,4 +198,23 @@ class PipelineRuntimeAgentNodeSession implements AgentNodeSession {
     this.closed = true;
     this.controller.abort();
   }
+}
+
+
+const JSON_OUTPUT_TEMPLATES: Record<string, unknown> = {
+  "acp.ticket-graph/v1": { contract: "acp.ticket-graph/v1", documentation: "`actual issues directory/`", tickets: [{ id: "T01", title: "actual title", scope: ["actual scope"], needs: [], validation: ["actual planned validation"] }] },
+  "acp.implementation-result/v1": { contract: "acp.implementation-result/v1", ticketId: "actual ticket ID", branch: "actual branch", commits: ["actual commit hash"], summary: "actual changes", validations: ["actual commands and results"] },
+  "acp.verification-report/v1": { contract: "acp.verification-report/v1", verdict: "failed", categories: [{ name: "actual category", required: true, status: "failed", details: "actual evidence; use passed only when verified" }] },
+};
+
+function decodeJsonOutput(text: string): unknown {
+  const trimmed = text.trim();
+  const fenced = trimmed.match(/```/g)?.length === 2
+    ? trimmed.match(/(?:^|\n)```(?:json)?[ \t]*\n([\s\S]*?)\n```(?:\n|$)/i)
+    : null;
+  return JSON.parse(fenced ? fenced[1] : trimmed);
+}
+
+function invalidJsonOutput(nodeId: string) {
+  return { code: "invalid_json_output", message: `Agent output for node "${nodeId}" is not valid JSON after at most one read-only formatting repair.`, retryable: false };
 }
