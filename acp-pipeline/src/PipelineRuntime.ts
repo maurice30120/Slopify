@@ -579,16 +579,20 @@ export class PipelineRuntime {
         return sessionBoundaryDiagnostic(active, node, state.attempts + 1, error);
       }
       try {
+        const dependencies = dependencyCheckpoints(active, node);
+        const reviewPrompt = node.id === active.snapshot.executionPlan?.plan.finalReview.id
+          ? `${prompt}\n\nComplete retained checkpoint evidence (diffs from the fixed run base):\n${dependencies.map(parent => `Node ${parent.nodeId}, base ${parent.baseCommit}, files: ${parent.checkpoint.preview.files.join(", ")}\n${parent.checkpoint.preview.diff}`).join("\n\n")}\n\nImplementation reports:\n${JSON.stringify(dependencies.map(parent => active.snapshot.artifacts[`${parent.nodeId}.result`]?.value).filter(Boolean))}\n\nPerform the static review now using this supplied complete diff and approved specification. Do not reread files or run exploratory tools. Report only evidence present here; do not claim to have run tests yourself. Return the verification JSON object as your final response.`
+          : prompt;
         const result = await session.send({
           runId: active.snapshot.runId,
           attempt,
           node,
-          prompt,
+          prompt: reviewPrompt,
           inputs,
           signal: active.controller.signal,
           onSandboxRunState: state => this.persistSandboxRunState(active, state),
           resumeSandboxRun: this.resumeSandboxRun(active, node.id, attempt),
-          dependencyCheckpoints: dependencyCheckpoints(active, node),
+          dependencyCheckpoints: dependencies,
         });
         if (active.controller.signal.aborted) {
           return { ok: true };

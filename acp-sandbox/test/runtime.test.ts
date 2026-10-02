@@ -232,7 +232,7 @@ test('launches Mistral Vibe programmatically inside a Vibe sandbox', async () =>
   assert.deepEqual(launch?.args.slice(1, 3), ['--env', 'VIBE_ACTIVE_MODEL=mistral-medium-latest']);
   assert.equal(launch?.args[3], '--env');
   assert.deepEqual(JSON.parse(launch!.args[4].slice('VIBE_MODELS='.length)), {
-    'mistral-medium-latest': { name: 'mistral-medium-latest', alias: 'mistral-medium-latest', provider: 'mistral', auto_compact_threshold: 12000 },
+    'mistral-medium-latest': { name: 'mistral-medium-latest', alias: 'mistral-medium-latest', provider: 'mistral', auto_compact_threshold: 24000 },
   });
   assert.ok(launch?.args.includes('VIBE_API_TIMEOUT=180'));
   assert.deepEqual(launch?.args.slice(launch.args.indexOf('vibe')), [

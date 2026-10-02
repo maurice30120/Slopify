@@ -339,7 +339,7 @@ export class DockerSandboxRuntime {
       // Vibe resolves active_model through its model catalogue. Declare the
       // requested API model as well to prevent a silent fallback to its default.
       const vibeModels = JSON.stringify({
-        [input.model]: { name: input.model, alias: input.model, provider: 'mistral', auto_compact_threshold: 12000 },
+        [input.model]: { name: input.model, alias: input.model, provider: 'mistral', auto_compact_threshold: 24000 },
       });
       const agentArgs = agent === 'vibe'
         ? ['exec', '--env', `VIBE_ACTIVE_MODEL=${input.model}`, '--env', `VIBE_MODELS=${vibeModels}`,

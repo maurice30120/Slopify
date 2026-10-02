@@ -23,6 +23,7 @@ const agents = { Codex: {} };
 
 function sessionAdapter(
   execute: (input: PipelineNodeExecutionInput) => Promise<PipelineNodeExecutionResult>,
+  checkpointDiff = "",
 ): PipelineRuntimeAdapter {
   const executeWithCheckpoint = async (input: PipelineNodeExecutionInput): Promise<PipelineNodeExecutionResult> => {
     const result = await execute(input);
@@ -41,7 +42,7 @@ function sessionAdapter(
           commit: `checkpoint-${input.node.id}-${attempt}`,
           remote: `remote-${input.node.id}`,
           ref: `refs/checkpoints/${input.node.id}-${attempt}`,
-          preview: { baseCommit: "base", checkpointCommit: `checkpoint-${input.node.id}-${attempt}`, fileCount: 0, files: [], diff: "" },
+          preview: { baseCommit: "base", checkpointCommit: `checkpoint-${input.node.id}-${attempt}`, fileCount: checkpointDiff ? 1 : 0, files: checkpointDiff ? ["runtime.ts"] : [], diff: checkpointDiff },
         },
       });
     }
@@ -2219,10 +2220,15 @@ test("dynamic tickets inherit approved delivery checkpoints and explicit output 
     if (input.node.id === "tasks") return { artifact: { name: "graph", type: "acp.ticket-graph/v1", format: "json", value: { contract: "acp.ticket-graph/v1", tickets: [{ id: "ticket", title: "Ticket", scope: [], needs: [], validation: [] }] } } };
     assert.match(input.prompt, /acp\.(implementation-result|verification-report)\/v1/);
     assert.match(input.prompt, /\[stderr\] then \[stdout\]/);
-    if (input.node.id === "final-review") assert.match(input.prompt, /fixed review base is base/);
+    if (input.node.id === "final-review") {
+      assert.match(input.prompt, /fixed review base is base/);
+      assert.match(input.prompt, /Complete retained checkpoint evidence/);
+      assert.ok(input.prompt.includes("@@ -1 +1 @@\n-before\n+after"));
+      assert.match(input.prompt, /Do not reread files or run exploratory tools/);
+    }
     if (input.node.id === "ticket") assert.deepEqual(input.dependencyCheckpoints?.map(item => item.nodeId), ["tasks"]);
     return executionPlanArtifact(input.node.id);
-  }));
+  }, "diff --git a/runtime.ts b/runtime.ts\n@@ -1 +1 @@\n-before\n+after"));
   const paused = await runtime.start(program);
   assert.equal(paused.status, "paused");
   if (paused.status !== "paused") return;
