@@ -1,5 +1,6 @@
 version: 3
 id: full
+promotion: ask
 title: "Full: Grill → Spec → Tickets → Implement → Review"
 
 nodes:

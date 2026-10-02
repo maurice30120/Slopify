@@ -49,6 +49,7 @@ test('loads the simple, moyen, and full pipeline levels from the workspace catal
   assert.equal(full.nodes[4]?.handoff?.minimumReferences, 2);
   for (const id of ['full', 'grill-spec-tickets-implement-review']) {
     const program = byId.get(id)!;
+    assert.equal(program.promotion, 'ask', 'full delivery must request promotion instead of silently discarding it');
     const tasks = program.nodes.find(node => node.id === 'tasks')!;
     const delivery = program.nodes.find(node => node.id === 'delivery_approval')!;
     assert.equal(tasks.output?.type, 'acp.ticket-graph/v1', 'sequential delivery requires an authoritative Ticket Graph');

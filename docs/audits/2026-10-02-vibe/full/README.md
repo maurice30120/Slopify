@@ -1,5 +1,7 @@
 # Audit du pipeline full avec Vibe Sandbox
 
+Dix-huitième run `0e9136ce-ef96-4ad7-bc69-4076ce45e81c` : toutes les sept étapes terminées, revue statique réussie en 20 secondes avec diff fourni. Réparation JSON seule utilisée après une réponse T01 avec introduction. Checkpoint `b47aaf1330b4263fec34e501a1e120c8351d76a1` : 319 tests indépendants, code retour 0, cinq suites 133+29+66+24+67, dépendances copiées dans le worktree temporaire puis worktree supprimé. Le rapport Vibe annonce seulement les 67 tests de la dernière suite : ce résumé ne suffit pas comme preuve globale. Promotion rejetée sans interaction : `full.yaml` et son alias omettent la propriété globale `promotion`; le compilateur utilise `discard` par défaut. Test catalogue reproduit `'discard' !== 'ask'`. Correction explicite `promotion: ask` dans les deux pipelines, sans changer le défaut des autres pipelines. Aucun code de ce run promu; relance complète nécessaire.
+
 Le dépôt était propre au commit 90d277e avant le premier lancement réel.
 
 Run f0ff33e9-7d2f-40ed-9131-85194f836c4e : échec au grill, malformed_interview_output (4 blocs proposed_plan). La sortie Vibe JSON contient le prompt et les effets outils. Le bridge publiait ce transcript complet au lieu de la dernière réponse assistant. Le test acpBridge.test.ts reproduit le défaut. La correction conserve stdout brut dans les diagnostics et ne publie que la dernière réponse assistant via ACP.
