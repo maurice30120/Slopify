@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 
 import {
@@ -277,12 +278,28 @@ export class DockerSandboxRuntime {
             checkpoints: input.dependencyCheckpoints,
             signal: execution.signal,
           });
-          const remote = `sandbox-${sandboxName}`;
           const dependencyRef = `refs/slopify/dependencies/${input.runId}/${input.nodeId}/${input.attempt}`;
-          await this.requireSuccess({
-            command: 'git', args: ['push', '--force', remote, `${composed.changeSet.commit}:${dependencyRef}`],
-            cwd: input.workspaceCwd, stdin: 'ignore', signal: execution.signal,
-          }, 'publish dependency checkpoints to the descendant sandbox');
+          // sbx exposes a fetch-only Git daemon. Transfer an incremental bundle
+          // through its file API rather than requiring receive-pack on that daemon.
+          const bundleDirectory = await mkdtemp(path.join(tmpdir(), 'slopify-dependencies-'));
+          const hostBundle = path.join(bundleDirectory, 'dependencies.bundle');
+          const sandboxBundle = '/tmp/slopify-dependencies.bundle';
+          try {
+            await this.requireSuccess({
+              command: 'git', args: ['bundle', 'create', hostBundle, composed.changeSet.ref, `^${baseCommit}`],
+              cwd: input.workspaceCwd, stdin: 'ignore', signal: execution.signal,
+            }, 'bundle dependency checkpoints');
+            await this.requireSuccess({
+              command: 'sbx', args: ['cp', hostBundle, `${sandboxName}:${sandboxBundle}`],
+              cwd: input.workspaceCwd, stdin: 'ignore', signal: execution.signal,
+            }, 'copy dependency checkpoints to the descendant sandbox');
+            await this.requireSuccess({
+              command: 'sbx', args: ['exec', sandboxName, 'git', 'fetch', '--no-tags', sandboxBundle, `${composed.changeSet.ref}:${dependencyRef}`],
+              cwd: input.workspaceCwd, stdin: 'ignore', signal: execution.signal,
+            }, 'import dependency checkpoints in the descendant sandbox');
+          } finally {
+            await rm(bundleDirectory, { recursive: true, force: true });
+          }
           await this.requireSuccess({
             command: 'sbx', args: ['exec', sandboxName, 'git', 'reset', '--hard', dependencyRef],
             cwd: input.workspaceCwd, stdin: 'ignore', signal: execution.signal,

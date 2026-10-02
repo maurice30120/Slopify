@@ -244,6 +244,7 @@ test('prepares a descendant from multiple parent checkpoints without mutating th
   const scenario = sandboxScenario({ changedFiles: ['join.ts'], diff: 'diff' });
   let merge = 0;
   const fake = fakeExecutor(request => {
+    if (request.command === 'git' && request.args[0] === 'push') return result('', 'repository not exported', 1);
     if (request.command === 'git' && request.args.join(' ') === 'show -s --format=%cI base123') return result('2026-01-01T00:00:00Z\n');
     if (request.command === 'git' && request.args[0] === 'merge-base') return result();
     if (request.command === 'git' && request.args[0] === 'merge-tree') return result(`tree-${++merge}\n`);

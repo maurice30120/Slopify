@@ -11,3 +11,5 @@ Deuxième run a0c8a8e9-656b-4eb4-a296-a425a561e866 : grill valide mais répétit
 Troisième run e8e5c287-5753-4bab-9a40-7cf98fd39385 : ReadTimeout Mistral après environ 12 minutes, payload 118427 caractères, sans status HTTP ni request id. Cause réseau/fournisseur non déterminée; relance avec lectures ciblées.
 
 Quatrième run 09bcd50a-635e-43ad-a694-8da9b5b88bbe : question et réponse réellement exécutées; plan ready obtenu. Échec collecte checkpoint non-fast-forward : les commits techniques de deux tours issus de la même base sont frères. Correction fetch forcé strictement sur la référence privée refs/slopify/checkpoints, sans mutation de branche hôte. Test de régression sur deux appels du runtime avec même identité et nouveau prompt.
+
+Cinquième run : grill et approbation passés; spec créée et checkpointée. Échec tasks lors du git push de dépendances vers le serveur Git sbx (repository not exported). Le serveur permet fetch mais pas receive-pack. Correction : bundle Git incrémental (référence intégrée, exclusion base), sbx cp, puis git fetch local et reset dans le descendant. Nettoyage du bundle hôte dans finally; branche et fichiers hôtes non modifiés.
