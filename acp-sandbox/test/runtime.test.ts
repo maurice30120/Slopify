@@ -76,6 +76,10 @@ function sandboxScenario(options: {
         createdSandboxName = request.args[request.args.indexOf('--name') + 1];
         return result();
       }
+      if (request.command === 'sbx' && request.args[0] === 'rm') {
+        createdSandboxName = undefined;
+        return result();
+      }
       if (request.args.join(' ') === 'ls --json') {
         return result(createdSandboxName
           ? JSON.stringify([{ id: `id-${createdSandboxName}`, name: createdSandboxName }])
@@ -174,7 +178,7 @@ test('creates and previews an attributed Agent Checkpoint without mutating the h
     'fetch',
     '--no-tags',
     `sandbox-${sandboxName}`,
-    `HEAD:${checkpointRef}`,
+    `+HEAD:${checkpointRef}`,
   ]);
   assert.deepEqual(hostMutatingGitCalls(fake.calls), []);
   assert.deepEqual(fake.calls.at(-1)?.args, ['rm', '--force', sandboxName]);
@@ -186,6 +190,26 @@ test('creates and previews an attributed Agent Checkpoint without mutating the h
   assert.equal(states[0].baseCommit, 'base123');
   assert.equal(states[0].sandboxId, `id-${sandboxName}`);
   assert.equal(states[1].checkpoint?.checkpoint.commit, 'checkpoint456');
+});
+
+test('replaces an internal checkpoint when a new interview prompt starts from the same base', async () => {
+  const scenario = sandboxScenario();
+  let fetched = false;
+  const fake = fakeExecutor(request => {
+    if (request.command === 'git' && request.args[0] === 'fetch') {
+      if (fetched && !request.args.at(-1)?.startsWith('+HEAD:refs/slopify/checkpoints/')) {
+        return result('', 'non-fast-forward', 1);
+      }
+      fetched = true;
+    }
+    return scenario.respond(request);
+  });
+  const runtime = new DockerSandboxRuntime(fake.execute);
+  const input = { workspaceCwd: '/repo', runId: 'interview', nodeId: 'plan', attempt: 1, model: 'test' };
+  await runtime.runCodex({ ...input, prompt: 'Ask a question.' });
+  await runtime.runCodex({ ...input, prompt: 'Use the answer and return a plan.' });
+  assert.equal(fake.calls.filter(call => call.command === 'git' && call.args[0] === 'fetch').length, 2);
+  assert.deepEqual(hostMutatingGitCalls(fake.calls), []);
 });
 
 test('launches Mistral Vibe programmatically inside a Vibe sandbox', async () => {

@@ -176,7 +176,9 @@ export class GitPromotion {
     const ref = `refs/slopify/checkpoints/${input.sandboxName}`;
     await this.requireSuccess({
       command: 'git',
-      args: ['fetch', '--no-tags', remote, `HEAD:${ref}`],
+      // A fresh interview turn can replace a sibling checkpoint at this
+      // private ref. Force only this internal ref, never a host branch.
+      args: ['fetch', '--no-tags', remote, `+HEAD:${ref}`],
       cwd: input.workspaceCwd,
       stdin: 'ignore',
       signal: input.signal,
