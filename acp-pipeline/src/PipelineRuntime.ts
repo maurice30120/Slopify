@@ -490,7 +490,7 @@ export class PipelineRuntime {
   private async expandExecutionPlan(active: ActiveRun): Promise<PipelineRuntimeDiagnostic | undefined> {
     const snapshot = active.snapshot.executionPlan;
     if (!snapshot) return undefined;
-    const dynamicNodes = executionPlanNodes(snapshot.plan, this.agentName);
+    const dynamicNodes = executionPlanNodes(snapshot.plan, this.agentName, active.program.nodes.find(node => node.output?.type === "acp.sequential-delivery/v1"));
     if (snapshot.expansion.status === "expanded") {
       if (!dynamicNodes.every(node => active.program.nodesById.has(node.id))) {
         active.program = appendCompiledPipelineNodes(active.program, dynamicNodes);
@@ -1149,11 +1149,20 @@ export class PipelineRuntime {
 }
 
 function dependencyCheckpoints(active: ActiveRun, node: CompiledPipelineNode) {
-  const dependencies = active.program.nodes.filter(candidate =>
-    node.needs.includes(candidate.id)
-    && candidate.kind === "agent"
-    && canMutateWorkspace(candidate.policy)
-  );
+  // Approval nodes forward artifacts but own no checkpoint. Traverse them to
+  // the nearest writing agents so approved files cross the sandbox boundary.
+  const dependencyIds = new Set<string>();
+  const visited = new Set<string>();
+  const visit = (id: string) => {
+    if (visited.has(id)) return;
+    visited.add(id);
+    const candidate = active.program.nodesById.get(id);
+    if (!candidate) return;
+    if (candidate.kind === "agent" && canMutateWorkspace(candidate.policy)) dependencyIds.add(id);
+    else candidate.needs.forEach(visit);
+  };
+  node.needs.forEach(visit);
+  const dependencies = active.program.nodes.filter(candidate => dependencyIds.has(candidate.id));
   const checkpoints = dependencies.flatMap(dependency => {
     const dependencyNodeId = dependency.id;
     const latest = Object.values(active.snapshot.sandboxRuns ?? {})
@@ -1196,15 +1205,18 @@ function requiredCheckpointDiagnostic(
   };
 }
 
-function executionPlanNodes(plan: ExecutionPlan, selectedAgent?: string): CompiledPipelineNode[] {
+function executionPlanNodes(plan: ExecutionPlan, selectedAgent?: string, delivery?: CompiledPipelineNode): CompiledPipelineNode[] {
+  const inputs = delivery?.output ? [{ name: "approvedDelivery", from: `${delivery.id}.${delivery.output.name}`, type: delivery.output.type, format: delivery.output.format }] : [];
+  const context = `User request:\n{{userPrompt}}\nApproved delivery (read the referenced specification and ticket files before making changes):\n{{inputs.approvedDelivery}}`;
+
   const implementationNodes = plan.nodes.map(node => ({
     id: node.id,
     kind: "agent" as const,
     agent: selectedAgent ?? node.ticket.agent ?? "Codex Sandbox",
-    prompt: `Implement the approved ticket from the immutable Execution Plan:\n${JSON.stringify(node.ticket, null, 2)}`,
+    prompt: `${context}\nImplement the approved ticket from the immutable Execution Plan:\n${JSON.stringify(node.ticket, null, 2)}\nReturn only a JSON object with contract "acp.implementation-result/v1", ticketId "${node.id}", branch (string), commits (array of actual commit hashes), summary (string), validations (array of actual checks and results). No Markdown or prose outside JSON.`,
     skills: ["implement"],
-    needs: [...node.needs],
-    inputs: [],
+    needs: node.needs.length === 0 && delivery ? [delivery.id] : [...node.needs],
+    inputs,
     output: { name: "result", type: "acp.implementation-result/v1", format: "json" as const },
     retry: { maxAttempts: 1, backoffMs: 0 },
     policy: WORKSPACE_WRITE_PIPELINE_POLICY,
@@ -1213,10 +1225,10 @@ function executionPlanNodes(plan: ExecutionPlan, selectedAgent?: string): Compil
     id: plan.finalReview.id,
     kind: "agent" as const,
     agent: selectedAgent ?? "Codex Sandbox",
-    prompt: "Review the complete integrated result produced by the immutable Execution Plan.",
+    prompt: `${context}\nReview the complete integrated result produced by the immutable Execution Plan against the approved specification, including exact formatting and tests. Return only JSON: {"contract":"acp.verification-report/v1","verdict":"passed" or "failed","categories":[{"name":"category","required":true,"status":"passed" or "failed" or "skipped","details":"actual evidence"}]}. Include at least one category. No Markdown or prose outside JSON.`,
     skills: ["code-review"],
     needs: [...plan.finalReview.needs],
-    inputs: [],
+    inputs,
     output: { name: "review", type: "acp.verification-report/v1", format: "json" as const },
     retry: { maxAttempts: 1, backoffMs: 0 },
     policy: READ_ONLY_PIPELINE_POLICY,

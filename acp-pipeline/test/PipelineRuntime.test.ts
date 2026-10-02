@@ -2207,3 +2207,23 @@ class RecordingRunStore implements PipelineRunStore {
     return this.delegate.listResumable();
   }
 }
+
+
+test("dynamic tickets inherit approved delivery checkpoints and explicit output contracts", async () => {
+  const program = compilePipelineV3Definition({ version: 3, id: "delivery-context", title: "Delivery context", nodes: [
+    { id: "tasks", agent: "Codex", prompt: "Tasks", policy: { filesystem: "workspace-write" }, output: { name: "graph", type: "acp.ticket-graph/v1", format: "json" } },
+    { id: "approval", type: "pause", pause: "approval", needs: ["tasks"], content: "Read `.scratch/example/spec.md`: [stderr] then [stdout].", output: { name: "approved", type: "acp.sequential-delivery/v1", format: "markdown" } },
+  ] }, agents).program!;
+  const runtime = new PipelineRuntime(sessionAdapter(async input => {
+    if (input.node.id === "tasks") return { artifact: { name: "graph", type: "acp.ticket-graph/v1", format: "json", value: { contract: "acp.ticket-graph/v1", tickets: [{ id: "ticket", title: "Ticket", scope: [], needs: [], validation: [] }] } } };
+    assert.match(input.prompt, /acp\.(implementation-result|verification-report)\/v1/);
+    assert.match(input.prompt, /\[stderr\] then \[stdout\]/);
+    if (input.node.id === "ticket") assert.deepEqual(input.dependencyCheckpoints?.map(item => item.nodeId), ["tasks"]);
+    return executionPlanArtifact(input.node.id);
+  }));
+  const paused = await runtime.start(program);
+  assert.equal(paused.status, "paused");
+  if (paused.status !== "paused") return;
+  const completed = await runtime.resume(paused.snapshot.runId, { pauseId: paused.pause.id, kind: "approve", value: paused.pause.content });
+  assert.equal(completed.status, "completed");
+});
