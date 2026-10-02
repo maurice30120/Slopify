@@ -1,0 +1,4 @@
+warning: in the working copy of '.acp/acp-agents.json', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of '.acp/pipelines/simple.yaml', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of '.gitignore', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'README.md', LF will be replaced by CRLF the next time Git touches it

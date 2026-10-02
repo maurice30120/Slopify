@@ -188,6 +188,34 @@ test('creates and previews an attributed Agent Checkpoint without mutating the h
   assert.equal(states[1].checkpoint?.checkpoint.commit, 'checkpoint456');
 });
 
+test('launches Mistral Vibe programmatically inside a Vibe sandbox', async () => {
+  const scenario = sandboxScenario();
+  const fake = fakeExecutor(scenario.respond);
+
+  await new DockerSandboxRuntime(fake.execute).runCodex({
+    workspaceCwd: '/repo',
+    runId: 'run-vibe',
+    nodeId: 'comments',
+    attempt: 1,
+    prompt: 'Ajoute les commentaires fonctionnels en français.',
+    model: 'mistral-medium-latest',
+    agent: 'vibe',
+  });
+
+  const create = fake.calls.find(call => call.command === 'sbx' && call.args[0] === 'create' && call.args.includes('--clone'));
+  assert.equal(create?.args.at(-2), 'docker.io/sbx/vibe-kit:latest');
+  const launch = fake.calls.find(call => call.command === 'sbx' && call.args[0] === 'exec' && call.args.includes('vibe'));
+  assert.deepEqual(launch?.args.slice(1, 3), ['--env', 'VIBE_ACTIVE_MODEL=mistral-medium-latest']);
+  assert.equal(launch?.args[3], '--env');
+  assert.deepEqual(JSON.parse(launch!.args[4].slice('VIBE_MODELS='.length)), {
+    'mistral-medium-latest': { name: 'mistral-medium-latest', alias: 'mistral-medium-latest', provider: 'mistral' },
+  });
+  assert.deepEqual(launch?.args.slice(6), [
+    'vibe', '--prompt', 'Ajoute les commentaires fonctionnels en français.',
+    '--auto-approve', '--trust', '--output', 'json',
+  ]);
+});
+
 test('prepares a descendant from multiple parent checkpoints without mutating the host worktree', async () => {
   const scenario = sandboxScenario({ changedFiles: ['join.ts'], diff: 'diff' });
   let merge = 0;

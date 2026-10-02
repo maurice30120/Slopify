@@ -49,6 +49,8 @@ export interface SandboxRunInput {
   attempt: number;
   prompt: string;
   model: string;
+  /** CLI launched inside the sandbox. Defaults to Codex for compatibility. */
+  agent?: 'codex' | 'vibe';
   effort?: 'low' | 'medium' | 'high' | 'xhigh';
   signal?: AbortSignal;
   timeoutMs?: number;
@@ -261,7 +263,8 @@ export class DockerSandboxRuntime {
         if (!baseCommit) throw new Error('Unable to read the host base commit: git returned an empty commit id.');
         await this.requireSuccess({
           command: 'sbx',
-          args: ['create', '--clone', '--name', sandboxName, 'codex', '.'],
+          args: ['create', '--clone', '--name', sandboxName,
+            input.agent === 'vibe' ? 'docker.io/sbx/vibe-kit:latest' : 'codex', '.'],
           cwd: input.workspaceCwd,
           stdin: 'ignore',
           signal: execution.signal,
@@ -313,13 +316,22 @@ export class DockerSandboxRuntime {
         };
       }
 
-      const codexArgs = ['exec', sandboxName, 'codex', 'exec', '--dangerously-bypass-approvals-and-sandbox', '--ephemeral', '--json'];
-      if (input.model) codexArgs.push('--model', input.model);
-      if (input.effort) codexArgs.push('--config', `model_reasoning_effort=${JSON.stringify(input.effort)}`);
-      codexArgs.push(input.prompt);
+      const agent = input.agent ?? 'codex';
+      // Vibe resolves active_model through its model catalogue. Declare the
+      // requested API model as well to prevent a silent fallback to its default.
+      const vibeModels = JSON.stringify({
+        [input.model]: { name: input.model, alias: input.model, provider: 'mistral' },
+      });
+      const agentArgs = agent === 'vibe'
+        ? ['exec', '--env', `VIBE_ACTIVE_MODEL=${input.model}`, '--env', `VIBE_MODELS=${vibeModels}`,
+          sandboxName, 'vibe', '--prompt', input.prompt, '--auto-approve', '--trust', '--output', 'json']
+        : ['exec', sandboxName, 'codex', 'exec', '--dangerously-bypass-approvals-and-sandbox', '--ephemeral', '--json'];
+      if (agent === 'codex' && input.model) agentArgs.push('--model', input.model);
+      if (agent === 'codex' && input.effort) agentArgs.push('--config', `model_reasoning_effort=${JSON.stringify(input.effort)}`);
+      if (agent === 'codex') agentArgs.push(input.prompt);
       const codex = await this.execute({
         command: 'sbx',
-        args: codexArgs,
+        args: agentArgs,
         cwd: input.workspaceCwd,
         stdin: 'ignore',
         observeOutput: true,
@@ -327,7 +339,7 @@ export class DockerSandboxRuntime {
       });
       stdout = codex.stdout;
       stderr = codex.stderr;
-      this.assertSuccess(codex, 'run Codex non-interactively');
+      this.assertSuccess(codex, `run ${agent === 'vibe' ? 'Mistral Vibe' : 'Codex'} non-interactively`);
 
       const checkpoint = await new GitPromotion(this.execute).createAgentCheckpoint({
         workspaceCwd: input.workspaceCwd,
@@ -529,7 +541,7 @@ export class DockerSandboxRuntime {
       const version = await this.requireSuccess({ command: 'sbx', args: ['version'], cwd, stdin: 'ignore', signal }, 'read the Docker Sandbox version');
       const actual = extractVersion(`${version.stdout}\n${version.stderr}`);
       if (!actual || compareVersions(actual, MINIMUM_SBX_VERSION) < 0) {
-        throw new Error(`Docker Sandbox sbx ${MINIMUM_SBX_VERSION} or newer is required (found ${actual ?? 'an unknown version'}). Upgrade Docker Desktop and retry.`);
+        throw new Error(`Docker Sandbox sbx ${MINIMUM_SBX_VERSION} or newer is required (found ${actual ?? 'an unknown version'}). Upgrade Docker Sandboxes (sbx) and retry.`);
       }
       await this.requireCapability(cwd, ['create', '--help'], '--clone', signal);
       await this.requireCapability(cwd, ['ls', '--help'], '--json', signal);
@@ -637,7 +649,7 @@ export class DockerSandboxRuntime {
   private async requireCapability(cwd: string, args: string[], capability: string, signal?: AbortSignal, matchOutput = true): Promise<void> {
     const result = await this.requireSuccess({ command: 'sbx', args, cwd, stdin: 'ignore', signal }, `verify Docker Sandbox capability ${capability}`);
     if (matchOutput && !`${result.stdout}\n${result.stderr}`.includes(capability)) {
-      throw new Error(`Installed sbx does not provide the required ${capability} capability. Upgrade Docker Desktop and retry.`);
+      throw new Error(`Installed sbx does not provide the required ${capability} capability. Upgrade Docker Sandboxes (sbx) and retry.`);
     }
   }
 

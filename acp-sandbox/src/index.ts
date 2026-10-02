@@ -72,12 +72,15 @@ export {
 
 export interface SandboxAgentConfig {
   transport: 'sandbox';
-  agent: 'codex';
+  agent: SandboxAgent;
   model: string;
   effort?: 'low' | 'medium' | 'high' | 'xhigh';
   displayName?: string;
   skills?: boolean;
 }
+
+/** Agent CLI supported inside a Docker Sandbox. */
+export type SandboxAgent = 'codex' | 'vibe';
 
 export interface SandboxPipelineConfig {
   promotion: PromotionPolicy;

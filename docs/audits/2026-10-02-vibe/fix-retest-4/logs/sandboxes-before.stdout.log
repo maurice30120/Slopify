@@ -1,0 +1,48 @@
+{
+  "sandboxes": [
+    {
+      "name": "slopify-4cf1d15d-4fa3-47c2-a684-429df95632c7-plan-14e28849",
+      "id": "4c822152-d292-4b29-8f2e-2025f9d1ce45",
+      "agent": "codex",
+      "status": "stopped",
+      "last_used_at": "2026-09-14T10:07:05Z",
+      "workspaces": [
+        "/Users/dhuyet/Documents/POC/Slopify"
+      ],
+      "created_at": "2026-09-14T10:07:05Z"
+    },
+    {
+      "name": "slopify-50f4669d-30bf-4909-b1a6-39ff56c14ba0-imple-8a17d7a3",
+      "id": "f37f9c68-41a1-4546-abd2-101f5229cd2a",
+      "agent": "codex",
+      "status": "stopped",
+      "last_used_at": "2026-09-14T08:46:46Z",
+      "workspaces": [
+        "/Users/dhuyet/Documents/POC/Slopify"
+      ],
+      "created_at": "2026-09-14T08:46:46Z"
+    },
+    {
+      "name": "slopify-534bb2bf-f3d1-47e4-a306-8c4466342722-spec-d7c6e512",
+      "id": "16c8801e-9ef2-4eb0-96e9-aa3a13024268",
+      "agent": "vibe",
+      "status": "stopped",
+      "last_used_at": "2026-09-13T13:03:57Z",
+      "workspaces": [
+        "/Users/dhuyet/Documents/POC/Slopify"
+      ],
+      "created_at": "2026-09-13T13:03:57Z"
+    },
+    {
+      "name": "slopify-86ba8d6a-a9c9-4448-8863-6b62d4b166dd-imple-7c2b0036",
+      "id": "6ce9f045-6e75-488a-ad25-34003ec820ca",
+      "agent": "codex",
+      "status": "stopped",
+      "last_used_at": "2026-09-14T08:55:29Z",
+      "workspaces": [
+        "/Users/dhuyet/Documents/POC/Slopify"
+      ],
+      "created_at": "2026-09-14T08:55:29Z"
+    }
+  ]
+}

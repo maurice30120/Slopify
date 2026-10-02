@@ -633,19 +633,19 @@ class ImmutableMap<K, V> implements ReadonlyMap<K, V> {
     this.inner.forEach((value, key) => callbackfn.call(thisArg, value, key, this));
   }
 
-  entries(): IterableIterator<[K, V]> {
+  entries(): MapIterator<[K, V]> {
     return this.inner.entries();
   }
 
-  keys(): IterableIterator<K> {
+  keys(): MapIterator<K> {
     return this.inner.keys();
   }
 
-  values(): IterableIterator<V> {
+  values(): MapIterator<V> {
     return this.inner.values();
   }
 
-  [Symbol.iterator](): IterableIterator<[K, V]> {
+  [Symbol.iterator](): MapIterator<[K, V]> {
     return this.entries();
   }
 }

@@ -67,7 +67,7 @@ Options :
 Pipeline Change Set est rejeté, présenté à l’utilisateur, appliqué ou rejeté
 automatiquement.
 
-Un agent isolé accepte uniquement Codex dans cette version :
+Les agents isolés supportés sont Codex et Mistral Vibe :
 
 ```json
 {
@@ -77,6 +77,11 @@ Un agent isolé accepte uniquement Codex dans cette version :
       "agent": "codex",
       "model": "gpt-5.6-codex",
       "effort": "high"
+    },
+    "Vibe Sandbox": {
+      "transport": "sandbox",
+      "agent": "vibe",
+      "model": "mistral-medium-latest"
     }
   }
 }

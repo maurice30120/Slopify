@@ -1,0 +1,10 @@
+{
+  "status": "failed",
+  "runId": "4caa38e1-7a6d-46e7-9ec2-bc17b533c915",
+  "error": {
+    "nodeId": "implementation",
+    "attempt": 1,
+    "code": "agent_failed",
+    "message": "Unable to create the Docker Sandbox: error: unknown agent \"vibe\"\n  try: sbx create --help"
+  }
+}

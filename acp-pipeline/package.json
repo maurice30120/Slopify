@@ -22,11 +22,11 @@
     "clean:test": "node -e \"require('fs').rmSync('dist-test', { recursive: true, force: true })\""
   },
   "dependencies": {
-    "@agentclientprotocol/sdk": "^0.21.1",
-    "@langchain/langgraph": "^1.4.2"
+    "@agentclientprotocol/sdk": "^1.5.0",
+    "@langchain/langgraph": "^1.4.17"
   },
   "devDependencies": {
-    "@types/node": "^20.0.0",
-    "typescript": "^5.5.0"
+    "@types/node": "^24.13.6",
+    "typescript": "^7.0.2"
   }
 }

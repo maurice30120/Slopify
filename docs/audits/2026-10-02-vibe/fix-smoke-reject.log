@@ -1,0 +1,17 @@
+Initialized empty Git repository in /private/var/folders/yd/6910m5zs4v7d7308h_8ypmy80000gp/T/slopify-sbx-smoke-3aXYGF/.git/
+[main (root-commit) 7cf89ac] chore: initialize smoke fixture
+ 1 file changed, 1 insertion(+)
+ create mode 100644 README.md
+sbx version: v0.45.1 9d79d90ee4c5d297fb3d36b75384e8cea7a4fbcb
+[main 7bc3d4f] chore: configure Slopify smoke pipeline
+ 2 files changed, 30 insertions(+)
+ create mode 100644 .acp/acp-agents.json
+ create mode 100644 .acp/pipelines/smoke.yaml
+{
+  "action": "reject",
+  "baseCommit": "7cf89ac300d316954fdd261f34c6209e5edf7d16",
+  "pipelineBase": "7bc3d4f3c91a4d7a78628317c22d4c9c764661a5",
+  "model": "mistral-medium-latest",
+  "cliExitCode": 2,
+  "status": "passed"
+}

@@ -122,6 +122,7 @@ export function createWorkspaceRuntime(options: CreateWorkspaceRuntimeOptions): 
           runId: input.runId ?? 'run',
           nodeId: input.nodeId ?? input.agentName,
           attempt: input.attempt ?? 1,
+          agent: config.agent,
           model: config.model,
           effort: config.effort,
           timeoutMs: resolveTimeouts(catalog.config.pipeline.timeouts).promptMs,

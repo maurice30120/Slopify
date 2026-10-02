@@ -1,0 +1,1 @@
+Error: Docker Sandbox requires a clean Git workspace for workspace-writing pipelines: sbx --clone cannot see uncommitted changes, so safe Promotion is impossible. Commit or remove the local changes and retry.
