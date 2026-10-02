@@ -2219,6 +2219,7 @@ test("dynamic tickets inherit approved delivery checkpoints and explicit output 
     if (input.node.id === "tasks") return { artifact: { name: "graph", type: "acp.ticket-graph/v1", format: "json", value: { contract: "acp.ticket-graph/v1", tickets: [{ id: "ticket", title: "Ticket", scope: [], needs: [], validation: [] }] } } };
     assert.match(input.prompt, /acp\.(implementation-result|verification-report)\/v1/);
     assert.match(input.prompt, /\[stderr\] then \[stdout\]/);
+    if (input.node.id === "final-review") assert.match(input.prompt, /fixed review base is base/);
     if (input.node.id === "ticket") assert.deepEqual(input.dependencyCheckpoints?.map(item => item.nodeId), ["tasks"]);
     return executionPlanArtifact(input.node.id);
   }));

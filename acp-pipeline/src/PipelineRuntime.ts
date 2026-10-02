@@ -490,7 +490,7 @@ export class PipelineRuntime {
   private async expandExecutionPlan(active: ActiveRun): Promise<PipelineRuntimeDiagnostic | undefined> {
     const snapshot = active.snapshot.executionPlan;
     if (!snapshot) return undefined;
-    const dynamicNodes = executionPlanNodes(snapshot.plan, this.agentName, active.program.nodes.find(node => node.output?.type === "acp.sequential-delivery/v1"));
+    const dynamicNodes = executionPlanNodes(snapshot.plan, this.agentName, active.program.nodes.find(node => node.output?.type === "acp.sequential-delivery/v1"), Object.values(active.snapshot.sandboxRuns ?? {}).find(run => run.baseCommit)?.baseCommit);
     if (snapshot.expansion.status === "expanded") {
       if (!dynamicNodes.every(node => active.program.nodesById.has(node.id))) {
         active.program = appendCompiledPipelineNodes(active.program, dynamicNodes);
@@ -1205,7 +1205,7 @@ function requiredCheckpointDiagnostic(
   };
 }
 
-function executionPlanNodes(plan: ExecutionPlan, selectedAgent?: string, delivery?: CompiledPipelineNode): CompiledPipelineNode[] {
+function executionPlanNodes(plan: ExecutionPlan, selectedAgent?: string, delivery?: CompiledPipelineNode, baseCommit?: string): CompiledPipelineNode[] {
   const inputs = delivery?.output ? [{ name: "approvedDelivery", from: `${delivery.id}.${delivery.output.name}`, type: delivery.output.type, format: delivery.output.format }] : [];
   const context = `User request:\n{{userPrompt}}\nApproved delivery (read the referenced specification and ticket files before making changes):\n{{inputs.approvedDelivery}}`;
 
@@ -1225,7 +1225,7 @@ function executionPlanNodes(plan: ExecutionPlan, selectedAgent?: string, deliver
     id: plan.finalReview.id,
     kind: "agent" as const,
     agent: selectedAgent ?? "Codex Sandbox",
-    prompt: `${context}\nReview the complete integrated result produced by the immutable Execution Plan against the approved specification, including exact formatting and tests. Return the JSON object itself as your final assistant message. Fill this valid JSON template with actual evidence: {"contract":"acp.verification-report/v1","verdict":"passed","categories":[{"name":"spec compliance","required":true,"status":"passed","details":"actual evidence"}]}. Set verdict to failed when requirements fail; category status may be passed, failed or skipped. Check interface visibility, scope, dependencies and actual test results. Include at least one category. No Markdown or prose outside JSON.`,
+    prompt: `${context}\nReview the complete integrated result produced by the immutable Execution Plan against the approved specification, including exact formatting and tests. The fixed review base is ${baseCommit ?? "the first parent of the integration commit"}. Start with git diff --stat and git diff against this base. Review only files changed by this Execution Plan, plus the referenced specification/tickets and applicable repository standards. Earlier audit logs and unrelated historical changes are outside this delivery. Do not read whole source or test files: inspect only the changed hunks and at most 100 lines of adjacent context per read. Do not search audit directories or transcripts. Limit exploration to evidence needed to decide compliance, then publish the verdict immediately. Validate tests with npm ci and npm test at the root if needed; never pipe test output through tail without preserving the test exit status. Return the JSON object itself as your final assistant message. Fill this valid JSON template with actual evidence: {"contract":"acp.verification-report/v1","verdict":"passed","categories":[{"name":"spec compliance","required":true,"status":"passed","details":"actual evidence"}]}. Set verdict to failed when requirements fail; category status may be passed, failed or skipped. Check interface visibility, scope, dependencies and actual test results. Include at least one category. No Markdown or prose outside JSON.`,
     skills: ["code-review"],
     needs: [...plan.finalReview.needs],
     inputs,
