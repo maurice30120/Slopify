@@ -130,6 +130,11 @@ test('WorkspaceRuntime preserves the configured Vibe agent through the ACP sandb
     },
     sandboxExecutor: async request => {
       calls.push(request);
+      if (request.command === 'sbx' && request.args.includes('vibe')) {
+        return { exitCode: 0, stderr: '', stdout: JSON.stringify([
+          { type: 'message', role: 'assistant', content: [{ type: 'text', text: 'Inspection complete.' }] },
+        ]) };
+      }
       return fakeSandboxResponse(request);
     },
   });
@@ -139,7 +144,7 @@ test('WorkspaceRuntime preserves the configured Vibe agent through the ACP sandb
     promptText: 'Inspect without changing files.', sideEffects: 'workspace',
   });
 
-  assert.deepEqual(outcome, { text: '', promotion: 'no_changes' });
+  assert.deepEqual(outcome, { text: 'Inspection complete.', promotion: 'no_changes' });
   const create = calls.find(call => call.command === 'sbx' && call.args[0] === 'create' && call.args.includes('--clone'));
   assert.equal(create?.args.at(-2), 'docker.io/sbx/vibe-kit:latest');
   const launch = calls.find(call => call.command === 'sbx' && call.args[0] === 'exec' && call.args.includes('vibe'));
