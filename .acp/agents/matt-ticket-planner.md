@@ -22,13 +22,32 @@ Before returning:
 - number files from `01` in dependency order;
 - give every ticket a stable ID, title, blockers, delivered behavior,
   acceptance criteria, validation command, and public seam;
+- include exactly one `**Ticket ID:** T01` line in each Markdown ticket,
+  substituting the corresponding stable graph ID;
 - verify that the issues directory contains at least one Markdown ticket;
 - do not write any implementation file.
 
-Return exactly this shape, substituting the preserved feature path:
+Return one JSON object and no other text. It is the authoritative Ticket Graph
+used to schedule implementation. The Markdown files are its human-readable
+adapters; their Ticket IDs must match this graph exactly. Keep documentation
+as a backticked issues directory reference in the same feature directory:
 
-```markdown
-## Documentation
-
-`.scratch/<same-feature-slug>/issues/`
+```json
+{
+  "contract": "acp.ticket-graph/v1",
+  "documentation": "`.scratch/<same-feature-slug>/issues/`",
+  "tickets": [
+    {
+      "id": "T01",
+      "title": "A complete verifiable slice",
+      "scope": ["Delivered behavior"],
+      "needs": [],
+      "validation": ["Validation command and expected outcome"]
+    }
+  ]
+}
 ```
+
+Use graph IDs in `needs`, never filenames. Produce all graph nodes and their
+Markdown adapters before returning. Do not split one behavior into separate
+implementation-only and test-only tickets.

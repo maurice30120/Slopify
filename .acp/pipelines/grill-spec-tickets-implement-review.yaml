@@ -87,8 +87,8 @@ nodes:
       promotion: auto-apply
     output:
       name: tickets
-      type: acp.workspace-files/v1
-      format: markdown
+      type: acp.ticket-graph/v1
+      format: json
 
   - id: delivery_approval
     type: pause
@@ -119,8 +119,8 @@ nodes:
         format: markdown
       - name: tickets
         from: tasks.tickets
-        type: acp.workspace-files/v1
-        format: markdown
+        type: acp.ticket-graph/v1
+        format: json
     output:
       name: approved
       type: acp.sequential-delivery/v1

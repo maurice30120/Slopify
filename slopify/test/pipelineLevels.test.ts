@@ -47,6 +47,14 @@ test('loads the simple, moyen, and full pipeline levels from the workspace catal
     'delivery_approval',
   ]);
   assert.equal(full.nodes[4]?.handoff?.minimumReferences, 2);
+  for (const id of ['full', 'grill-spec-tickets-implement-review']) {
+    const program = byId.get(id)!;
+    const tasks = program.nodes.find(node => node.id === 'tasks')!;
+    const delivery = program.nodes.find(node => node.id === 'delivery_approval')!;
+    assert.equal(tasks.output?.type, 'acp.ticket-graph/v1', 'sequential delivery requires an authoritative Ticket Graph');
+    assert.equal(tasks.output?.format, 'json');
+    assert.equal(delivery.inputs.find(input => input.from === 'tasks.tickets')?.type, 'acp.ticket-graph/v1');
+  }
 });
 
 test('keeps the existing specialized pipelines available', () => {

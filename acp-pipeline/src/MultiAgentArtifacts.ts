@@ -34,6 +34,8 @@ export interface SpecificationArtifact {
 /** Contrat d'un graphe de tickets et des informations nécessaires à leur traitement. */
 export interface TicketGraphArtifact {
   contract: "acp.ticket-graph/v1";
+  /** Backticked workspace references to the human-readable ticket adapters. */
+  documentation?: string;
   tickets: Array<{
     id: string;
     title: string;
@@ -122,6 +124,7 @@ export function validateMultiAgentArtifact(
       break;
     case "acp.ticket-graph/v1":
       validateTicketGraph(payload.tickets, errors);
+      if (payload.documentation !== undefined) readString(payload.documentation, `${contract}.documentation`, errors);
       break;
     case "acp.implementation-result/v1":
       readString(payload.ticketId, `${contract}.ticketId`, errors);
