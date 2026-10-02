@@ -2,12 +2,15 @@ import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { tmpdir } from 'node:os';
+import { GitPromotion, createNodeSubprocessExecutor, type AgentCheckpointResult } from '@acp-client/sandbox';
 
 import type {
   PipelineArtifact,
   PipelinePauseSnapshot,
   PipelineResumeDecision,
   PipelineRuntimeResult,
+  PipelineRuntimeSnapshot,
   TicketGraphArtifact,
 } from '@acp-client/pipeline';
 import { validateMultiAgentArtifact } from '@acp-client/pipeline';
@@ -34,7 +37,7 @@ export interface PreparedWorkspacePause {
 }
 
 export interface WorkspaceRunPolicy {
-  preparePause(pause: PipelinePauseSnapshot): PreparedWorkspacePause;
+  preparePause(pause: PipelinePauseSnapshot, inspectionCwd?: string): PreparedWorkspacePause;
   complete(result: PipelineRuntimeResult, userPrompt: string): Promise<PipelineRuntimeResult>;
 }
 
@@ -106,7 +109,15 @@ export function createWorkspaceRun(options: CreateWorkspaceRunOptions): Workspac
     try {
       const delivered = await policy.complete(result, prompt);
       if (delivered.status === 'paused') {
-        const prepared = policy.preparePause(delivered.pause);
+        const preview = delivered.pause.handoff
+          ? await createCheckpointInspection(options.workspaceCwd, delivered.snapshot, delivered.pause.workspaceGuard)
+          : undefined;
+        let prepared: PreparedWorkspacePause;
+        try {
+          prepared = policy.preparePause(delivered.pause, preview?.cwd);
+        } finally {
+          await preview?.dispose();
+        }
         if (prepared.error) {
           prompts.delete(result.runId);
           approvalValues.delete(result.runId);
@@ -195,10 +206,10 @@ export function createWorkspaceRun(options: CreateWorkspaceRunOptions): Workspac
 export function createWorkspaceRunPolicy(options: WorkspaceRunPolicyOptions): WorkspaceRunPolicy {
   const baseline = captureWorkspaceState(options.workspaceCwd);
   return {
-    preparePause(pause) {
-      const content = expandWorkspaceMarkdownReferences(options.workspaceCwd, pause.content);
+    preparePause(pause, inspectionCwd = options.workspaceCwd) {
+      const content = expandWorkspaceMarkdownReferences(inspectionCwd, pause.content);
       if (pause.handoff) {
-        const handoffError = validateWorkspaceHandoff(options.workspaceCwd, pause.content, pause.handoff);
+        const handoffError = validateWorkspaceHandoff(inspectionCwd, pause.content, pause.handoff);
         if (handoffError) {
           return { content, error: { code: 'invalid_workspace_handoff', message: handoffError } };
         }
@@ -251,6 +262,49 @@ export function createWorkspaceRunPolicy(options: WorkspaceRunPolicyOptions): Wo
       }
     },
   };
+}
+
+/** Inspect the integrated isolated delivery; approval must not mutate the host. */
+async function createCheckpointInspection(
+  workspaceCwd: string,
+  snapshot: PipelineRuntimeSnapshot,
+  guard: PipelinePauseSnapshot['workspaceGuard'],
+): Promise<{ cwd: string; dispose(): Promise<void> } | undefined> {
+  const selected = new Map<string, AgentCheckpointResult>();
+  for (const state of Object.values(snapshot.sandboxRuns ?? {})) {
+    if (!state.checkpoint) continue;
+    const previous = selected.get(state.nodeId);
+    if (previous && previous.checkpoint.attempt > state.attempt) continue;
+    selected.set(state.nodeId, {
+      checkpointStatus: state.checkpoint.status,
+      checkpoint: { runId: state.runId, nodeId: state.nodeId, attempt: state.attempt,
+        sandboxName: state.sandboxName, baseCommit: state.baseCommit, commit: state.checkpoint.commit,
+        remote: state.checkpoint.remote, ref: state.checkpoint.ref },
+      preview: state.checkpoint.preview,
+    });
+  }
+  if (!selected.size) return undefined;
+  const execute = createNodeSubprocessExecutor();
+  const composed = await new GitPromotion(execute).integrateAgentCheckpoints({
+    workspaceCwd, runId: snapshot.runId, checkpoints: [...selected.values()],
+  });
+  if (guard === 'documentation-only') {
+    const invalid = composed.preview.files.filter(file => !isWorkspaceGuardAllowedPath(file));
+    if (invalid.length) throw new Error(`Documentation-only checkpoints changed implementation files: ${invalid.join(', ')}`);
+  }
+  const directory = fs.mkdtempSync(path.join(tmpdir(), 'slopify-inspection-'));
+  const cwd = path.join(directory, 'workspace');
+  const dispose = async () => {
+    const result = await execute({ command: 'git', args: ['worktree', 'remove', '--force', cwd], cwd: workspaceCwd, stdin: 'ignore' });
+    if (result.exitCode !== 0) throw new Error(`Unable to remove delivery inspection worktree: ${result.stderr}`);
+    fs.rmSync(directory, { recursive: true, force: true });
+  };
+  const added = await execute({ command: 'git', args: ['worktree', 'add', '--detach', cwd, composed.changeSet.commit], cwd: workspaceCwd, stdin: 'ignore' });
+  if (added.exitCode !== 0) {
+    fs.rmSync(directory, { recursive: true, force: true });
+    throw new Error(`Unable to inspect isolated delivery: ${added.stderr}`);
+  }
+  return { cwd, dispose };
 }
 
 function validateWorkspaceHandoff(
