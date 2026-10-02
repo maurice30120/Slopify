@@ -917,3 +917,17 @@ test('suspends reconciliation on identity or base divergence without relaunch, c
     });
   }
 });
+
+
+test('launches descendants of unchanged approval checkpoints without creating an empty bundle', async () => {
+  const scenario = sandboxScenario();
+  const fake = fakeExecutor(request => request.command === 'git' && request.args[0] === 'bundle'
+    ? result('', 'fatal: Refusing to create empty bundle.', 1) : scenario.respond(request));
+  await new DockerSandboxRuntime(fake.execute).runCodex({ workspaceCwd: '/repo', runId: 'empty-parent', nodeId: 'spec', attempt: 1, prompt: 'Write spec', model: 'model', dependencyCheckpoints: [{
+    checkpointStatus: 'no_changes',
+    checkpoint: { runId: 'empty-parent', nodeId: 'plan', attempt: 1, sandboxName: 'plan', baseCommit: 'base123', commit: 'empty-commit', remote: 'remote-plan', ref: 'refs/checkpoints/plan' },
+    preview: { baseCommit: 'base123', checkpointCommit: 'empty-commit', fileCount: 0, files: [], diff: '' },
+  }] });
+  assert.equal(fake.calls.some(call => call.command === 'git' && call.args[0] === 'bundle'), false);
+  assert.equal(fake.calls.some(call => call.command === 'sbx' && call.args.includes('codex')), true);
+});
