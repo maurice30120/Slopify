@@ -140,12 +140,23 @@ class PipelineRuntimeAgentNodeSession implements AgentNodeSession {
         resumeSandboxRun: input.resumeSandboxRun,
         dependencyCheckpoints: input.dependencyCheckpoints,
       });
+      const text = resolvePipelineStepText(result);
+      let value: unknown = text;
+      if (node.output.format === "json") {
+        const trimmed = text.trim();
+        const fenced = trimmed.match(/^```(?:json)?\s*\n([\s\S]*?)\n```$/i);
+        try {
+          value = JSON.parse(fenced ? fenced[1] : trimmed);
+        } catch {
+          return { code: "invalid_json_output", message: `Agent output for node "${node.id}" is not valid JSON.`, retryable: false };
+        }
+      }
       return {
         artifact: {
           name: node.output.name,
           type: node.output.type,
           format: node.output.format,
-          value: resolvePipelineStepText(result),
+          value,
         },
       };
     } catch (e: unknown) {
