@@ -3,6 +3,7 @@ import { test } from "node:test";
 
 import {
   PipelineRuntime,
+  renderRuntimeTemplate,
   compilePipelineV3Definition,
   InMemoryPipelineRunStore,
   NATIVE_ACP_BASELINE_CAPABILITIES,
@@ -2226,4 +2227,12 @@ test("dynamic tickets inherit approved delivery checkpoints and explicit output 
   if (paused.status !== "paused") return;
   const completed = await runtime.resume(paused.snapshot.runId, { pauseId: paused.pause.id, kind: "approve", value: paused.pause.content });
   assert.equal(completed.status, "completed");
+});
+
+
+test("typed ticket documentation paths remain visible to Markdown handoff readers", () => {
+  const graph = { contract: "acp.ticket-graph/v1", documentation: ".scratch/example/issues/", tickets: [] };
+  const rendered = renderRuntimeTemplate("{{inputs.tickets}}", {}, { tickets: { name: "tickets", type: "acp.ticket-graph/v1", format: "json", value: graph, producerNodeId: "tasks" } });
+  assert.match(rendered, /`\.scratch\/example\/issues\/`/);
+  assert.deepEqual(JSON.parse(rendered.split("\n")[0]), graph);
 });

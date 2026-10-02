@@ -1256,7 +1256,15 @@ export function renderRuntimeTemplate(
     }
     const inputMatch = /^inputs\.([A-Za-z][A-Za-z0-9_-]*)$/.exec(key);
     if (inputMatch) {
-      return stringifyTemplateValue(inputs[inputMatch[1]]?.value);
+      const artifact = inputs[inputMatch[1]];
+      const rendered = stringifyTemplateValue(artifact?.value);
+      if (artifact?.type === "acp.ticket-graph/v1" && artifact.value && typeof artifact.value === "object") {
+        const documentation = (artifact.value as { documentation?: unknown }).documentation;
+        if (typeof documentation === "string" && /^\.scratch\/[^`\r\n]+$/.test(documentation)) {
+          return `${rendered}\n\n\`${documentation}\``;
+        }
+      }
+      return rendered;
     }
     return stringifyTemplateValue(inputVariables[key]);
   });
