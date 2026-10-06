@@ -6,7 +6,7 @@
 
 **Blocked by:** 01 — Valider et figer le lot complet.
 
-**Status:** claimed — T02 implementer
+**Status:** resolved
 
 - [x] Le sandbox part du commit choisi dans une copie privée, avec un contexte figé lisible et les commits de comparaison explicites.
 - [x] Codex reçoit son prompt intact et les skills officiels installés via `sbx skills` en lecture seule, sans mise à jour implicite.
@@ -20,3 +20,5 @@
 **Validation:** test d’intégration sur vrai dépôt Git temporaire avec exécuteur Docker substitué, build et tests ciblés ; scénario succès/échec/nettoyage vérifié.
 
 **Verification:** public batch/Docker seam tests in taskDocker plus taskBatch; real Git temporary clones, original prompt and private base assertions, live logs/resource registration, checkpoint bundle and native reviewer rollouts before cleanup, provider/subagent failures retained. Build and full npm test passed; actual mixed Docker smoke belongs to T07.
+
+**Integration acceptance:** feature/slopify-v2-t02 `39bfebcb5` merged by `d0d97a0bfaf63ad94ec29c1ac0dc2a3716fbf32f`; `npm ci --offline`, `npm run build`, and public `taskDocker` + `taskBatch` tests pass (15/15, including seven Codex execution cases). The harness supplies the official implement workflow and review baselines; automated tests prove execution/context/durability contracts. Actual model compliance and mixed Docker smoke are verified under T07, rather than inferred from the test executor report. Notes: `/private/tmp/slopify-v2-agent-notes/merges.md`.
