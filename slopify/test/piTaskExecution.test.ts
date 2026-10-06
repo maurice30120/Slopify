@@ -94,7 +94,8 @@ test('one Pi task publishes durable checkpoint, logs and report without altering
   assert.equal(kit.sandbox.image,'docker.io/sbx/pi-image:latest');
   assert.equal(kit.credentials[0].service,'mistral');
   assert.equal(kit.credentials[0].apiKey.proxyManaged,true);
-  assert.equal(kit.permissions,undefined, 'inherits configured global network policy');
+  assert.deepEqual(kit.permissions.network.allow,['api.mistral.ai:443'], 'only required proxy provider receives a sandbox kit exception');
+  assert.equal(kit.permissions.network.deny,undefined, 'global permissions remain available without a duplicate deny policy');
 });
 
 

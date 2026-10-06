@@ -16,6 +16,7 @@ export function createPiTaskAdapter(): TaskAgentAdapter {
         description: 'Pi task execution with proxy-managed Mistral credentials',
         sandbox: { image: 'docker.io/sbx/pi-image:latest', entrypoint: ['pi'] },
         agentInstructions: { filename: 'AGENTS.md' },
+        permissions: { network: { allow: ['api.mistral.ai:443'] } },
         credentials: [{ service: 'mistral', apiKey: {
           name: 'MISTRAL_API_KEY', proxyManaged: true,
           inject: [{ domain: 'api.mistral.ai', header: 'Authorization', format: 'Bearer %s' }],
