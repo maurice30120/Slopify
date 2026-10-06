@@ -1,6 +1,48 @@
-# Vérification de reprise — 2026-10-06
+# Slopify V2 — livraison vérifiée, 6 octobre 2026
 
-La livraison reste partiellement vérifiée : le smoke mixte n'a pas atteint sa tâche finale. Les cases non prouvées de T07 restent décochées.
+Les sept tickets sont terminés sur la branche locale `feature/slopify-v2`. **126/126 tests Slopify** et build de tous les workspaces passent. Aucun push ni fusion dans la branche de travail utilisateur.
+
+## Correctifs livrés
+
+- `dbe7d5510` : conserver la branche intégrée malgré un état en retard, remettre les descendants bloqués dans la file, réutiliser les checkpoints sans relancer l'agent ni doubler l'intégration, refuser la reprise d'un conflit non résolu. Quatre régressions publiques ; le premier test était rouge avant correction.
+- `730a41c` : noms exacts des reviewers Pi standards/spec et exemple de délégation, confirmés par l'exécution réelle.
+- `84c119b` : exiger un verdict explicite SLOPIFY_RESULT dans le dernier message du parent Codex/Pi. Failed, absent ou invalide empêchent checkpoint et intégration, même avec un processus terminé à zéro. Cinq régressions publiques ; trois étaient rouges avant correction. Les rouges TDD intermédiaires ne sont pas des échecs finaux.
+- Revues indépendantes du code livré : Standards sans finding ; Spec, deux findings de reprise corrigés puis revue sans finding. Le contrat de verdict a été revu séparément sur les deux axes sans finding. Les reviewers n'ont pas réexécuté la suite.
+
+## Parcours réel complet
+
+Le run initial `607fb7f8-ac01-4da4-abf0-8e84907107fe` exerce la vague parallèle Pi add/Codex multiply, la reprise explicite, la réutilisation du checkpoint multiply et total depuis leur commit combiné. La vérification finale réelle part du résultat intégré de toutes les tâches et compare depuis la base originale.
+
+Cette revue rejette deux écarts historiques de fixture : test add sans blocs node:test et modification inutile de package.json. Le CLI ancien a incorrectement enregistré succeeded parce que Pi a quitté à zéro. **Le run initial n'est pas accepté comme une livraison conforme** ; son état et ses logs historiques restent conservés. Cette observation a déclenché le contrat de verdict explicite.
+
+Un lot correctif distinct a été soumis explicitement depuis la branche obtenue, après l'autorisation utilisateur de continuer et de transmettre la fixture à Pi/Mistral. Le lot initial et ses prompts restent figés.
+
+| Tâche corrective | Agent | Base | Commit intégré | Résultat |
+|---|---|---|---|---|
+| repair-fixture | Codex | f4d9e491 | 558b0dcb | succeeded, une tentative |
+| verify-correction | Pi/Mistral | 558b0dcb | 343d2e1b | succeeded, une tentative |
+
+Run accepté : `f487d3ad-6a49-4b86-b344-98969fda2a19`. Branche de fixture : `feature/slopify-f487d3ad-6a49-4b86-b344-98969fda2a19`. Commit final : `343d2e1bd7e0dfa4d2d62504858ece37afd54fb3`.
+
+- Deux verdicts parents explicites succeeded, sans diagnostic d'échec. Deux reviewers Pi réels standards/spec, exit 0, aucune violation restante, comparaison depuis la base **originale** `1d27e1d2da34a3aa7d9308bc86e012bacfcdb6e0`.
+- Test add déplacé et converti en trois cas node:test, sans @ts-ignore. Manifeste restauré exactement à la base originale, sans --skipLibCheck. Diff net : uniquement les trois modules src et leurs trois fichiers de test.
+- Audit indépendant sur la branche publiée : npm ci offline, typecheck, **8/8 vrais tests et 8/8 valeurs littérales**, bases et ascendance des checkpoints, contexte figé et identité du manifeste vérifiés.
+- Sandboxes réussis supprimés après sauvegarde des traces, rapports et bundles ; les deux sandboxes correctifs sont également absents de l'inventaire Docker. Anciennes tentatives échouées/interrompues conservées pour inspection, sans nettoyage global.
+- HEAD et SHA-256 de tous les fichiers présents au début de la reprise sont inchangés dans le checkout utilisateur et dans la fixture hôte.
+
+## Preuves et limites
+
+États et rapports : `/private/tmp/slopify-v2-smoke-store/<run-id>/state.json` et `attempts/`. Audits : `/private/tmp/slopify-v2-agent-notes/correction-observer.json`, `correction-observer.log`, `correction-resource-audit.json` et `finish-host-snapshot.json`.
+
+Les reviewers Pi n'ont pas retrouvé certaines commandes dans les logs volumineux et les ont qualifiées de non vérifiées. Les événements existent : extraction directe de 52 événements bash bruts dans `correction-command-evidence.jsonl`, sans reconstruction, et validations indépendantes ci-dessus. Cette limite de lecture reste visible dans les rapports.
+
+La correction préserve le comportement ; aucun rouge fonctionnel n'a été inventé. L'ancien processus TDD de add et la justesse des revues des modèles ne sont pas garantis. Le verdict explicite reste une déclaration d'agent ; le coordinateur doit examiner les validations et les rapports réels.
+
+---
+
+## Rapport intermédiaire historique, avant l'autorisation de reprise
+
+Le texte suivant décrit l'état antérieur au lot correctif, pas des travaux encore à faire.
 
 ## Correctifs vérifiés
 

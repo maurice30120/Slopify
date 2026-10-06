@@ -693,6 +693,8 @@ Suivre le parcours du skill `implement` :
 
 ### 8.3 Preuves attendues
 
+Le harness exige aussi un verdict explicite dans le dernier message de l’agent : `SLOPIFY_RESULT={"status":"succeeded"}` ou `SLOPIFY_RESULT={"status":"failed","reason":"blocage restant"}`. Un code de sortie 0 du CLI signifie seulement que le processus a terminé. Un verdict failed, absent ou invalide empêche le checkpoint et l’intégration ; le sandbox et les traces sont conservés. Les tests rouges intermédiaires TDD ne constituent pas un échec final. Ce verdict reste une déclaration de l’agent : le coordinateur doit examiner les validations et les revues réelles.
+
 L'implémenteur **doit conserver** :
 
 - **Sorties brutes** : stdout/stderr des commandes

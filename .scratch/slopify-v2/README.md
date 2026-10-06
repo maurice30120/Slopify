@@ -9,3 +9,7 @@ L’implémentation utilisera une branche d’intégration dédiée, des implém
 Les agents cibles du produit sont Pi et Codex. Vibe est hors du scope V2.
 
 Les [conclusions vérifiées du prototype](prototype-findings.md) distinguent les observations réelles des déclarations des agents et documentent les écarts TDD/revue. La suite existante passe avant changements produit ; elle ne constitue pas une validation de la V2.
+
+## Livraison
+
+Les sept tickets sont résolus sur la branche locale `feature/slopify-v2`. Build complet et 126/126 tests passent. Le smoke réel mixte et le lot correctif avec vérification finale sont terminés ; les preuves et limites sont consignées dans [finish-verification.md](finish-verification.md). Aucun push ni fusion dans la branche utilisateur.
