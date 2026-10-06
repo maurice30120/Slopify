@@ -4,6 +4,9 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { homedir } from 'node:os';
 import * as path from 'node:path';
+import { createNodeSubprocessExecutor, type SubprocessExecutor } from '@acp-client/sandbox';
+import { DockerTaskExecutor } from './dockerTaskExecutor.js';
+import type { TaskExecutionResult, TaskSandboxResource } from './taskExecution.js';
 
 export interface TaskBatchDiagnostic {
   code: string;
@@ -21,15 +24,26 @@ export class TaskBatchValidationError extends Error {
 export interface TaskBatchServiceOptions {
   repositoryPath: string;
   storePath?: string;
+  subprocessExecutor?: SubprocessExecutor;
 }
 
 export interface TaskBatchRunOptions {
   baseRef?: string;
+  execute?: boolean;
+  signal?: AbortSignal;
+}
+
+export interface BatchTaskAttempt extends Partial<TaskExecutionResult> {
+  attemptId: string;
+  taskBaseCommit: string;
+  status: 'running' | 'succeeded' | 'failed' | 'interrupted';
+  resourceState?: 'active' | 'retained' | 'removed';
+  integratedCommit?: string;
 }
 
 export interface BatchTaskState extends BatchTask {
   status: 'pending' | 'running' | 'succeeded' | 'failed' | 'interrupted' | 'blocked';
-  attempts: unknown[];
+  attempts: BatchTaskAttempt[];
 }
 
 export interface TaskBatchSnapshot {
@@ -38,6 +52,7 @@ export interface TaskBatchSnapshot {
   repositoryPath: string;
   status: 'ready' | 'running' | 'succeeded' | 'failed' | 'interrupted' | 'conflicted';
   runBaseCommit: string;
+  integrationCommit?: string;
   integrationBranch: string;
   createdAt: string;
   updatedAt: string;
@@ -52,9 +67,11 @@ const execFileAsync = promisify(execFile);
 export class TaskBatchService {
   readonly repositoryPath: string;
   readonly storePath: string;
+  private readonly subprocessExecutor: SubprocessExecutor;
 
   constructor(options: TaskBatchServiceOptions) {
     this.repositoryPath = path.resolve(options.repositoryPath);
+    this.subprocessExecutor = options.subprocessExecutor ?? createNodeSubprocessExecutor();
     this.storePath = path.resolve(options.storePath ?? process.env.SLOPIFY_TASK_STORE ?? path.join(
       homedir(), '.local', 'share', 'slopify', 'task-runs',
       createHash('sha256').update(this.repositoryPath).digest('hex').slice(0, 16),
@@ -106,7 +123,61 @@ export class TaskBatchService {
     const stateFile = path.join(runDirectory, 'state.json');
     await writeFile(`${stateFile}.tmp`, JSON.stringify(snapshot, null, 2), { mode: 0o600 });
     await rename(`${stateFile}.tmp`, stateFile);
+    if (options.execute !== false && snapshot.tasks.length === 1) await this.executeSingle(snapshot, options.signal);
     return snapshot;
+  }
+
+  private async save(snapshot: TaskBatchSnapshot): Promise<void> {
+    snapshot.updatedAt = new Date().toISOString();
+    const file = path.join(this.storePath, snapshot.runId, 'state.json');
+    await writeFile(file+'.tmp',JSON.stringify(snapshot,null,2),{mode:0o600});
+    await rename(file+'.tmp',file);
+  }
+
+  private async executeSingle(snapshot: TaskBatchSnapshot, signal?: AbortSignal): Promise<void> {
+    const runDirectory=path.join(this.storePath,snapshot.runId);
+    const workspacePath=path.join(runDirectory,'integration');
+    const task=snapshot.tasks[0];
+    const attemptId=randomUUID();
+    const resultDirectory=path.join(runDirectory,'attempts',attemptId);
+    const attempt:BatchTaskAttempt={attemptId,taskBaseCommit:snapshot.runBaseCommit,status:'running'};
+    task.attempts.push(attempt);task.status='running';snapshot.status='running';
+    await this.save(snapshot);
+    const executor=new DockerTaskExecutor({executor:this.subprocessExecutor});
+    try {
+      await execFileAsync('git',['clone','--no-hardlinks','--quiet','--',this.repositoryPath,workspacePath]);
+      await execFileAsync('git',['-C',workspacePath,'checkout','--detach',snapshot.runBaseCommit]);
+      await execFileAsync('git',['-C',workspacePath,'branch',snapshot.integrationBranch,snapshot.runBaseCommit]);
+      await execFileAsync('git',['-C',this.repositoryPath,'fetch','--no-tags',workspacePath,`refs/heads/${snapshot.integrationBranch}:refs/heads/${snapshot.integrationBranch}`]);
+      snapshot.integrationCommit=snapshot.runBaseCommit;
+      snapshot.diagnostics.push({code:'host_changes_excluded',message:'Uncommitted user changes are excluded; the private checkout starts from '+snapshot.runBaseCommit+'.'});
+      await this.save(snapshot);
+      const result=await executor.execute({runId:snapshot.runId,taskId:task.id,attemptId,agent:task.agent,workspacePath,specFile:snapshot.context.specFile,prompt:task.prompt,taskBaseCommit:snapshot.runBaseCommit,runBaseCommit:snapshot.runBaseCommit,resultDirectory,signal,
+        onResource:async(resource:TaskSandboxResource)=>{attempt.resource=resource;attempt.resourceState='active';await this.save(snapshot);}});
+      Object.assign(attempt,result);
+      attempt.resourceState=result.resource?'retained':undefined;
+      if(result.exitCode!==0 || !result.checkpoint){
+        task.status=signal?.aborted?'interrupted':'failed';attempt.status=task.status;snapshot.status=task.status;
+        await this.save(snapshot);return;
+      }
+      // The bundle is persisted independently of the sandbox before branch publication.
+      await execFileAsync('git',['-C',workspacePath,'fetch','--no-tags',result.checkpoint.bundlePath,result.checkpoint.commit]);
+      await execFileAsync('git',['-C',workspacePath,'update-ref',`refs/heads/${snapshot.integrationBranch}`,result.checkpoint.commit,snapshot.runBaseCommit]);
+      await execFileAsync('git',['-C',this.repositoryPath,'fetch','--no-tags',workspacePath,`refs/heads/${snapshot.integrationBranch}:refs/heads/${snapshot.integrationBranch}`]);
+      snapshot.integrationCommit=result.checkpoint.commit;attempt.integratedCommit=result.checkpoint.commit;
+      task.status='succeeded';attempt.status='succeeded';snapshot.status='succeeded';
+      await this.save(snapshot);
+      if(result.resource){
+        try {await executor.cleanup(result.resource);attempt.resourceState='removed';}
+        catch(error){attempt.diagnostics=[...attempt.diagnostics??[],{code:'cleanup_failed',message:error instanceof Error?error.message:String(error)}];}
+        await this.save(snapshot);
+      }
+    }catch(error){
+      task.status=signal?.aborted?'interrupted':'failed';attempt.status=task.status;snapshot.status=task.status;
+      attempt.resourceState=attempt.resource?'retained':undefined;
+      attempt.diagnostics=[...attempt.diagnostics??[],{code:'integration_failed',message:error instanceof Error?error.message:String(error)}];
+      await this.save(snapshot);
+    }
   }
 
   async status(runId: string): Promise<TaskBatchSnapshot> {

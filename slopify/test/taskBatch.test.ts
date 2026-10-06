@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { mkdtemp, readFile, writeFile, readdir, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, writeFile, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import test from 'node:test';
@@ -108,7 +108,7 @@ test('a mixed-agent batch freezes its spec, prompts, references and chosen Git b
   execFileSync('git', ['-C', f.repo, 'commit', '-qm', 'next']);
   const hostHead = execFileSync('git', ['-C', f.repo, 'rev-parse', 'HEAD']).toString().trim();
   await writeFile(path.join(f.repo, 'initial.txt'), 'user changes\n');
-  const snapshot = await f.service.run(f.batchFile, { baseRef: baseCommit });
+  const snapshot = await f.service.run(f.batchFile, { baseRef: baseCommit, execute: false });
   await rm(f.batchFile);
   await writeFile(path.join(f.root, 'spec.md'), '# Changed spec');
   const reopened = new TaskBatchService({ repositoryPath: f.repo, storePath: f.storePath });
@@ -128,10 +128,12 @@ test('tasks CLI launches a frozen batch and reads its public status after source
   await writeFile(path.join(f.root, 'spec.md'), '# CLI spec');
   await writeFile(f.batchFile, JSON.stringify(batch()));
   const cli = fileURLToPath(new URL('../src/cli.js', import.meta.url));
-  const run = spawnSync(process.execPath, [cli, 'tasks', 'run', f.batchFile, '--cwd', f.repo, '--store', f.storePath, '--json'], { encoding: 'utf8' });
+  const bin=path.join(f.root,'bin');await mkdir(bin);
+  await writeFile(path.join(bin,'sbx'),'#!/bin/sh\necho "Docker unavailable in CLI context-freezing test" >&2\nexit 1\n',{mode:0o755});
+  const run = spawnSync(process.execPath, [cli, 'tasks', 'run', f.batchFile, '--cwd', f.repo, '--store', f.storePath, '--json'], { encoding: 'utf8',env:{...process.env,PATH:bin+path.delimiter+process.env.PATH} });
   assert.equal(run.status, 0, run.stderr);
   const initial = JSON.parse(run.stdout);
-  assert.equal(initial.status, 'ready');
+  assert.ok(['succeeded','failed'].includes(initial.status));
   await rm(f.batchFile);
   const status = spawnSync(process.execPath, [cli, 'tasks', 'status', initial.runId, '--cwd', f.repo, '--store', f.storePath, '--json'], { encoding: 'utf8' });
   assert.equal(status.status, 0, status.stderr);
