@@ -447,6 +447,106 @@ private blockDescendants(snapshot: TaskBatchSnapshot): void {
 
     return snapshot;
   }
+
+  /**
+   * Resolve a conflict explicitly with user-provided resolution.
+   * After validated resolution, pending results integrate and the frontier is recomputed.
+   * An interruption during resolution is recoverable and does not modify the user repository.
+   */
+  async resolveConflict(
+    runId: string,
+    options: {
+      resolutionStrategy?: 'use-current' | 'use-incoming' | 'manual';
+      signal?: AbortSignal;
+    } = {},
+  ): Promise<TaskBatchSnapshot> {
+    const snapshot = await this.status(runId);
+
+    // Verify the run belongs to this repository
+    if (snapshot.repositoryPath !== this.repositoryPath) {
+      throw new Error('Run belongs to another repository.');
+    }
+
+    // Verify we have a conflict to resolve
+    if (!snapshot.conflict) {
+      throw new Error('No conflict to resolve. Run is not in conflicted state.');
+    }
+
+    // Verify we have an integration workspace
+    const runDirectory = path.join(this.storePath, runId);
+    const workspacePath = path.join(runDirectory, 'integration');
+
+    try {
+      await stat(workspacePath);
+    } catch {
+      throw new Error('Integration workspace not found. Cannot resolve conflict without integration state.');
+    }
+
+    const conflict = snapshot.conflict;
+
+    try {
+      // Apply the resolution based on strategy
+      let resolutionCommit: string;
+
+      if (options.resolutionStrategy === 'use-current') {
+        // Use the current state (reject incoming changes)
+        resolutionCommit = snapshot.integrationCommit!;
+
+      } else if (options.resolutionStrategy === 'use-incoming') {
+        // Use the incoming changes (accept incoming changes)
+        resolutionCommit = conflict.incomingCommit;
+
+      } else if (options.resolutionStrategy === 'manual' || !options.resolutionStrategy) {
+        throw new Error('Manual resolution requires explicit user action in a dedicated sandbox. Use use-current or use-incoming for automated resolution.');
+
+      } else {
+        throw new Error(`Invalid resolution strategy: ${options.resolutionStrategy}. Use 'use-current', 'use-incoming', or 'manual'.`);
+      }
+
+      // Resolution is validated - now integrate pending results
+      snapshot.conflict = undefined;
+      snapshot.status = 'running';
+
+      // Find the conflicted task
+      const conflictedTask = snapshot.tasks.find(t => t.id === conflict.taskId);
+      if (conflictedTask) {
+        if (options.resolutionStrategy === 'use-incoming') {
+          // For use-incoming, mark the task as completed so it can be integrated
+          conflictedTask.status = 'completed';
+          const attempt = conflictedTask.attempts.find(a => a.attemptId === conflict.attemptId);
+          if (attempt) {
+            attempt.checkpoint = {
+              commit: resolutionCommit,
+              bundlePath: attempt.checkpoint?.bundlePath ?? '',
+            };
+          }
+        } else {
+          // For use-current, mark the task as failed (its changes are rejected)
+          conflictedTask.status = 'failed';
+        }
+      }
+
+      await this.save(snapshot);
+      await this.executeWaves(snapshot, options.signal);
+
+    } catch (error) {
+      snapshot.diagnostics.push({
+        code: 'resolution_failed',
+        message: error instanceof Error ? error.message : String(error)
+      });
+      snapshot.status = 'conflicted';
+      await this.save(snapshot);
+      throw error;
+    }
+
+    return snapshot;
+  }
+
+  async getConflict(runId: string): Promise<TaskBatchConflict | undefined> {
+    const snapshot = await this.status(runId);
+    return snapshot.conflict;
+  }
+
 }
 
 export type TaskAgent = 'pi' | 'codex';
