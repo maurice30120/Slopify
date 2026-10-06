@@ -81,6 +81,6 @@ Ce document capture la conception en cours ; aucun changement de code n’est ef
 
 ## Évolution du périmètre — 6 octobre 2026
 
-L’utilisateur retire Vibe du périmètre et le remplace par Pi, pour le point d’entrée comme pour l’implémentation. Les agents cibles sont désormais `pi` et `codex`. Les ADR 0008 et 0009 décrivant Vibe restent des documents historiques et devront être alignés lors de la formalisation de la V2. Les essais Vibe sont conservés uniquement comme historique du prototype.
+L’utilisateur retire Vibe du périmètre et le remplace par Pi, pour le point d’entrée comme pour l’implémentation. Les agents cibles sont désormais `pi` et `codex`. Les ADR 0008 et 0009 décrivant Vibe restent des documents historiques. **Voir ADR 0011 pour l’alignement V2 final.** Les essais Vibe sont conservés uniquement comme historique du prototype.
 
 Le [compte rendu du prototype Docker Sandbox](../research/sandbox-skills-prototype.md) décrit les observations et leurs limites. Les sources et preuves sont capturées sur la branche jetable `feature/prototype-sandbox-skills`, dans `docs/prototypes/sandbox-skills/`. Le prototype teste le parcours d’un agent sur une tâche minuscule ; il ne valide pas encore le scheduler, les sources issues ou l’intégration multi-tâches de Slopify V2.
