@@ -6,14 +6,14 @@
 
 **Blocked by:** 02 — Exécuter Codex et intégrer une tâche isolée ; 03 — Exécuter Pi avec Mistral, skills et revue parallèle.
 
-**Status:** ready-for-agent
+**Status:** claimed
 
-- [ ] Toutes les tâches disponibles d’une vague partent en parallèle sans plafond de concurrence, chacune dans un sandbox distinct.
-- [ ] Le scheduler attend toute la vague avant intégration déterministe et recalcul de la frontière.
-- [ ] Une tâche dépendante démarre sur le commit intégré courant ; les tâches d’une même vague ont la même base.
-- [ ] Un échec bloque ses descendants et laisse avancer les tâches indépendantes ; aucun retry ou changement d’agent implicite.
-- [ ] Le bilan comporte les statuts, commits, rapports et blocages de chaque tâche et la branche obtenue.
-- [ ] Une tâche finale de vérification dépendante de toutes les implémentations est traitée comme tâche ordinaire ; son échec empêche la réussite globale.
+- [x] Toutes les tâches disponibles d’une vague partent en parallèle sans plafond de concurrence, chacune dans un sandbox distinct.
+- [x] Le scheduler attend toute la vague avant intégration déterministe et recalcul de la frontière.
+- [x] Une tâche dépendante démarre sur le commit intégré courant ; les tâches d’une même vague ont la même base.
+- [x] Un échec bloque ses descendants et laisse avancer les tâches indépendantes ; aucun retry ou changement d’agent implicite.
+- [x] Le bilan comporte les statuts, commits, rapports et blocages de chaque tâche et la branche obtenue.
+- [x] Une tâche finale de vérification dépendante de toutes les implémentations est traitée comme tâche ordinaire ; son échec empêche la réussite globale.
 
 **Public seam:** lancement/état du lot, avec vrai Git et frontière externe d’exécution substituée.
 
