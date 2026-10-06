@@ -6,7 +6,7 @@
 
 **Blocked by:** 05 — Persister, diagnostiquer et reprendre explicitement.
 
-**Status:** claimed
+**Status:** resolved
 
 - [x] Le run publie les tâches, bases et fichiers en conflit et conserve les checkpoints, logs et résultats en attente.
 - [x] Les tâches déjà lancées finissent ; aucun résultat supplémentaire n’est fusionné et aucune nouvelle vague ne part tant que le conflit subsiste.
@@ -47,3 +47,5 @@ All 6 acceptance criteria verified by tests in `slopify/test/t06-conflict-resolu
 **Public seam:** lancement/état, résolution et reprise du lot sur de vrais commits Git incompatibles.
 
 **Validation:** deux tâches modifiant la même ligne, résolution autorisée réussie/échouée, résultats indépendants conservés et redémarrage ; build et tests ciblés.
+
+**Integration acceptance:** merged no-ff into feature/slopify-v2; full workspace build and 116/116 slopify tests pass. Standards/Spec review ran as two real parallel Pi subagents (artifacts /private/tmp/slopify-v2-agent-notes/pi-sessions/subagent-artifacts/abd6c814*, ae6eb3c9*). Orchestrator triage: the standards BLOCK was not evidence-based (no diff access, nonexistent line numbers, strict:true confirmed); the genuine spec P1 (manual resolution had no dedicated sandbox) was fixed test-first in cd7114a97 with the AC3 (manual) test asserting a real slopify-resolution-* sandbox created from the conflict context. Refuted reviewer claims (in-flight awaits, pending integration, sequential integration stop) verified against code and AC2/AC5 tests. Notes: /private/tmp/slopify-v2-agent-notes/merges.md.
