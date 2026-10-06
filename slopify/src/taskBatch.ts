@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile, rename } from 'node:fs/promises';
+import { mkdir, readFile, writeFile, rename, stat } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -196,7 +196,7 @@ export class TaskBatchService {
     }
   }
 
-  private blockDescendants(snapshot: TaskBatchSnapshot): void {
+private blockDescendants(snapshot: TaskBatchSnapshot): void {
     const byId = new Map(snapshot.tasks.map(task => [task.id, task]));
     let changed: boolean;
     do {
@@ -299,8 +299,152 @@ export class TaskBatchService {
 
   async status(runId: string): Promise<TaskBatchSnapshot> {
     if (!/^[a-zA-Z0-9-]+$/.test(runId)) throw new Error('Invalid run ID.');
-    const snapshot = JSON.parse(await readFile(path.join(this.storePath, runId, 'state.json'), 'utf8')) as TaskBatchSnapshot;
-    if (snapshot.repositoryPath !== this.repositoryPath) throw new Error('Run belongs to another repository.');
+    const file = path.join(this.storePath, runId, 'state.json');
+    try {
+      const snapshot = JSON.parse(await readFile(file, 'utf8')) as TaskBatchSnapshot;
+      if (snapshot.repositoryPath !== this.repositoryPath) throw new Error('Run belongs to another repository.');
+      return snapshot;
+    } catch (error) {
+      throw new Error(`Cannot read state file ${file}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  /**
+   * Resume the entire run from where it left off.
+   * Reuses already integrated results and recorded not-yet-integrated results without duplicating them.
+   */
+  async resume(runId: string, options: { signal?: AbortSignal } = {}): Promise<TaskBatchSnapshot> {
+    const snapshot = await this.status(runId);
+
+    // Verify we have an integration branch
+    if (!snapshot.integrationBranch) {
+      throw new Error('Run has no integration branch.');
+    }
+
+    const runDirectory = path.join(this.storePath, runId);
+    const workspacePath = path.join(runDirectory, 'integration');
+
+    // Verify the integration workspace exists
+    try {
+      await stat(workspacePath);
+    } catch {
+      throw new Error('Integration workspace not found. Cannot resume without integration state.');
+    }
+
+    // Verify frozen context files exist (spec and batch)
+    try {
+      await stat(snapshot.context.specFile);
+      await stat(snapshot.context.batchFile);
+    } catch {
+      throw new Error('Frozen context files (spec or batch) not found. Cannot resume without frozen context.');
+    }
+
+    // Reset failed and interrupted tasks to pending so they can be re-executed
+    for (const task of snapshot.tasks) {
+      if (task.status === 'failed' || task.status === 'interrupted') {
+        task.status = 'pending';
+      }
+    }
+
+    // Update status to running
+    snapshot.status = 'running';
+    await this.save(snapshot);
+
+    // Continue execution from where we left off
+    try {
+      await this.executeWaves(snapshot, options.signal);
+    } catch (error) {
+      // executeWaves already handles saving the state
+      throw error;
+    }
+
+    return snapshot;
+  }
+
+  /**
+   * Resume a specific task from a saved run, creating a new attempt.
+   * Does not duplicate already integrated results.
+   */
+  async resumeTask(runId: string, taskId: string, options: { signal?: AbortSignal } = {}): Promise<TaskBatchSnapshot> {
+    const snapshot = await this.status(runId);
+
+    // Verify the run belongs to this repository
+    if (snapshot.repositoryPath !== this.repositoryPath) {
+      throw new Error('Run belongs to another repository.');
+    }
+
+    // Find the task
+    const task = snapshot.tasks.find(t => t.id === taskId);
+    if (!task) {
+      throw new Error(`Task "${taskId}" not found in run "${runId}".`);
+    }
+
+    // Only allow resume for failed or interrupted tasks
+    if (task.status !== 'failed' && task.status !== 'interrupted') {
+      throw new Error(`Task "${taskId}" has status "${task.status}" and cannot be resumed. Only failed or interrupted tasks can be resumed.`);
+    }
+
+    // Verify we have an integration branch
+    if (!snapshot.integrationBranch) {
+      throw new Error('Run has no integration branch.');
+    }
+
+    const runDirectory = path.join(this.storePath, runId);
+    const workspacePath = path.join(runDirectory, 'integration');
+
+    // Verify the integration workspace exists
+    try {
+      await stat(workspacePath);
+    } catch {
+      throw new Error('Integration workspace not found. Cannot resume without integration state.');
+    }
+
+    // Verify frozen context files exist (spec and batch)
+    try {
+      await stat(snapshot.context.specFile);
+      await stat(snapshot.context.batchFile);
+    } catch {
+      throw new Error('Frozen context files (spec or batch) not found. Cannot resume without frozen context.');
+    }
+
+    // Get the current integration commit (this is the base for the new attempt)
+    const currentIntegrationCommit = snapshot.integrationCommit ?? snapshot.runBaseCommit;
+
+    // Check if task's dependencies are all succeeded (required for single-task resume)
+    const byId = new Map(snapshot.tasks.map(t => [t.id, t]));
+    const blockedBy = task.dependsOn.filter(id => byId.get(id)?.status !== 'succeeded');
+    if (blockedBy.length > 0) {
+      throw new Error(`Task "${taskId}" cannot be resumed: dependencies ${blockedBy.join(', ')} are not succeeded.`);
+    }
+
+    // Set task to pending so executeTask will create a new attempt
+    task.status = 'pending';
+
+    // Update the snapshot
+    snapshot.status = 'running';
+    await this.save(snapshot);
+
+    // Execute the task - this will create a new attempt
+    const executor = new DockerTaskExecutor({ executor: this.subprocessExecutor });
+
+    try {
+      await this.executeTask(snapshot, task, currentIntegrationCommit, workspacePath, executor, options.signal);
+
+      // Re-fetch task from snapshot to get updated status after executeTask
+      const updatedTask = snapshot.tasks.find(t => t.id === taskId)!;
+      // After execution, integrate if successful (task.status is set to 'completed' by executeTask on success)
+      if (updatedTask.status === 'completed') {
+        await this.integrateTask(snapshot, updatedTask, workspacePath, executor);
+      }
+
+      await this.save(snapshot);
+    } catch (error) {
+      snapshot.status = options.signal?.aborted ? 'interrupted' : 'failed';
+      snapshot.diagnostics.push({ code: 'resume_failed', message: error instanceof Error ? error.message : String(error) });
+      await this.save(snapshot);
+      throw error;
+    }
+
     return snapshot;
   }
 }
@@ -363,6 +507,7 @@ function validateBatch(input: unknown): TaskBatch {
     }
   }
   if (diagnostics.length) throw new TaskBatchValidationError(diagnostics);
+  // SAFETY: input has been validated above and is guaranteed to be a TaskBatch
   const batch = input as unknown as TaskBatch;
   const visited = new Set<string>();
   const active: string[] = [];
