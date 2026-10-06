@@ -67,6 +67,8 @@ export function createPiTaskAdapter(): TaskAgentAdapter {
         `Official skills and all their resources are mounted readonly at ${context.skillsStore}.`,
         `Follow implement with TDD at the approved public seams; commit before reviewing and correct findings.`,
         `For code-review, invoke the subagent tool once with agentScope user and tasks for agents standards and spec in parallel.`,
+        `The only registered reviewer agent names are "standards" and "spec". "code-review" and "general-purpose" are skill/tool descriptions, not registered agent names.`,
+        `Use exactly: {"agentScope":"user","tasks":[{"agent":"standards","task":"Standards review with the fixed baseline and evidence paths"},{"agent":"spec","task":"Spec review with the fixed baseline and evidence paths"}]}. Replace the task descriptions with the complete review context.`,
         `Give both agents the chosen fixed point (task baseline for implementation, run baseline for final combined review).`,
         `Actual execution stdout and stderr are streamed to ${evidenceDirectory}/stdout.log and ${evidenceDirectory}/stderr.log; commands at ${evidenceDirectory}/commands.jsonl.`,
         `Ask reviewers to read those traces; distinguish observed commands from declarations and flag unavailable evidence.`,
