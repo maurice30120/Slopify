@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile, rename, stat } from 'node:fs/promises';
+import { mkdir, readFile, writeFile, rename, stat, rm } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -57,6 +57,19 @@ export interface TaskBatchConflict {
   output: string;
 }
 
+export interface TaskBatchResolution {
+  resolutionId: string;
+  conflictTaskId: string;
+  conflictAttemptId: string;
+  sandboxName: string;
+  sandboxPath: string;
+  status: 'pending' | 'resolved' | 'failed' | 'validated';
+  resolutionCommit?: string;
+  resolutionBundlePath?: string;
+  createdAt: string;
+  validatedAt?: string;
+}
+
 export interface TaskBatchSnapshot {
   version: 1;
   runId: string;
@@ -71,6 +84,7 @@ export interface TaskBatchSnapshot {
   tasks: BatchTaskState[];
   diagnostics: TaskBatchDiagnostic[];
   conflict?: TaskBatchConflict;
+  resolution?: TaskBatchResolution;
 }
 
 const execFileAsync = promisify(execFile);
@@ -497,7 +511,37 @@ private blockDescendants(snapshot: TaskBatchSnapshot): void {
         resolutionCommit = conflict.incomingCommit;
 
       } else if (options.resolutionStrategy === 'manual' || !options.resolutionStrategy) {
-        throw new Error('Manual resolution requires explicit user action in a dedicated sandbox. Use use-current or use-incoming for automated resolution.');
+        // Manual resolution: create a dedicated sandbox from the conflict context
+        const resolutionId = randomUUID();
+        const sandboxName = `slopify-resolution-${runId}-${conflict.attemptId}-${resolutionId}`;
+        const resolutionSandboxPath = path.join(this.storePath, runId, 'resolutions', sandboxName);
+        const resolutionResultDir = path.join(this.storePath, runId, 'resolutions', resolutionId);
+
+        await mkdir(path.dirname(resolutionSandboxPath), { recursive: true });
+        await mkdir(resolutionResultDir, { recursive: true });
+
+        // Clone the integration workspace to the resolution sandbox
+        await execFileAsync('git', ['clone', '--no-hardlinks', '--quiet', '--', workspacePath, resolutionSandboxPath]);
+
+        // Checkout the current integration commit (the one that has the conflict)
+        await execFileAsync('git', ['-C', resolutionSandboxPath, 'checkout', '--detach', snapshot.integrationCommit!]);
+
+        // Create the resolution record
+        const resolution: TaskBatchResolution = {
+          resolutionId,
+          conflictTaskId: conflict.taskId,
+          conflictAttemptId: conflict.attemptId,
+          sandboxName,
+          sandboxPath: resolutionSandboxPath,
+          status: 'pending',
+          createdAt: new Date().toISOString(),
+        };
+
+        snapshot.resolution = resolution;
+        await this.save(snapshot);
+
+        // Return early - manual resolution requires user to work in the sandbox
+        return snapshot;
 
       } else {
         throw new Error(`Invalid resolution strategy: ${options.resolutionStrategy}. Use 'use-current', 'use-incoming', or 'manual'.`);
@@ -545,6 +589,130 @@ private blockDescendants(snapshot: TaskBatchSnapshot): void {
   async getConflict(runId: string): Promise<TaskBatchConflict | undefined> {
     const snapshot = await this.status(runId);
     return snapshot.conflict;
+  }
+
+  /**
+   * Validate and integrate a manual resolution from a dedicated sandbox.
+   * This is the second step of manual resolution: after the user has resolved conflicts
+   * in the dedicated sandbox, this method validates the resolution and integrates it.
+   */
+  async validateResolution(
+    runId: string,
+    resolutionId: string,
+    options: { signal?: AbortSignal } = {},
+  ): Promise<TaskBatchSnapshot> {
+    const snapshot = await this.status(runId);
+
+    // Verify the run belongs to this repository
+    if (snapshot.repositoryPath !== this.repositoryPath) {
+      throw new Error('Run belongs to another repository.');
+    }
+
+    // Verify we have a resolution to validate
+    if (!snapshot.resolution) {
+      throw new Error('No resolution to validate. Run has no pending resolution.');
+    }
+
+    if (snapshot.resolution.resolutionId !== resolutionId) {
+      throw new Error(`Resolution ${resolutionId} does not match the pending resolution ${snapshot.resolution.resolutionId}.`);
+    }
+
+    if (snapshot.resolution.status !== 'pending') {
+      throw new Error(`Resolution ${resolutionId} is not in pending state (current: ${snapshot.resolution.status}).`);
+    }
+
+    const resolution = snapshot.resolution;
+    const runDirectory = path.join(this.storePath, runId);
+    const workspacePath = path.join(runDirectory, 'integration');
+
+    try {
+      await stat(workspacePath);
+    } catch {
+      throw new Error('Integration workspace not found. Cannot validate resolution without integration state.');
+    }
+
+    try {
+      // Verify the resolution sandbox exists
+      try {
+        await stat(resolution.sandboxPath);
+      } catch {
+        throw new Error(`Resolution sandbox ${resolution.sandboxPath} not found.`);
+      }
+
+      // Get the current HEAD of the resolution sandbox
+      const resolutionHead = (await execFileAsync('git', ['-C', resolution.sandboxPath, 'rev-parse', 'HEAD'])).stdout.trim();
+
+      // Validate that the resolution commit descends from the conflict base
+      try {
+        await execFileAsync('git', ['-C', resolution.sandboxPath, 'merge-base', '--is-ancestor', snapshot.conflict!.taskBaseCommit, resolutionHead]);
+      } catch (error) {
+        const failure = error as Error & { code?: number; stdout?: string; stderr?: string };
+        if (failure.code !== 1) throw error;
+        // merge-base --is-ancestor returns exit code 1 when not an ancestor
+        throw new Error(`Resolution commit ${resolutionHead} does not descend from conflict base ${snapshot.conflict!.taskBaseCommit}.`);
+      }
+
+      // Create a bundle from the resolution sandbox
+      const resolutionBundlePath = path.join(runDirectory, 'resolutions', resolution.resolutionId, 'resolution.bundle');
+      await execFileAsync('git', ['-C', resolution.sandboxPath, 'bundle', 'create', resolutionBundlePath, 'HEAD']);
+
+      // Update the resolution record
+      resolution.status = 'validated';
+      resolution.resolutionCommit = resolutionHead;
+      resolution.resolutionBundlePath = resolutionBundlePath;
+      resolution.validatedAt = new Date().toISOString();
+
+      // Clear the conflict and set resolution as validated
+      snapshot.conflict = undefined;
+      snapshot.status = 'running';
+
+      // Find the conflicted task and update it with the resolution
+      const conflictedTask = snapshot.tasks.find(t => t.id === resolution.conflictTaskId);
+      if (conflictedTask) {
+        conflictedTask.status = 'completed';
+        const attempt = conflictedTask.attempts.find(a => a.attemptId === resolution.conflictAttemptId);
+        if (attempt) {
+          attempt.checkpoint = {
+            commit: resolutionHead,
+            bundlePath: resolutionBundlePath,
+          };
+        }
+      }
+
+      await this.save(snapshot);
+
+      // Now continue with wave execution to integrate pending results
+      await this.executeWaves(snapshot, options.signal);
+
+      // Clean up the resolution sandbox after successful integration
+      try {
+        await rm(resolution.sandboxPath, { recursive: true, force: true });
+      } catch (error) {
+        snapshot.diagnostics.push({ code: 'resolution_cleanup_failed', message: String(error) });
+        await this.save(snapshot);
+      }
+
+    } catch (error) {
+      // Validation failed - update resolution status
+      snapshot.resolution.status = 'failed';
+      snapshot.diagnostics.push({
+        code: 'resolution_validation_failed',
+        message: error instanceof Error ? error.message : String(error)
+      });
+      snapshot.status = 'conflicted';
+      await this.save(snapshot);
+      throw error;
+    }
+
+    return snapshot;
+  }
+
+  /**
+   * Get resolution details for a run.
+   */
+  async getResolution(runId: string): Promise<TaskBatchResolution | undefined> {
+    const snapshot = await this.status(runId);
+    return snapshot.resolution;
   }
 
 }
