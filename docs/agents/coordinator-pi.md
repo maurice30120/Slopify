@@ -141,6 +141,8 @@ Pi : "Le ticket task-total dépend de org/repo#44 qui n'est pas dans le lot appr
 
 ### 1.4 Tâche finale de vérification
 
+Le prompt exige les sorties réelles des validations et les résultats des deux reviewers. Il doit demander de signaler toute preuve de TDD ou de délégation manquante comme non vérifiée, sans la déduire des commits.
+
 Pi **ajoute toujours** une tâche finale dépendant de **toutes** les tâches d'implémentation :
 
 ```json
@@ -391,13 +393,14 @@ slopify tasks resolve-conflict <run-id> --strategy manual      # Résolution man
 Une tâche `interrupted` (pas de résultat enregistré) peut être relancée :
 
 ```bash
-slopify tasks resume <run-id> --task <task-id> --cwd /depot --store /store
+slopify tasks resume-task <run-id> <task-id> --cwd /depot --store /store
 ```
 
 **Comportement :**
 - Crée un **nouveau sandbox** avec un nouvel `attemptId`
 - Part du **commit intégré courant** (pas de la conversation de l'ancien agent)
 - Les tâches déjà réussies **ne sont pas refaites**
+- Une tâche restée `running` après l’arrêt du processus peut aussi être reprise explicitement avec `resume-task`, après avoir vérifié que son ancien agent ne travaille plus. Les ressources de la tentative précédente restent inspectables.
 
 ### 5.2 Lot de correction
 
@@ -473,7 +476,7 @@ La branche d'intégration est **accessible depuis le dépôt hôte** :
 
 ```bash
 # Depuis le dépôt de l'utilisateur
-git fetch origin feature/slopify-550e8400-e29b-41d4-a716-446655440000
+git show-ref --verify refs/heads/feature/slopify-550e8400-e29b-41d4-a716-446655440000
 
 # Inspecter les changements
 git log dbb62124b..feature/slopify-550e8400...
@@ -753,7 +756,7 @@ Aucune configuration spéciale. Pi fonctionne dans la session de l'utilisateur.
 |----------|-------------|
 | `slopify tasks run <batch> [--cwd <repo>] [--store <dir>] [--base <ref>]` | Lancer un nouveau run |
 | `slopify tasks status <run-id> [--cwd <repo>] [--store <dir>]` | Lire l'état d'un run |
-| `slopify tasks resume <run-id> --task <task-id> [--cwd <repo>] [--store <dir>]` | Reprendre une tâche |
+| `slopify tasks resume-task <run-id> <task-id> [--cwd <repo>] [--store <dir>]` | Reprendre une tâche |
 | `slopify tasks conflict <run-id> [--cwd <repo>] [--store <dir>]` | Lister les conflits |
 | `slopify tasks resolve-conflict <run-id> --strategy <use-current\|use-incoming\|manual> [--cwd <repo>] [--store <dir>]` | Résoudre un conflit |
 

@@ -185,19 +185,27 @@ export class TaskBatchService {
       if (!workspaceExists) {
         await execFileAsync('git', ['clone', '--no-hardlinks', '--quiet', '--', this.repositoryPath, workspacePath]);
       }
-      await execFileAsync('git', ['-C', workspacePath, 'checkout', '--detach', snapshot.runBaseCommit]);
       // Check if branch already exists before trying to create it
       const branchResult = await execFileAsync('git', ['-C', workspacePath, 'branch', '--list', snapshot.integrationBranch]);
+      const currentIntegrationCommit = branchResult.stdout.trim()
+        ? (await execFileAsync('git', ['-C', workspacePath, 'rev-parse', snapshot.integrationBranch])).stdout.trim()
+        : snapshot.integrationCommit ?? snapshot.runBaseCommit;
+      await execFileAsync('git', ['-C', workspacePath, 'checkout', '--detach', currentIntegrationCommit]);
       if (!branchResult.stdout.trim()) {
-        await execFileAsync('git', ['-C', workspacePath, 'branch', snapshot.integrationBranch, snapshot.runBaseCommit]);
-      } else {
-        // Branch exists, just checkout it
-        await execFileAsync('git', ['-C', workspacePath, 'checkout', snapshot.integrationBranch]);
+        await execFileAsync('git', ['-C', workspacePath, 'branch', snapshot.integrationBranch, currentIntegrationCommit]);
       }
       await this.publish(snapshot, workspacePath);
-      snapshot.integrationCommit = snapshot.runBaseCommit;
+      snapshot.integrationCommit = currentIntegrationCommit;
       snapshot.diagnostics.push({ code: 'host_changes_excluded', message: 'Uncommitted user changes are excluded; the private checkout starts from ' + snapshot.runBaseCommit + '.' });
       await this.save(snapshot);
+
+      // A checkpoint can be durable before its integration is recorded. Reuse it
+      // on explicit resume rather than executing the agent again.
+      for (const task of snapshot.tasks) {
+        if (task.status !== 'completed') continue;
+        await this.integrateTask(snapshot, task, workspacePath, executor);
+        if (snapshot.conflict) return;
+      }
 
       while (!signal?.aborted) {
         this.blockDescendants(snapshot);
@@ -281,8 +289,10 @@ private blockDescendants(snapshot: TaskBatchSnapshot): void {
       await execFileAsync('git', ['-C', workspacePath, 'fetch', '--no-tags', checkpoint.bundlePath, checkpoint.commit]);
       await execFileAsync('git', ['-C', workspacePath, 'merge-base', '--is-ancestor', attempt.taskBaseCommit, checkpoint.commit]);
       const current = snapshot.integrationCommit!;
-      let integratedCommit = checkpoint.commit;
-      if (current !== attempt.taskBaseCommit) {
+      const alreadyIntegrated = await execFileAsync('git', ['-C', workspacePath, 'merge-base', '--is-ancestor', checkpoint.commit, current])
+        .then(() => true, error => { if (error.code === 1) return false; throw error; });
+      let integratedCommit = alreadyIntegrated ? current : checkpoint.commit;
+      if (!alreadyIntegrated && current !== attempt.taskBaseCommit) {
         let output: string;
         try {
           output = (await execFileAsync('git', ['-C', workspacePath, 'merge-tree', '--write-tree', '--name-only', '-z', current, checkpoint.commit])).stdout;
@@ -347,6 +357,9 @@ private blockDescendants(snapshot: TaskBatchSnapshot): void {
    */
   async resume(runId: string, options: { signal?: AbortSignal } = {}): Promise<TaskBatchSnapshot> {
     const snapshot = await this.status(runId);
+    if (snapshot.conflict) {
+      throw new Error('Run has an unresolved conflict. Validate an explicit resolution before resuming.');
+    }
 
     // Verify we have an integration branch
     if (!snapshot.integrationBranch) {
@@ -373,8 +386,10 @@ private blockDescendants(snapshot: TaskBatchSnapshot): void {
 
     // Reset failed and interrupted tasks to pending so they can be re-executed
     for (const task of snapshot.tasks) {
-      if (task.status === 'failed' || task.status === 'interrupted') {
-        task.status = 'pending';
+      if (task.status === 'failed' || task.status === 'interrupted' || task.status === 'blocked') {
+        const attempt = task.attempts.at(-1);
+        task.status = attempt?.checkpoint && attempt.exitCode === 0 ? 'completed' : 'pending';
+        delete task.blockedBy;
       }
     }
 

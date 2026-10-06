@@ -68,6 +68,88 @@ const mockExecutor: SubprocessExecutor = async request => {
   return { exitCode: 1, stdout: '', stderr: 'Unknown command' };
 };
 
+test('resume unblocks descendants from the preserved integrated commit', async t => {
+  const f = await fixture(t, mockExecutor);
+  await writeFile(path.join(f.root, 'spec.md'), '# Spec');
+  await writeFile(f.batchFile, JSON.stringify(batch([
+    { id: 'a', dependsOn: [] }, { id: 'b', dependsOn: ['a'] },
+  ])));
+  const snapshot = await f.service.run(f.batchFile, { execute: false });
+  const integration = await createIntegrationWorkspace(f.service, snapshot);
+  await writeFile(path.join(integration, 'integrated.txt'), 'successful prerequisite\n');
+  execFileSync('git', ['-C', integration, 'add', 'integrated.txt']);
+  execFileSync('git', ['-C', integration, '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', 'commit', '-qm', 'integrate a']);
+  const integrated = execFileSync('git', ['-C', integration, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+  execFileSync('git', ['-C', integration, 'branch', '-f', snapshot.integrationBranch, integrated]);
+  // Model a previous resume or interruption leaving the state behind the branch.
+  snapshot.integrationCommit = snapshot.runBaseCommit;
+  snapshot.status = 'running';
+  snapshot.tasks[0].status = 'succeeded';
+  snapshot.tasks[0].attempts.push({ attemptId: 'a-success', taskBaseCommit: snapshot.runBaseCommit,
+    status: 'succeeded', integratedCommit: integrated });
+  snapshot.tasks[1].status = 'blocked';
+  snapshot.tasks[1].blockedBy = ['a'];
+  await writeState(f.service, snapshot);
+
+  const resumed = await new TaskBatchService({ repositoryPath: f.repo, storePath: f.storePath,
+    subprocessExecutor: mockExecutor }).resume(snapshot.runId);
+  assert.equal(resumed.tasks[0].attempts.length, 1);
+  assert.equal(resumed.tasks[1].attempts.length, 1, 'dependent task must be launched');
+  assert.equal(resumed.tasks[1].attempts[0].taskBaseCommit, integrated);
+  assert.equal(resumed.integrationCommit, integrated);
+  assert.equal(resumed.tasks[1].blockedBy, undefined);
+  assert.equal(execFileSync('git', ['-C', f.repo, 'rev-parse', snapshot.integrationBranch], { encoding: 'utf8' }).trim(), integrated);
+});
+
+for (const alreadyIntegrated of [false, true]) {
+test(`resume reuses a durable checkpoint (already integrated: ${alreadyIntegrated})`, async t => {
+  const f = await fixture(t, mockExecutor);
+  await writeFile(path.join(f.root, 'spec.md'), '# Spec');
+  await writeFile(f.batchFile, JSON.stringify(batch([
+    { id: 'a', dependsOn: [] }, { id: 'b', dependsOn: ['a'] },
+  ])));
+  const snapshot = await f.service.run(f.batchFile, { execute: false });
+  const integration = await createIntegrationWorkspace(f.service, snapshot);
+  await writeFile(path.join(integration, 'checkpoint.txt'), 'agent result\n');
+  execFileSync('git', ['-C', integration, 'add', 'checkpoint.txt']);
+  execFileSync('git', ['-C', integration, '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', 'commit', '-qm', 'agent result']);
+  const commit = execFileSync('git', ['-C', integration, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+  const bundlePath = path.join(f.root, 'checkpoint.bundle');
+  execFileSync('git', ['-C', integration, 'bundle', 'create', bundlePath, 'HEAD']);
+  if (alreadyIntegrated) {
+    execFileSync('git', ['-C', integration, 'branch', '-f', snapshot.integrationBranch, commit]);
+    snapshot.integrationCommit = commit;
+  }
+  snapshot.status = 'failed';
+  snapshot.tasks[0].status = 'failed';
+  snapshot.tasks[0].attempts.push({ attemptId: 'durable-result', taskBaseCommit: snapshot.runBaseCommit,
+    status: 'succeeded', exitCode: 0, checkpoint: { commit, bundlePath } });
+  snapshot.tasks[1].status = 'blocked';
+  snapshot.tasks[1].blockedBy = ['a'];
+  await writeState(f.service, snapshot);
+
+  const resumed = await f.service.resume(snapshot.runId);
+  assert.equal(resumed.tasks[0].status, 'succeeded');
+  assert.equal(resumed.tasks[0].attempts.length, 1);
+  assert.equal(resumed.tasks[1].attempts.length, 1);
+  assert.equal(resumed.tasks[1].attempts[0].taskBaseCommit, commit);
+  assert.equal(resumed.integrationCommit, commit);
+});
+}
+
+test('resume leaves unresolved conflicts suspended without executing tasks', async t => {
+  const f = await fixture(t, mockExecutor);
+  await writeFile(path.join(f.root, 'spec.md'), '# Spec');
+  await writeFile(f.batchFile, JSON.stringify(batch()));
+  const snapshot = await f.service.run(f.batchFile, { execute: false });
+  snapshot.status = 'conflicted';
+  snapshot.conflict = { taskId: 'implement', attemptId: 'conflict', taskBaseCommit: snapshot.runBaseCommit,
+    currentCommit: snapshot.runBaseCommit, incomingCommit: snapshot.runBaseCommit, files: ['initial.txt'], output: 'conflict' };
+  await writeState(f.service, snapshot);
+  await assert.rejects(f.service.resume(snapshot.runId), /unresolved conflict/);
+  assert.deepEqual(await f.service.status(snapshot.runId), snapshot);
+});
+
 // AC1: Per-run state written atomically, retaining bases, attempts, commits, resources, reports and the branch
 
 test('AC1: state file is written atomically with .tmp suffix', async (t) => {
