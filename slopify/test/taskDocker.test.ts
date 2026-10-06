@@ -8,7 +8,7 @@ import { createNodeSubprocessExecutor, type SubprocessExecutor } from '@acp-clie
 import { TaskBatchService } from '../src/taskBatch.js';
 
 function git(repo: string, ...args: string[]) { return execFileSync('git', ['-C', repo, ...args], {encoding:'utf8'}).trim(); }
-async function fixture(t: {after(fn:()=>Promise<void>):void}, failure: boolean | 'parent-zero-error' | 'cleanup' | 'child-error' = false) {
+async function fixture(t: {after(fn:()=>Promise<void>):void}, failure: boolean | 'parent-zero-error' | 'cleanup' | 'child-error' | 'reported-failure' | 'missing-outcome' = false) {
   const root = await mkdtemp(path.join(tmpdir(), 'slopify-docker-'));
   t.after(()=>rm(root,{recursive:true,force:true}));
   const repo = path.join(root,'host');
@@ -56,7 +56,9 @@ async function fixture(t: {after(fn:()=>Promise<void>):void}, failure: boolean |
         assert.equal(a.at(-1),prompt);assert.equal(git(sandbox,'rev-parse','HEAD'),head);
         assert.equal(await readFile(path.join(sandbox,'base.txt'),'utf8'),'committed base');
         await writeFile(path.join(sandbox,'implemented.txt'),'implementation result');
-        const stdout=failure===true?'':failure==='parent-zero-error'?JSON.stringify({type:'turn.failed',error:{message:'Provider rejected request'}})+'\n':JSON.stringify({type:'item.completed',item:{type:'agent_message',text:'Tests and review report'}})+'\n';
+        const report = failure === 'reported-failure' ? 'Final review failed\nSLOPIFY_RESULT={"status":"failed","reason":"Final review rejected changes"}'
+          : failure === 'missing-outcome' ? 'No explicit verdict' : 'Tests and review report\nSLOPIFY_RESULT={"status":"succeeded"}';
+        const stdout=failure===true?'':failure==='parent-zero-error'?JSON.stringify({type:'turn.failed',error:{message:'Provider rejected request'}})+'\n':JSON.stringify({type:'item.completed',item:{type:'agent_message',text:report}})+'\n';
         request.onOutput?.('stdout',stdout);
         const mounted=calls.find(a=>a[0]==='create'&&!a.includes('--help'))!.find(a=>a.startsWith(path.join(root,'runs'))&&a.endsWith(':ro'))!.slice(0,-3);
         assert.ok((await readFile(path.join(mounted,'stdout.log'),'utf8')).includes(stdout));
@@ -109,6 +111,17 @@ test('provider errors are visible even when the Codex parent exits zero',async t
   assert.match(state.tasks[0].attempts[0].diagnostics![0].message,/Provider rejected request/);
   assert.equal(f.removed,false);
 });
+
+for (const outcome of ['reported-failure', 'missing-outcome'] as const) {
+test(`Codex retains a process-zero task with ${outcome}`, async t => {
+  const f = await fixture(t, outcome);
+  const state = await new TaskBatchService({ repositoryPath: f.repo, storePath: path.join(f.root, 'runs'), subprocessExecutor: f.execute }).run(f.batchFile);
+  assert.equal(state.status, 'failed');
+  assert.equal(state.tasks[0].attempts[0].resourceState, 'retained');
+  assert.equal(git(f.repo, 'rev-parse', state.integrationBranch), f.head);
+  assert.equal(f.removed, false);
+});
+}
 
 test('a cleanup failure is recorded without losing a successful published result',async t=>{
   const f=await fixture(t,'cleanup');

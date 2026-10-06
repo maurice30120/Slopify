@@ -91,8 +91,8 @@ async function fixture(t: { after(fn: () => Promise<void>): void }, tasks: Batch
         launched.push(id);
         const exitCode = await agent(id, sandbox);
         const stdout = a.includes('pi')
-          ? JSON.stringify({ type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: `${id} report` }] } })
-          : JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: `${id} report` } });
+          ? JSON.stringify({ type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: `${id} report\nSLOPIFY_RESULT={"status":"succeeded"}` }] } })
+          : JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: `${id} report\nSLOPIFY_RESULT={"status":"succeeded"}` } });
         request.onOutput?.('stdout', stdout + '\n');
         return { exitCode, stdout: stdout + '\n', stderr: exitCode ? `${id} failed` : '' };
       }

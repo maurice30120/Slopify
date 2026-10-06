@@ -2,6 +2,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import type { TaskAgentAdapter, TaskAgentContext } from './dockerTaskExecutor.js';
 import type { TaskBatchDiagnostic } from './taskBatch.js';
+import { agentOutcomeDiagnostics } from './agentOutcome.js';
 
 /** Pi's image needs explicit Mistral configuration and the official delegation example. */
 export function createPiTaskAdapter(): TaskAgentAdapter {
@@ -89,6 +90,7 @@ export function createPiTaskAdapter(): TaskAgentAdapter {
         '--mode', 'json', '--print', context.prompt]);
       const diagnostics: TaskBatchDiagnostic[] = [];
       const reports: string[] = [];
+      let finalParentMessage = '';
       const reviews: unknown[] = [];
       for (const line of result.stdout.split(/\r?\n/)) {
         let event: Record<string, unknown> | undefined;
@@ -98,7 +100,7 @@ export function createPiTaskAdapter(): TaskAgentAdapter {
           : event.type === 'agent_end' && Array.isArray(event.messages) ? event.messages : [];
         for (const value of completedMessages) {
           const text = assistantText(value);
-          if (text) reports.push(text);
+          if (text) { reports.push(text); finalParentMessage = text; }
           const message = record(value);
           if (message?.stopReason === 'error' || message?.stopReason === 'aborted' || message?.errorMessage) {
             const error = String(message.errorMessage || message.stopReason);
@@ -125,6 +127,7 @@ export function createPiTaskAdapter(): TaskAgentAdapter {
           reports.push(`## Observed Pi subagent: ${name}\nExit code: ${String(child.exitCode)}\n${text || String(error)}`);
         }
       }
+      diagnostics.push(...agentOutcomeDiagnostics(finalParentMessage));
       if (reviews.length) {
         const reviewPath = path.join(context.resultDirectory, 'pi-review-results.json');
         await writeFile(reviewPath, JSON.stringify(reviews, null, 2), { mode: 0o600 });

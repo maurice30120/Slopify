@@ -56,7 +56,7 @@ async function fixture(t: {after(fn:()=>Promise<void>):void}, events?: string, u
         assert.equal(await readFile(path.join(sandbox,'base.txt'),'utf8'),'committed base');
         await writeFile(path.join(sandbox,'implemented.txt'),'implementation result');
         assert.ok(a.includes('--skill'));assert.ok(a.includes('--extension'));
-        const stdout=events ?? JSON.stringify({type:'tool_execution_end',toolName:'subagent',isError:false,result:{details:{mode:'parallel',results:[{agent:'standards',exitCode:0,messages:[{role:'assistant',content:[{type:'text',text:'Independent Standards findings'}]}]},{agent:'spec',exitCode:0,messages:[{role:'assistant',content:[{type:'text',text:'Independent Spec findings'}]}]}]}}})+'\n'+JSON.stringify({type:'message_end',message:{role:'assistant',content:[{type:'text',text:'Pi tests and review report'}]}})+'\n';
+        const stdout=events ?? JSON.stringify({type:'tool_execution_end',toolName:'subagent',isError:false,result:{details:{mode:'parallel',results:[{agent:'standards',exitCode:0,messages:[{role:'assistant',content:[{type:'text',text:'Independent Standards findings'}]}]},{agent:'spec',exitCode:0,messages:[{role:'assistant',content:[{type:'text',text:'Independent Spec findings'}]}]}]}}})+'\n'+JSON.stringify({type:'message_end',message:{role:'assistant',content:[{type:'text',text:'Pi tests and review report\nSLOPIFY_RESULT={"status":"succeeded"}'}]}})+'\n';
         return {exitCode:0,stdout,stderr:''};
       }
       return ok();
@@ -98,6 +98,18 @@ test('one Pi task publishes durable checkpoint, logs and report without altering
   assert.equal(kit.permissions.network.deny,undefined, 'global permissions remain available without a duplicate deny policy');
 });
 
+
+for (const verdict of ['SLOPIFY_RESULT={"status":"failed","reason":"Final review rejected the changes"}', 'No explicit verdict', 'SLOPIFY_RESULT={"status":"maybe"}']) {
+test(`Pi cannot publish a process-zero task with verdict: ${verdict}`, async t => {
+  const events = JSON.stringify({ type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: verdict }] } });
+  const f = await fixture(t, events);
+  const state = await new TaskBatchService({ repositoryPath: f.repo, storePath: path.join(f.root, 'runs'), subprocessExecutor: f.execute }).run(f.batchFile);
+  assert.equal(state.status, 'failed');
+  assert.equal(state.tasks[0].attempts[0].resourceState, 'retained');
+  assert.equal(git(f.repo, 'rev-parse', state.integrationBranch), f.head);
+  assert.equal(f.removed, false);
+});
+}
 
 test('a failed Pi reviewer is visible and retains the sandbox even when the parent exits zero', async t=>{
   const events=JSON.stringify({type:'tool_execution_end',toolName:'subagent',isError:false,result:{details:{mode:'parallel',results:[

@@ -6,6 +6,7 @@ import { createNodeSubprocessExecutor, DockerSandboxRuntime, GitPromotion, type 
 import type { TaskBatchDiagnostic } from './taskBatch.js';
 import type { TaskExecutor, TaskExecutionRequest, TaskExecutionResult, TaskSandboxResource } from './taskExecution.js';
 import { createPiTaskAdapter } from './piTaskAdapter.js';
+import { agentOutcomeDiagnostics } from './agentOutcome.js';
 
 export interface TaskAgentContext extends TaskExecutionRequest {
   sandboxName: string;
@@ -78,6 +79,8 @@ export class DockerTaskExecutor implements TaskExecutor {
         'Actual live raw execution traces: '+stdoutPath+' and '+stderrPath+'. Observed harness commands: '+eventsPath+'. Give these paths to both reviewers.',
         'Codex native parent and reviewer execution rollouts are also in $HOME/.codex/sessions; preserve and inspect them for delegation evidence. Treat reports as declarations; missing process/delegation evidence must be reported as missing. End with factual validations, review findings, commits and blockers.',
         'Uncommitted user changes are excluded from this private checkout.',
+        'End your final assistant message with exactly one standalone line: SLOPIFY_RESULT={"status":"succeeded"} or SLOPIFY_RESULT={"status":"failed","reason":"concrete remaining blocker"}.',
+        'Report failed if final required validations fail, a documented Standards/Spec violation remains unresolved, or work is incomplete. Expected intermediate TDD red tests are not final failures. A process exit code of zero does not establish task success. Missing or invalid verdicts fail the task. Never put this marker in reviewer reports or intermediate messages.',
       ].join('\n');
       await writeFile(path.join(containerContextPath,'harness.txt'),harness,{mode:0o600});
       const context:TaskAgentContext={...request,sandboxName,containerWorkspacePath:request.workspacePath,containerContextPath,skillsStore:inventory.store,command};
@@ -137,6 +140,7 @@ const codexAdapter:TaskAgentAdapter={
         if(event.type==='item.completed'&&event.item?.type==='agent_message')reports.push(event.item.text);
       }catch{/* Non-JSON startup messages remain in the raw log. */}
     }
+    diagnostics.push(...agentOutcomeDiagnostics(reports.at(-1) ?? ''));
     return {exitCode:run.exitCode,report:reports.join('\n\n')||run.stdout||run.stderr,diagnostics};
   },
 };
