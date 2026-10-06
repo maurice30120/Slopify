@@ -31,6 +31,8 @@ export interface SubprocessRequest {
   cwd: string;
   stdin: 'ignore';
   observeOutput?: boolean;
+  /** Receive each raw chunk immediately, before the process completes. */
+  onOutput?: (stream: 'stdout' | 'stderr', chunk: string) => void;
   signal?: AbortSignal;
   env?: NodeJS.ProcessEnv;
 }
@@ -771,8 +773,8 @@ export function createNodeSubprocessExecutor(): SubprocessExecutor {
     };
     child.stdout.setEncoding('utf8');
     child.stderr.setEncoding('utf8');
-    child.stdout.on('data', chunk => { stdout += chunk; if (request.observeOutput) process.stdout.write(chunk); });
-    child.stderr.on('data', chunk => { stderr += chunk; if (request.observeOutput) process.stderr.write(chunk); });
+    child.stdout.on('data', chunk => { stdout += chunk; request.onOutput?.('stdout', chunk); if (request.observeOutput) process.stdout.write(chunk); });
+    child.stderr.on('data', chunk => { stderr += chunk; request.onOutput?.('stderr', chunk); if (request.observeOutput) process.stderr.write(chunk); });
     child.once('error', error => {
       if (request.signal?.aborted) {
         resolveOnce({
