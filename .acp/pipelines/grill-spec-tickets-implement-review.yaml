@@ -1,10 +1,10 @@
 version: 3
 id: grill-spec-tickets-implement-review
+promotion: ask
 title: Grill with Docs → Spec Docs → Ticket Docs → Sequential Implement → Review
 
 nodes:
   - id: plan
-    agent: Codex CLI
     skills: [grill-with-docs, grilling, domain-modeling]
     interaction:
       protocol: proposed-plan
@@ -42,7 +42,6 @@ nodes:
       format: markdown
 
   - id: spec
-    agent: Codex CLI
     skills: [to-spec, domain-modeling]
     instructionsFile: ../agents/matt-spec-writer.md
     prompt: |
@@ -68,7 +67,6 @@ nodes:
       format: markdown
 
   - id: tasks
-    agent: Codex CLI
     skills: [to-tickets]
     instructionsFile: ../agents/matt-ticket-planner.md
     prompt: |
@@ -90,8 +88,8 @@ nodes:
       promotion: auto-apply
     output:
       name: tickets
-      type: acp.workspace-files/v1
-      format: markdown
+      type: acp.ticket-graph/v1
+      format: json
 
   - id: delivery_approval
     type: pause
@@ -122,8 +120,8 @@ nodes:
         format: markdown
       - name: tickets
         from: tasks.tickets
-        type: acp.workspace-files/v1
-        format: markdown
+        type: acp.ticket-graph/v1
+        format: json
     output:
       name: approved
       type: acp.sequential-delivery/v1

@@ -43,6 +43,8 @@ export interface PipelineRuntimeOptions {
   adapterName?: string;
   adapterCapabilities?: PipelineAdapterPolicyCapabilities;
   resolveNodeSkills?: (node: CompiledPipelineNode) => string[] | Promise<string[]>;
+  /** Agent selected by the host for dynamically expanded execution-plan nodes. */
+  agentName?: string;
 }
 
 export interface PipelineRuntimeEvent {
@@ -112,6 +114,7 @@ export class PipelineRuntime {
   private readonly adapterName: string;
   private readonly adapterCapabilities?: PipelineAdapterPolicyCapabilities;
   private readonly resolveNodeSkills?: (node: CompiledPipelineNode) => string[] | Promise<string[]>;
+  private readonly agentName?: string;
 
   constructor(
     private readonly adapter: PipelineRuntimeAdapter,
@@ -124,6 +127,7 @@ export class PipelineRuntime {
     this.adapterName = options.adapterName ?? "pipeline";
     this.adapterCapabilities = options.adapterCapabilities;
     this.resolveNodeSkills = options.resolveNodeSkills;
+    this.agentName = options.agentName;
     for (const program of options.programs ?? []) {
       this.programsById.set(program.id, program);
     }
@@ -486,7 +490,7 @@ export class PipelineRuntime {
   private async expandExecutionPlan(active: ActiveRun): Promise<PipelineRuntimeDiagnostic | undefined> {
     const snapshot = active.snapshot.executionPlan;
     if (!snapshot) return undefined;
-    const dynamicNodes = executionPlanNodes(snapshot.plan);
+    const dynamicNodes = executionPlanNodes(snapshot.plan, this.agentName, active.program.nodes.find(node => node.output?.type === "acp.sequential-delivery/v1"), Object.values(active.snapshot.sandboxRuns ?? {}).find(run => run.baseCommit)?.baseCommit);
     if (snapshot.expansion.status === "expanded") {
       if (!dynamicNodes.every(node => active.program.nodesById.has(node.id))) {
         active.program = appendCompiledPipelineNodes(active.program, dynamicNodes);
@@ -575,16 +579,20 @@ export class PipelineRuntime {
         return sessionBoundaryDiagnostic(active, node, state.attempts + 1, error);
       }
       try {
+        const dependencies = dependencyCheckpoints(active, node);
+        const reviewPrompt = node.id === active.snapshot.executionPlan?.plan.finalReview.id
+          ? `${prompt}\n\nComplete retained checkpoint evidence (diffs from the fixed run base):\n${dependencies.map(parent => `Node ${parent.nodeId}, base ${parent.baseCommit}, files: ${parent.checkpoint.preview.files.join(", ")}\n${parent.checkpoint.preview.diff}`).join("\n\n")}\n\nImplementation reports:\n${JSON.stringify(dependencies.map(parent => active.snapshot.artifacts[`${parent.nodeId}.result`]?.value).filter(Boolean))}\n\nPerform the static review now using this supplied complete diff and approved specification. Do not reread files or run exploratory tools. Report only evidence present here; do not claim to have run tests yourself. Return the verification JSON object as your final response.`
+          : prompt;
         const result = await session.send({
           runId: active.snapshot.runId,
           attempt,
           node,
-          prompt,
+          prompt: reviewPrompt,
           inputs,
           signal: active.controller.signal,
           onSandboxRunState: state => this.persistSandboxRunState(active, state),
           resumeSandboxRun: this.resumeSandboxRun(active, node.id, attempt),
-          dependencyCheckpoints: dependencyCheckpoints(active, node),
+          dependencyCheckpoints: dependencies,
         });
         if (active.controller.signal.aborted) {
           return { ok: true };
@@ -712,7 +720,11 @@ export class PipelineRuntime {
           inputs,
           signal: active.controller.signal,
           onSandboxRunState: state => this.persistSandboxRunState(active, state),
-          resumeSandboxRun: this.resumeSandboxRun(active, node.id, attempt),
+          // Each interview send carries new history (or a repair request). A
+          // completed sandbox belongs to the previous send, not this prompt.
+          resumeSandboxRun: this.resumeSandboxRun(active, node.id, attempt)?.integrationState === "sandbox_created"
+            ? this.resumeSandboxRun(active, node.id, attempt)
+            : undefined,
           replay: isReplay,
         });
         if (!("artifact" in result)) {
@@ -1141,11 +1153,20 @@ export class PipelineRuntime {
 }
 
 function dependencyCheckpoints(active: ActiveRun, node: CompiledPipelineNode) {
-  const dependencies = active.program.nodes.filter(candidate =>
-    node.needs.includes(candidate.id)
-    && candidate.kind === "agent"
-    && canMutateWorkspace(candidate.policy)
-  );
+  // Approval nodes forward artifacts but own no checkpoint. Traverse them to
+  // the nearest writing agents so approved files cross the sandbox boundary.
+  const dependencyIds = new Set<string>();
+  const visited = new Set<string>();
+  const visit = (id: string) => {
+    if (visited.has(id)) return;
+    visited.add(id);
+    const candidate = active.program.nodesById.get(id);
+    if (!candidate) return;
+    if (candidate.kind === "agent" && canMutateWorkspace(candidate.policy)) dependencyIds.add(id);
+    else candidate.needs.forEach(visit);
+  };
+  node.needs.forEach(visit);
+  const dependencies = active.program.nodes.filter(candidate => dependencyIds.has(candidate.id));
   const checkpoints = dependencies.flatMap(dependency => {
     const dependencyNodeId = dependency.id;
     const latest = Object.values(active.snapshot.sandboxRuns ?? {})
@@ -1188,15 +1209,18 @@ function requiredCheckpointDiagnostic(
   };
 }
 
-function executionPlanNodes(plan: ExecutionPlan): CompiledPipelineNode[] {
+function executionPlanNodes(plan: ExecutionPlan, selectedAgent?: string, delivery?: CompiledPipelineNode, baseCommit?: string): CompiledPipelineNode[] {
+  const inputs = delivery?.output ? [{ name: "approvedDelivery", from: `${delivery.id}.${delivery.output.name}`, type: delivery.output.type, format: delivery.output.format }] : [];
+  const context = `User request:\n{{userPrompt}}\nApproved delivery (read the referenced specification and ticket files before making changes):\n{{inputs.approvedDelivery}}`;
+
   const implementationNodes = plan.nodes.map(node => ({
     id: node.id,
     kind: "agent" as const,
-    agent: node.ticket.agent ?? "Codex Sandbox",
-    prompt: `Implement the approved ticket from the immutable Execution Plan:\n${JSON.stringify(node.ticket, null, 2)}`,
+    agent: selectedAgent ?? node.ticket.agent ?? "Codex Sandbox",
+    prompt: `${context}\nImplement the approved ticket from the immutable Execution Plan:\n${JSON.stringify(node.ticket, null, 2)}\nYour final assistant message MUST be the JSON object itself, not a description of fields or a plan to produce it. Fill this valid JSON template with actual evidence: ${JSON.stringify({ contract: "acp.implementation-result/v1", ticketId: node.id, branch: "actual branch name", commits: ["actual commit hash"], summary: "actual changes", validations: ["actual commands and results"] })}. Do not change public interfaces or add dependencies unless the approved ticket explicitly requires it. Use existing public operations to test private behavior. No Markdown or prose outside JSON.`,
     skills: ["implement"],
-    needs: [...node.needs],
-    inputs: [],
+    needs: node.needs.length === 0 && delivery ? [delivery.id] : [...node.needs],
+    inputs,
     output: { name: "result", type: "acp.implementation-result/v1", format: "json" as const },
     retry: { maxAttempts: 1, backoffMs: 0 },
     policy: WORKSPACE_WRITE_PIPELINE_POLICY,
@@ -1204,11 +1228,11 @@ function executionPlanNodes(plan: ExecutionPlan): CompiledPipelineNode[] {
   return [...implementationNodes, {
     id: plan.finalReview.id,
     kind: "agent" as const,
-    agent: "Codex Sandbox",
-    prompt: "Review the complete integrated result produced by the immutable Execution Plan.",
+    agent: selectedAgent ?? "Codex Sandbox",
+    prompt: `${context}\nReview the complete integrated result produced by the immutable Execution Plan against the approved specification, including exact formatting and tests. The fixed review base is ${baseCommit ?? "the first parent of the integration commit"}. Start with git diff --stat and git diff against this base. Review only files changed by this Execution Plan, plus the referenced specification/tickets and applicable repository standards. Earlier audit logs and unrelated historical changes are outside this delivery. Do not read whole source or test files: inspect only the changed hunks and at most 100 lines of adjacent context per read. Do not search audit directories or transcripts. Limit exploration to evidence needed to decide compliance, then publish the verdict immediately. Validate tests with npm ci and npm test at the root if needed; never pipe test output through tail without preserving the test exit status. Return the JSON object itself as your final assistant message. Fill this valid JSON template with actual evidence: {"contract":"acp.verification-report/v1","verdict":"passed","categories":[{"name":"spec compliance","required":true,"status":"passed","details":"actual evidence"}]}. Set verdict to failed when requirements fail; category status may be passed, failed or skipped. Check interface visibility, scope, dependencies and actual test results. Include at least one category. No Markdown or prose outside JSON.`,
     skills: ["code-review"],
     needs: [...plan.finalReview.needs],
-    inputs: [],
+    inputs,
     output: { name: "review", type: "acp.verification-report/v1", format: "json" as const },
     retry: { maxAttempts: 1, backoffMs: 0 },
     policy: READ_ONLY_PIPELINE_POLICY,
@@ -1236,7 +1260,15 @@ export function renderRuntimeTemplate(
     }
     const inputMatch = /^inputs\.([A-Za-z][A-Za-z0-9_-]*)$/.exec(key);
     if (inputMatch) {
-      return stringifyTemplateValue(inputs[inputMatch[1]]?.value);
+      const artifact = inputs[inputMatch[1]];
+      const rendered = stringifyTemplateValue(artifact?.value);
+      if (artifact?.type === "acp.ticket-graph/v1" && artifact.value && typeof artifact.value === "object") {
+        const documentation = (artifact.value as { documentation?: unknown }).documentation;
+        if (typeof documentation === "string" && /^\.scratch\/[^`\r\n]+$/.test(documentation)) {
+          return `${rendered}\n\n\`${documentation}\``;
+        }
+      }
+      return rendered;
     }
     return stringifyTemplateValue(inputVariables[key]);
   });

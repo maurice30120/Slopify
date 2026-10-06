@@ -1,0 +1,120 @@
+npm notice run @acp-client/sandbox@0.0.0 test
+npm notice run npm run build && node --test "dist/test/**/*.test.js"
+npm notice run @acp-client/sandbox@0.0.0 build
+npm notice run tsc -p tsconfig.json --incremental false
+✖ Vibe bridge publishes only the last assistant message and preserves raw diagnostics (1.169916ms)
+✔ Codex bridge preserves plain text output (0.121791ms)
+✖ Vibe bridge reports malformed output rather than publishing the transcript (0.142375ms)
+✔ routes every public sandbox ACP extension to an active handler (0.644208ms)
+✔ rejects unknown or inactive sandbox extension methods explicitly (0.250167ms)
+✔ exposes the four pipeline Promotion policies (0.675833ms)
+✔ integrates Agent Checkpoints in the supplied deterministic order without mutating the host workspace (0.747708ms)
+✔ reports an Integration Conflict without publishing or mutating the host workspace (0.750167ms)
+✔ an empty checkpoint remains attributed but does not create an integration commit (0.097292ms)
+✔ ask presents one global preview and explicit approval applies one atomic fast-forward (0.21225ms)
+✔ auto-apply promotes the complete change set without prompting (0.083042ms)
+▶ discard, auto-reject, user rejection and cancellation never mutate the host workspace
+  ✔ discard (3.18575ms)
+  ✔ auto-reject (0.065ms)
+  ✔ user rejection (0.106ms)
+  ✔ cancellation (0.090833ms)
+✔ discard, auto-reject, user rejection and cancellation never mutate the host workspace (3.754417ms)
+✔ no_changes skips the global Promotion decision entirely (0.085916ms)
+✔ a divergent Git base blocks Promotion before any workspace mutation (0.130625ms)
+✔ replaying an already completed Promotion is idempotent (0.073666ms)
+✔ late workspace changes block Promotion before any workspace mutation (0.091541ms)
+✔ exports only the neutral ACP sandbox extension methods (0.801209ms)
+✔ creates and previews an attributed Agent Checkpoint without mutating the host workspace (3.850291ms)
+✔ launches Mistral Vibe programmatically inside a Vibe sandbox (0.467209ms)
+✔ prepares a descendant from multiple parent checkpoints without mutating the host worktree (0.914625ms)
+✔ reports a real Integration Conflict before launching the descendant agent (0.860041ms)
+✔ creates an empty technical checkpoint and returns no_changes when its preview is empty (0.309292ms)
+✔ stops after a checkpoint failure and never fetches or previews implicitly (0.231625ms)
+✔ stops after a checkpoint fetch failure and never produces an implicit preview or Promotion (0.209ms)
+✔ rejects a dirty workspace before creating a sandbox with corrective guidance (0.1305ms)
+✔ ignores Slopify run state created before the clean-workspace preflight (0.275834ms)
+✔ does not apply the clean-workspace check to a read-only pipeline node (0.267208ms)
+✔ requires sbx 0.35.0 and required clone/list capabilities (0.193084ms)
+✔ accepts the installed sbx version output format (0.101667ms)
+✔ rejects an occupied planned sandbox name before creation (0.16625ms)
+▶ initializes each Docker global network preset from the exact CLI choices without per-sandbox rules
+  ✔ Open (0.357458ms)
+  ✔ Balanced (0.19025ms)
+  ✔ Locked Down (0.159875ms)
+✔ initializes each Docker global network preset from the exact CLI choices without per-sandbox rules (0.905041ms)
+✔ reuses an initialized global network policy without prompting again (0.165292ms)
+✔ cancelling one preflight does not abort global policy initialization shared with another run (0.210833ms)
+✔ cancelling the last preflight aborts its global policy subprocess (0.185125ms)
+✔ fails before sandbox creation when global network policy initialization fails (0.1605ms)
+✔ fails with corrective guidance when policy initialization needs a non-interactive choice (0.1035ms)
+✔ cleans the sandbox when Codex fails (0.179875ms)
+✔ an already absent sandbox does not turn successful cleanup into a pipeline failure (7.205792ms)
+✔ external cancellation aborts the active sbx exec process and still cleans the sandbox (0.358083ms)
+✔ timeout aborts the active sbx exec process and exports a timed_out diagnostic (12.677667ms)
+✔ a hung cleanup is aborted on its own deadline and recorded without blocking the run (12.585875ms)
+▶ keepSandbox preserves resources and reports copyable commands after success and failure
+  ✔ success (1.214667ms)
+  ✔ failure (0.967916ms)
+✔ keepSandbox preserves resources and reports copyable commands after success and failure (2.372167ms)
+✔ reconciles a persisted sandbox only when its stable identity and checkpoint base match (0.17525ms)
+✔ resumes a matching sandbox after creation without creating a second resource (0.199208ms)
+✔ resumes after checkpoint persistence without relaunching Codex or requiring the removed resource (0.102583ms)
+✔ repeats cleanup idempotently when a checkpointed sandbox disappeared before removed state persisted (0.089917ms)
+✔ suspends an uncheckpointed sandbox with partial worktree changes (0.086667ms)
+▶ suspends reconciliation on identity or base divergence without relaunch, cleanup, or Promotion
+  ✔ identity (0.084375ms)
+  ✔ base (0.042583ms)
+✔ suspends reconciliation on identity or base divergence without relaunch, cleanup, or Promotion (0.24275ms)
+ℹ tests 59
+ℹ suites 0
+ℹ pass 57
+ℹ fail 2
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 136.049292
+
+✖ failing tests:
+
+test at dist/test/acpBridge.test.js:15:1
+✖ Vibe bridge publishes only the last assistant message and preserves raw diagnostics (1.169916ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+  + actual - expected
+  
+  + '[{"type":"message","role":"user","content":[{"type":"text","text":"<proposed_plan>template</proposed_plan>"}]},{"type":"message","role":"assistant","content":[{"type":"text","text":"Exploring the repository"}]},{"type":"effect","role":"assistant","content":[{"type":"text","text":"tool output"}]},{"type":"message","role":"assistant","content":[{"type":"text","text":"<proposed_plan><interview_state>question</interview_state><clarification_question>Format?</clarification_question></proposed_plan>"}]}]'
+  - '<proposed_plan><interview_state>question</interview_state><clarification_question>Format?</clarification_question></proposed_plan>'
+  
+      at TestContext.<anonymous> (file:///Users/dhuyet/Documents/POC/Slopify/acp-sandbox/dist/test/acpBridge.test.js:25:12)
+      at async Test.run (node:internal/test_runner/test:1332:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:385:3) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: '[{"type":"message","role":"user","content":[{"type":"text","text":"<proposed_plan>template</proposed_plan>"}]},{"type":"message","role":"assistant","content":[{"type":"text","text":"Exploring the repository"}]},{"type":"effect","role":"assistant","content":[{"type":"text","text":"tool output"}]},{"type":"message","role":"assistant","content":[{"type":"text","text":"<proposed_plan><interview_state>question</interview_state><clarification_question>Format?</clarification_question></proposed_plan>"}]}]',
+    expected: '<proposed_plan><interview_state>question</interview_state><clarification_question>Format?</clarification_question></proposed_plan>',
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at dist/test/acpBridge.test.js:32:1
+✖ Vibe bridge reports malformed output rather than publishing the transcript (0.142375ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+  
+  1 !== 0
+  
+      at TestContext.<anonymous> (file:///Users/dhuyet/Documents/POC/Slopify/acp-sandbox/dist/test/acpBridge.test.js:35:16)
+      at async Test.run (node:internal/test_runner/test:1332:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:911:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: 1,
+    expected: 0,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+npm error Lifecycle script `test` failed with error:
+npm error code 1
+npm error path /Users/dhuyet/Documents/POC/Slopify/acp-sandbox
+npm error workspace @acp-client/sandbox@0.0.0
+npm error location /Users/dhuyet/Documents/POC/Slopify/acp-sandbox
+npm error command failed
+npm error command sh -c npm run build && node --test "dist/test/**/*.test.js"

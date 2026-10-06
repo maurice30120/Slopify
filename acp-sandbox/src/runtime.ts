@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 
 import {
@@ -30,6 +31,8 @@ export interface SubprocessRequest {
   cwd: string;
   stdin: 'ignore';
   observeOutput?: boolean;
+  /** Receive each raw chunk immediately, before the process completes. */
+  onOutput?: (stream: 'stdout' | 'stderr', chunk: string) => void;
   signal?: AbortSignal;
   env?: NodeJS.ProcessEnv;
 }
@@ -49,6 +52,8 @@ export interface SandboxRunInput {
   attempt: number;
   prompt: string;
   model: string;
+  /** CLI launched inside the sandbox. Defaults to Codex for compatibility. */
+  agent?: 'codex' | 'vibe';
   effort?: 'low' | 'medium' | 'high' | 'xhigh';
   signal?: AbortSignal;
   timeoutMs?: number;
@@ -261,7 +266,8 @@ export class DockerSandboxRuntime {
         if (!baseCommit) throw new Error('Unable to read the host base commit: git returned an empty commit id.');
         await this.requireSuccess({
           command: 'sbx',
-          args: ['create', '--clone', '--name', sandboxName, 'codex', '.'],
+          args: ['create', '--clone', '--name', sandboxName,
+            input.agent === 'vibe' ? 'docker.io/sbx/vibe-kit:latest' : 'codex', '.'],
           cwd: input.workspaceCwd,
           stdin: 'ignore',
           signal: execution.signal,
@@ -274,16 +280,34 @@ export class DockerSandboxRuntime {
             checkpoints: input.dependencyCheckpoints,
             signal: execution.signal,
           });
-          const remote = `sandbox-${sandboxName}`;
-          const dependencyRef = `refs/slopify/dependencies/${input.runId}/${input.nodeId}/${input.attempt}`;
-          await this.requireSuccess({
-            command: 'git', args: ['push', '--force', remote, `${composed.changeSet.commit}:${dependencyRef}`],
-            cwd: input.workspaceCwd, stdin: 'ignore', signal: execution.signal,
-          }, 'publish dependency checkpoints to the descendant sandbox');
-          await this.requireSuccess({
-            command: 'sbx', args: ['exec', sandboxName, 'git', 'reset', '--hard', dependencyRef],
-            cwd: input.workspaceCwd, stdin: 'ignore', signal: execution.signal,
-          }, 'prepare the descendant sandbox from dependency checkpoints');
+          if (composed.changeSet.commit !== baseCommit) {
+            const dependencyRef = `refs/slopify/dependencies/${input.runId}/${input.nodeId}/${input.attempt}`;
+            // sbx exposes a fetch-only Git daemon. Transfer an incremental bundle
+            // through its file API rather than requiring receive-pack on that daemon.
+            const bundleDirectory = await mkdtemp(path.join(tmpdir(), 'slopify-dependencies-'));
+            const hostBundle = path.join(bundleDirectory, 'dependencies.bundle');
+            const sandboxBundle = '/tmp/slopify-dependencies.bundle';
+            try {
+              await this.requireSuccess({
+                command: 'git', args: ['bundle', 'create', hostBundle, composed.changeSet.ref, `^${baseCommit}`],
+                cwd: input.workspaceCwd, stdin: 'ignore', signal: execution.signal,
+              }, 'bundle dependency checkpoints');
+              await this.requireSuccess({
+                command: 'sbx', args: ['cp', hostBundle, `${sandboxName}:${sandboxBundle}`],
+                cwd: input.workspaceCwd, stdin: 'ignore', signal: execution.signal,
+              }, 'copy dependency checkpoints to the descendant sandbox');
+              await this.requireSuccess({
+                command: 'sbx', args: ['exec', sandboxName, 'git', 'fetch', '--no-tags', sandboxBundle, `${composed.changeSet.ref}:${dependencyRef}`],
+                cwd: input.workspaceCwd, stdin: 'ignore', signal: execution.signal,
+              }, 'import dependency checkpoints in the descendant sandbox');
+            } finally {
+              await rm(bundleDirectory, { recursive: true, force: true });
+            }
+            await this.requireSuccess({
+              command: 'sbx', args: ['exec', sandboxName, 'git', 'reset', '--hard', dependencyRef],
+              cwd: input.workspaceCwd, stdin: 'ignore', signal: execution.signal,
+            }, 'prepare the descendant sandbox from dependency checkpoints');
+          }
         }
         const sandboxId = await this.readSandboxId(input.workspaceCwd, sandboxName, execution.signal);
         durableState = {
@@ -313,13 +337,22 @@ export class DockerSandboxRuntime {
         };
       }
 
-      const codexArgs = ['exec', sandboxName, 'codex', 'exec', '--dangerously-bypass-approvals-and-sandbox', '--ephemeral', '--json'];
-      if (input.model) codexArgs.push('--model', input.model);
-      if (input.effort) codexArgs.push('--config', `model_reasoning_effort=${JSON.stringify(input.effort)}`);
-      codexArgs.push(input.prompt);
+      const agent = input.agent ?? 'codex';
+      // Vibe resolves active_model through its model catalogue. Declare the
+      // requested API model as well to prevent a silent fallback to its default.
+      const vibeModels = JSON.stringify({
+        [input.model]: { name: input.model, alias: input.model, provider: 'mistral', auto_compact_threshold: 24000 },
+      });
+      const agentArgs = agent === 'vibe'
+        ? ['exec', '--env', `VIBE_ACTIVE_MODEL=${input.model}`, '--env', `VIBE_MODELS=${vibeModels}`,
+          '--env', 'VIBE_API_TIMEOUT=180', sandboxName, 'vibe', '--prompt', input.prompt, '--auto-approve', '--trust', '--output', 'json']
+        : ['exec', sandboxName, 'codex', 'exec', '--dangerously-bypass-approvals-and-sandbox', '--ephemeral', '--json'];
+      if (agent === 'codex' && input.model) agentArgs.push('--model', input.model);
+      if (agent === 'codex' && input.effort) agentArgs.push('--config', `model_reasoning_effort=${JSON.stringify(input.effort)}`);
+      if (agent === 'codex') agentArgs.push(input.prompt);
       const codex = await this.execute({
         command: 'sbx',
-        args: codexArgs,
+        args: agentArgs,
         cwd: input.workspaceCwd,
         stdin: 'ignore',
         observeOutput: true,
@@ -327,7 +360,7 @@ export class DockerSandboxRuntime {
       });
       stdout = codex.stdout;
       stderr = codex.stderr;
-      this.assertSuccess(codex, 'run Codex non-interactively');
+      this.assertSuccess(codex, `run ${agent === 'vibe' ? 'Mistral Vibe' : 'Codex'} non-interactively`);
 
       const checkpoint = await new GitPromotion(this.execute).createAgentCheckpoint({
         workspaceCwd: input.workspaceCwd,
@@ -529,7 +562,7 @@ export class DockerSandboxRuntime {
       const version = await this.requireSuccess({ command: 'sbx', args: ['version'], cwd, stdin: 'ignore', signal }, 'read the Docker Sandbox version');
       const actual = extractVersion(`${version.stdout}\n${version.stderr}`);
       if (!actual || compareVersions(actual, MINIMUM_SBX_VERSION) < 0) {
-        throw new Error(`Docker Sandbox sbx ${MINIMUM_SBX_VERSION} or newer is required (found ${actual ?? 'an unknown version'}). Upgrade Docker Desktop and retry.`);
+        throw new Error(`Docker Sandbox sbx ${MINIMUM_SBX_VERSION} or newer is required (found ${actual ?? 'an unknown version'}). Upgrade Docker Sandboxes (sbx) and retry.`);
       }
       await this.requireCapability(cwd, ['create', '--help'], '--clone', signal);
       await this.requireCapability(cwd, ['ls', '--help'], '--json', signal);
@@ -637,7 +670,7 @@ export class DockerSandboxRuntime {
   private async requireCapability(cwd: string, args: string[], capability: string, signal?: AbortSignal, matchOutput = true): Promise<void> {
     const result = await this.requireSuccess({ command: 'sbx', args, cwd, stdin: 'ignore', signal }, `verify Docker Sandbox capability ${capability}`);
     if (matchOutput && !`${result.stdout}\n${result.stderr}`.includes(capability)) {
-      throw new Error(`Installed sbx does not provide the required ${capability} capability. Upgrade Docker Desktop and retry.`);
+      throw new Error(`Installed sbx does not provide the required ${capability} capability. Upgrade Docker Sandboxes (sbx) and retry.`);
     }
   }
 
@@ -740,8 +773,8 @@ export function createNodeSubprocessExecutor(): SubprocessExecutor {
     };
     child.stdout.setEncoding('utf8');
     child.stderr.setEncoding('utf8');
-    child.stdout.on('data', chunk => { stdout += chunk; if (request.observeOutput) process.stdout.write(chunk); });
-    child.stderr.on('data', chunk => { stderr += chunk; if (request.observeOutput) process.stderr.write(chunk); });
+    child.stdout.on('data', chunk => { stdout += chunk; request.onOutput?.('stdout', chunk); if (request.observeOutput) process.stdout.write(chunk); });
+    child.stderr.on('data', chunk => { stderr += chunk; request.onOutput?.('stderr', chunk); if (request.observeOutput) process.stderr.write(chunk); });
     child.once('error', error => {
       if (request.signal?.aborted) {
         resolveOnce({

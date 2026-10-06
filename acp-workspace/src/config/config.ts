@@ -8,6 +8,7 @@ import type {
   AgentConfigEntry,
   SandboxAgentConfig,
 } from '../types.js';
+import type { SandboxAgent } from '@acp-client/sandbox';
 
 const CONFIG_PATH = '.acp/acp-agents.json';
 const LEGACY_CONFIG_PATH = '.acp/.sandcastle/config.json';
@@ -161,8 +162,8 @@ function parseAgent(
   }
 
   if (value.transport === 'sandbox') {
-    if (value.agent !== 'codex') {
-      errors.push(`agents.${name}.agent must be "codex" for transport "sandbox"; other Docker Sandbox agents are not supported yet.`);
+    if (value.agent !== 'codex' && value.agent !== 'vibe') {
+      errors.push(`agents.${name}.agent must be "codex" or "vibe" for transport "sandbox".`);
       return null;
     }
     const model = readNonEmptyString(value.model, `agents.${name}.model`, errors);
@@ -172,7 +173,7 @@ function parseAgent(
     if (!model || effort === null) return null;
     return {
       transport: 'sandbox',
-      agent: 'codex',
+      agent: value.agent as SandboxAgent,
       model,
       ...(effort === undefined ? {} : { effort }),
       ...(typeof value.displayName === 'string' ? { displayName: value.displayName } : {}),

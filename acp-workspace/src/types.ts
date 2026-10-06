@@ -98,5 +98,7 @@ export const consoleLogger: Logger = {
  */
 export interface WorkspaceRuntimeOptions {
   workspaceCwd: string;
+  /** Agent selected by the host for every pipeline agent node. */
+  agentName?: string;
   host: WorkspaceRuntimeHost;
 }

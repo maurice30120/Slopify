@@ -14,6 +14,7 @@ export interface ArtifactValidationResult<T = unknown> {
   errors: string[];
 }
 
+/** Contrat d'une décision de grillage, avec son choix, sa justification et ses questions. */
 export interface GrillDecisionArtifact {
   contract: "acp.grill-decision/v1";
   decision: "continue" | "revise" | "stop";
@@ -21,6 +22,7 @@ export interface GrillDecisionArtifact {
   questions: string[];
 }
 
+/** Contrat d'une spécification, de son résumé jusqu'à ses exigences et non-objectifs. */
 export interface SpecificationArtifact {
   contract: "acp.specification/v1";
   title: string;
@@ -29,8 +31,11 @@ export interface SpecificationArtifact {
   nonGoals: string[];
 }
 
+/** Contrat d'un graphe de tickets et des informations nécessaires à leur traitement. */
 export interface TicketGraphArtifact {
   contract: "acp.ticket-graph/v1";
+  /** Backticked workspace references to the human-readable ticket adapters. */
+  documentation?: string;
   tickets: Array<{
     id: string;
     title: string;
@@ -41,6 +46,7 @@ export interface TicketGraphArtifact {
   }>;
 }
 
+/** Contrat du résultat d'implémentation produit pour un ticket et sa branche. */
 export interface ImplementationResultArtifact {
   contract: "acp.implementation-result/v1";
   ticketId: string;
@@ -50,6 +56,7 @@ export interface ImplementationResultArtifact {
   validations: string[];
 }
 
+/** Contrat du résultat de fusion, incluant les branches intégrées et les conflits résolus. */
 export interface MergeResultArtifact {
   contract: "acp.merge-result/v1";
   sourceBranches: string[];
@@ -58,6 +65,7 @@ export interface MergeResultArtifact {
   conflicts: Array<{ path: string; resolvedBy: string }>;
 }
 
+/** Contrat d'un rapport de vérification et du statut de chacune de ses catégories. */
 export interface VerificationReportArtifact {
   contract: "acp.verification-report/v1";
   verdict: "passed" | "failed";
@@ -86,6 +94,7 @@ const CONTRACT_FORMAT: Record<MultiAgentArtifactContractId, PipelineArtifactForm
   "acp.verification-report/v1": "json",
 };
 
+/** Valide la structure et les valeurs d'un artefact selon son contrat déclaré. */
 export function validateMultiAgentArtifact(
   contract: string,
   payload: unknown,
@@ -115,6 +124,7 @@ export function validateMultiAgentArtifact(
       break;
     case "acp.ticket-graph/v1":
       validateTicketGraph(payload.tickets, errors);
+      if (payload.documentation !== undefined) readString(payload.documentation, `${contract}.documentation`, errors);
       break;
     case "acp.implementation-result/v1":
       readString(payload.ticketId, `${contract}.ticketId`, errors);
@@ -140,6 +150,7 @@ export function validateMultiAgentArtifact(
     : { ok: false, errors };
 }
 
+/** Valide un artefact puis l'encapsule dans le format publiable du pipeline. */
 export function publishMultiAgentArtifact(
   nodeId: string,
   name: string,
@@ -163,6 +174,7 @@ export function publishMultiAgentArtifact(
   };
 }
 
+/** Vérifie la liste non vide des tickets, leurs champs et l'unicité de leurs identifiants. */
 function validateTicketGraph(value: unknown, errors: string[]): void {
   if (!Array.isArray(value) || value.length === 0) {
     errors.push("acp.ticket-graph/v1.tickets must be a non-empty array.");
@@ -192,6 +204,7 @@ function validateTicketGraph(value: unknown, errors: string[]): void {
   }
 }
 
+/** Vérifie que chaque conflit de fusion contient un chemin et un résolveur valides. */
 function validateConflicts(value: unknown, errors: string[]): void {
   if (!Array.isArray(value)) {
     errors.push("acp.merge-result/v1.conflicts must be an array.");
@@ -208,6 +221,7 @@ function validateConflicts(value: unknown, errors: string[]): void {
   }
 }
 
+/** Vérifie la liste non vide des catégories et les valeurs de leurs champs de statut. */
 function validateCategories(value: unknown, errors: string[]): void {
   if (!Array.isArray(value) || value.length === 0) {
     errors.push("acp.verification-report/v1.categories must be a non-empty array.");
@@ -228,10 +242,12 @@ function validateCategories(value: unknown, errors: string[]): void {
   }
 }
 
+/** Indique si une chaîne correspond à un contrat d'artefact connu. */
 function isKnownContract(value: string): value is MultiAgentArtifactContractId {
   return Object.prototype.hasOwnProperty.call(CONTRACT_FORMAT, value);
 }
 
+/** Vérifie qu'une valeur est une chaîne non vide et enregistre l'erreur sinon. */
 function readString(value: unknown, label: string, errors: string[]): string {
   if (typeof value !== "string" || value.trim() === "") {
     errors.push(`${label} must be a non-empty string.`);
@@ -240,6 +256,7 @@ function readString(value: unknown, label: string, errors: string[]): string {
   return value;
 }
 
+/** Vérifie qu'une valeur est un tableau de chaînes non vides et enregistre l'erreur sinon. */
 function readStringArray(value: unknown, label: string, errors: string[]): string[] {
   if (!Array.isArray(value) || value.some(item => typeof item !== "string" || item.trim() === "")) {
     errors.push(`${label} must be an array of non-empty strings.`);
@@ -248,12 +265,14 @@ function readStringArray(value: unknown, label: string, errors: string[]): strin
   return value;
 }
 
+/** Vérifie qu'une valeur textuelle appartient à la liste des valeurs autorisées. */
 function readEnum(value: unknown, label: string, allowed: string[], errors: string[]): void {
   if (typeof value !== "string" || !allowed.includes(value)) {
     errors.push(`${label} must be one of: ${allowed.join(", ")}.`);
   }
 }
 
+/** Détermine si une valeur est un objet dictionnaire non nul et non tableau. */
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }

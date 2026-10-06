@@ -76,6 +76,10 @@ function sandboxScenario(options: {
         createdSandboxName = request.args[request.args.indexOf('--name') + 1];
         return result();
       }
+      if (request.command === 'sbx' && request.args[0] === 'rm') {
+        createdSandboxName = undefined;
+        return result();
+      }
       if (request.args.join(' ') === 'ls --json') {
         return result(createdSandboxName
           ? JSON.stringify([{ id: `id-${createdSandboxName}`, name: createdSandboxName }])
@@ -174,7 +178,7 @@ test('creates and previews an attributed Agent Checkpoint without mutating the h
     'fetch',
     '--no-tags',
     `sandbox-${sandboxName}`,
-    `HEAD:${checkpointRef}`,
+    `+HEAD:${checkpointRef}`,
   ]);
   assert.deepEqual(hostMutatingGitCalls(fake.calls), []);
   assert.deepEqual(fake.calls.at(-1)?.args, ['rm', '--force', sandboxName]);
@@ -188,10 +192,60 @@ test('creates and previews an attributed Agent Checkpoint without mutating the h
   assert.equal(states[1].checkpoint?.checkpoint.commit, 'checkpoint456');
 });
 
+test('replaces an internal checkpoint when a new interview prompt starts from the same base', async () => {
+  const scenario = sandboxScenario();
+  let fetched = false;
+  const fake = fakeExecutor(request => {
+    if (request.command === 'git' && request.args[0] === 'fetch') {
+      if (fetched && !request.args.at(-1)?.startsWith('+HEAD:refs/slopify/checkpoints/')) {
+        return result('', 'non-fast-forward', 1);
+      }
+      fetched = true;
+    }
+    return scenario.respond(request);
+  });
+  const runtime = new DockerSandboxRuntime(fake.execute);
+  const input = { workspaceCwd: '/repo', runId: 'interview', nodeId: 'plan', attempt: 1, model: 'test' };
+  await runtime.runCodex({ ...input, prompt: 'Ask a question.' });
+  await runtime.runCodex({ ...input, prompt: 'Use the answer and return a plan.' });
+  assert.equal(fake.calls.filter(call => call.command === 'git' && call.args[0] === 'fetch').length, 2);
+  assert.deepEqual(hostMutatingGitCalls(fake.calls), []);
+});
+
+test('launches Mistral Vibe programmatically inside a Vibe sandbox', async () => {
+  const scenario = sandboxScenario();
+  const fake = fakeExecutor(scenario.respond);
+
+  await new DockerSandboxRuntime(fake.execute).runCodex({
+    workspaceCwd: '/repo',
+    runId: 'run-vibe',
+    nodeId: 'comments',
+    attempt: 1,
+    prompt: 'Ajoute les commentaires fonctionnels en français.',
+    model: 'mistral-medium-latest',
+    agent: 'vibe',
+  });
+
+  const create = fake.calls.find(call => call.command === 'sbx' && call.args[0] === 'create' && call.args.includes('--clone'));
+  assert.equal(create?.args.at(-2), 'docker.io/sbx/vibe-kit:latest');
+  const launch = fake.calls.find(call => call.command === 'sbx' && call.args[0] === 'exec' && call.args.includes('vibe'));
+  assert.deepEqual(launch?.args.slice(1, 3), ['--env', 'VIBE_ACTIVE_MODEL=mistral-medium-latest']);
+  assert.equal(launch?.args[3], '--env');
+  assert.deepEqual(JSON.parse(launch!.args[4].slice('VIBE_MODELS='.length)), {
+    'mistral-medium-latest': { name: 'mistral-medium-latest', alias: 'mistral-medium-latest', provider: 'mistral', auto_compact_threshold: 24000 },
+  });
+  assert.ok(launch?.args.includes('VIBE_API_TIMEOUT=180'));
+  assert.deepEqual(launch?.args.slice(launch.args.indexOf('vibe')), [
+    'vibe', '--prompt', 'Ajoute les commentaires fonctionnels en français.',
+    '--auto-approve', '--trust', '--output', 'json',
+  ]);
+});
+
 test('prepares a descendant from multiple parent checkpoints without mutating the host worktree', async () => {
   const scenario = sandboxScenario({ changedFiles: ['join.ts'], diff: 'diff' });
   let merge = 0;
   const fake = fakeExecutor(request => {
+    if (request.command === 'git' && request.args[0] === 'push') return result('', 'repository not exported', 1);
     if (request.command === 'git' && request.args.join(' ') === 'show -s --format=%cI base123') return result('2026-01-01T00:00:00Z\n');
     if (request.command === 'git' && request.args[0] === 'merge-base') return result();
     if (request.command === 'git' && request.args[0] === 'merge-tree') return result(`tree-${++merge}\n`);
@@ -863,4 +917,18 @@ test('suspends reconciliation on identity or base divergence without relaunch, c
       assert.deepEqual(hostMutatingGitCalls(fake.calls), []);
     });
   }
+});
+
+
+test('launches descendants of unchanged approval checkpoints without creating an empty bundle', async () => {
+  const scenario = sandboxScenario();
+  const fake = fakeExecutor(request => request.command === 'git' && request.args[0] === 'bundle'
+    ? result('', 'fatal: Refusing to create empty bundle.', 1) : scenario.respond(request));
+  await new DockerSandboxRuntime(fake.execute).runCodex({ workspaceCwd: '/repo', runId: 'empty-parent', nodeId: 'spec', attempt: 1, prompt: 'Write spec', model: 'model', dependencyCheckpoints: [{
+    checkpointStatus: 'no_changes',
+    checkpoint: { runId: 'empty-parent', nodeId: 'plan', attempt: 1, sandboxName: 'plan', baseCommit: 'base123', commit: 'empty-commit', remote: 'remote-plan', ref: 'refs/checkpoints/plan' },
+    preview: { baseCommit: 'base123', checkpointCommit: 'empty-commit', fileCount: 0, files: [], diff: '' },
+  }] });
+  assert.equal(fake.calls.some(call => call.command === 'git' && call.args[0] === 'bundle'), false);
+  assert.equal(fake.calls.some(call => call.command === 'sbx' && call.args.includes('codex')), true);
 });

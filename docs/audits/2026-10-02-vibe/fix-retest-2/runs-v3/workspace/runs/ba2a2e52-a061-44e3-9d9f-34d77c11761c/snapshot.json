@@ -1,0 +1,46 @@
+{
+  "runId": "ba2a2e52-a061-44e3-9d9f-34d77c11761c",
+  "pipelineId": "simple",
+  "status": "failed",
+  "inputVariables": {
+    "userPrompt": "Create only audit-marker.txt containing exactly slopify audit ok followed by one newline. Verify its exact contents using the terminal. Do not change any other file. Do not commit or launch other pipelines or agents. Return the verification command and its result."
+  },
+  "nodeStates": {
+    "implementation": {
+      "status": "failed",
+      "attempts": 1,
+      "startedAt": "2026-10-02T12:27:01.599Z",
+      "completedAt": "2026-10-02T12:27:41.591Z"
+    }
+  },
+  "artifacts": {},
+  "diagnostics": [
+    {
+      "nodeId": "implementation",
+      "attempt": 1,
+      "code": "agent_failed",
+      "message": "Unable to run Mistral Vibe non-interactively: Warning: /private/var/folders/yd/6910m5zs4v7d7308h_8ypmy80000gp/T/slopify-vibe-audit-dUOegF is not trusted; project configuration (.agents/) will be ignored. Re-run with --trust to trust this folder temporarily.\nError: API error from mistral (model: mistral-vibe-cli-latest): Invalid API key (from env var MISTRAL_API_KEY). Please check your API key and try again."
+    },
+    {
+      "nodeId": "implementation",
+      "attempt": 1,
+      "code": "agent_failed",
+      "message": "Unable to run Mistral Vibe non-interactively: Warning: /private/var/folders/yd/6910m5zs4v7d7308h_8ypmy80000gp/T/slopify-vibe-audit-dUOegF is not trusted; project configuration (.agents/) will be ignored. Re-run with --trust to trust this folder temporarily.\nError: API error from mistral (model: mistral-vibe-cli-latest): Invalid API key (from env var MISTRAL_API_KEY). Please check your API key and try again."
+    }
+  ],
+  "createdAt": "2026-10-02T12:27:01.596Z",
+  "updatedAt": "2026-10-02T12:27:41.592Z",
+  "sandboxRuns": {
+    "slopify-ba2a2e52-a061-44e3-9d9f-34d77c11761c-imple-3bc090bd": {
+      "sandboxName": "slopify-ba2a2e52-a061-44e3-9d9f-34d77c11761c-imple-3bc090bd",
+      "sandboxId": "070b1be0-4936-4e0e-a83d-55fa790e3372",
+      "runId": "ba2a2e52-a061-44e3-9d9f-34d77c11761c",
+      "nodeId": "implementation",
+      "attempt": 1,
+      "baseCommit": "779a2737ece2c1df9cb75d11bfd04ae85d99bf9e",
+      "integrationState": "sandbox_created",
+      "resourceState": "removed",
+      "diagnosticsPath": "/var/folders/yd/6910m5zs4v7d7308h_8ypmy80000gp/T/slopify-vibe-audit-dUOegF/.acp/logs/sandboxes/slopify-ba2a2e52-a061-44e3-9d9f-34d77c11761c-imple-3bc090bd.json"
+    }
+  }
+}

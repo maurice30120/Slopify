@@ -82,12 +82,15 @@ export class DockerSandboxAcpBridgeAgent implements Agent {
         prompt: textPrompt(params),
         signal: controller.signal,
       });
-      if (session.result.stdout.trim()) {
+      const responseText = this.options.agent === 'vibe'
+        ? vibeResponseText(session.result.stdout)
+        : session.result.stdout;
+      if (responseText.trim()) {
         await this.connection.sessionUpdate({
           sessionId: params.sessionId,
           update: {
             sessionUpdate: 'agent_message_chunk',
-            content: { type: 'text', text: session.result.stdout },
+            content: { type: 'text', text: responseText },
           },
         });
       }
@@ -180,6 +183,28 @@ function textPrompt(params: PromptRequest): string {
   const prompt = parts.join('\n\n').trim();
   if (!prompt) throw new Error('Docker Sandbox Codex requires a non-empty ACP prompt.');
   return prompt;
+}
+
+/** Vibe JSON includes the prompt and tool effects; ACP receives only the final reply. */
+function vibeResponseText(stdout: string): string {
+  let entries: unknown;
+  try {
+    entries = JSON.parse(stdout);
+  } catch {
+    throw new Error('Mistral Vibe returned invalid JSON output.');
+  }
+  if (!Array.isArray(entries)) throw new Error('Mistral Vibe output must be a message array.');
+  const finalMessage = entries.slice().reverse().find(entry =>
+    entry && entry.type === 'message' && entry.role === 'assistant',
+  );
+  const text = Array.isArray(finalMessage?.content)
+    ? finalMessage.content.filter((block: unknown) =>
+      block && typeof block === 'object' && 'type' in block && block.type === 'text'
+      && 'text' in block && typeof block.text === 'string',
+    ).map((block: { text: string }) => block.text).join('\n')
+    : '';
+  if (!text.trim()) throw new Error('Mistral Vibe output contains no final assistant text.');
+  return text;
 }
 
 function bridgeFailure(error: unknown): SandboxBridgeFailure {

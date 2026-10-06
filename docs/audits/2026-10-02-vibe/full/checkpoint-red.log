@@ -1,0 +1,119 @@
+npm notice run @acp-client/sandbox@0.0.0 test
+npm notice run npm run build && node --test "dist/test/**/*.test.js"
+npm notice run @acp-client/sandbox@0.0.0 build
+npm notice run tsc -p tsconfig.json --incremental false
+✔ Vibe bridge publishes only the last assistant message and preserves raw diagnostics (0.747334ms)
+✔ Codex bridge preserves plain text output (0.085583ms)
+✔ Vibe bridge reports malformed output rather than publishing the transcript (0.174083ms)
+✔ routes every public sandbox ACP extension to an active handler (0.950166ms)
+✔ rejects unknown or inactive sandbox extension methods explicitly (0.275167ms)
+✔ exposes the four pipeline Promotion policies (0.874208ms)
+✔ integrates Agent Checkpoints in the supplied deterministic order without mutating the host workspace (0.761208ms)
+✔ reports an Integration Conflict without publishing or mutating the host workspace (0.721625ms)
+✔ an empty checkpoint remains attributed but does not create an integration commit (0.15475ms)
+✔ ask presents one global preview and explicit approval applies one atomic fast-forward (0.842041ms)
+✔ auto-apply promotes the complete change set without prompting (0.131541ms)
+▶ discard, auto-reject, user rejection and cancellation never mutate the host workspace
+  ✔ discard (0.086083ms)
+  ✔ auto-reject (0.0665ms)
+  ✔ user rejection (0.107042ms)
+  ✔ cancellation (0.103709ms)
+✔ discard, auto-reject, user rejection and cancellation never mutate the host workspace (0.689417ms)
+✔ no_changes skips the global Promotion decision entirely (0.081542ms)
+✔ a divergent Git base blocks Promotion before any workspace mutation (0.147791ms)
+✔ replaying an already completed Promotion is idempotent (0.083375ms)
+✔ late workspace changes block Promotion before any workspace mutation (0.083458ms)
+✔ exports only the neutral ACP sandbox extension methods (0.709292ms)
+✖ creates and previews an attributed Agent Checkpoint without mutating the host workspace (3.745875ms)
+✖ replaces an internal checkpoint when a new interview prompt starts from the same base (0.573416ms)
+✔ launches Mistral Vibe programmatically inside a Vibe sandbox (0.715416ms)
+✔ prepares a descendant from multiple parent checkpoints without mutating the host worktree (1.10575ms)
+✔ reports a real Integration Conflict before launching the descendant agent (0.868417ms)
+✔ creates an empty technical checkpoint and returns no_changes when its preview is empty (0.272917ms)
+✔ stops after a checkpoint failure and never fetches or previews implicitly (0.24175ms)
+✔ stops after a checkpoint fetch failure and never produces an implicit preview or Promotion (0.238459ms)
+✔ rejects a dirty workspace before creating a sandbox with corrective guidance (0.144083ms)
+✔ ignores Slopify run state created before the clean-workspace preflight (0.29975ms)
+✔ does not apply the clean-workspace check to a read-only pipeline node (0.21275ms)
+✔ requires sbx 0.35.0 and required clone/list capabilities (0.1405ms)
+✔ accepts the installed sbx version output format (0.072708ms)
+✔ rejects an occupied planned sandbox name before creation (0.134875ms)
+▶ initializes each Docker global network preset from the exact CLI choices without per-sandbox rules
+  ✔ Open (0.350833ms)
+  ✔ Balanced (0.178917ms)
+  ✔ Locked Down (0.164ms)
+✔ initializes each Docker global network preset from the exact CLI choices without per-sandbox rules (0.90175ms)
+✔ reuses an initialized global network policy without prompting again (0.129792ms)
+✔ cancelling one preflight does not abort global policy initialization shared with another run (0.22175ms)
+✔ cancelling the last preflight aborts its global policy subprocess (0.185167ms)
+✔ fails before sandbox creation when global network policy initialization fails (0.14625ms)
+✔ fails with corrective guidance when policy initialization needs a non-interactive choice (0.100625ms)
+✔ cleans the sandbox when Codex fails (0.20675ms)
+✔ an already absent sandbox does not turn successful cleanup into a pipeline failure (8.6785ms)
+✔ external cancellation aborts the active sbx exec process and still cleans the sandbox (0.306417ms)
+✔ timeout aborts the active sbx exec process and exports a timed_out diagnostic (12.833167ms)
+✔ a hung cleanup is aborted on its own deadline and recorded without blocking the run (13.13875ms)
+▶ keepSandbox preserves resources and reports copyable commands after success and failure
+  ✔ success (1.473208ms)
+  ✔ failure (0.974375ms)
+✔ keepSandbox preserves resources and reports copyable commands after success and failure (2.680958ms)
+✔ reconciles a persisted sandbox only when its stable identity and checkpoint base match (0.178833ms)
+✔ resumes a matching sandbox after creation without creating a second resource (0.197459ms)
+✔ resumes after checkpoint persistence without relaunching Codex or requiring the removed resource (0.106791ms)
+✔ repeats cleanup idempotently when a checkpointed sandbox disappeared before removed state persisted (0.099458ms)
+✔ suspends an uncheckpointed sandbox with partial worktree changes (0.106125ms)
+▶ suspends reconciliation on identity or base divergence without relaunch, cleanup, or Promotion
+  ✔ identity (0.09075ms)
+  ✔ base (0.048084ms)
+✔ suspends reconciliation on identity or base divergence without relaunch, cleanup, or Promotion (0.243584ms)
+ℹ tests 60
+ℹ suites 0
+ℹ pass 58
+ℹ fail 2
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 133.092458
+
+✖ failing tests:
+
+test at dist/test/runtime.test.js:100:1
+✖ creates and previews an attributed Agent Checkpoint without mutating the host workspace (3.745875ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:
+  + actual - expected
+  
+    [
+      'fetch',
+      '--no-tags',
+      'sandbox-slopify-run-42-implement-api-2-ae19a905',
+  +   'HEAD:refs/slopify/checkpoints/slopify-run-42-implement-api-2-ae19a905'
+  -   '+HEAD:refs/slopify/checkpoints/slopify-run-42-implement-api-2-ae19a905'
+    ]
+  
+      at TestContext.<anonymous> (file:///Users/dhuyet/Documents/POC/Slopify/acp-sandbox/dist/test/runtime.test.js:152:12)
+      at async Test.run (node:internal/test_runner/test:1332:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:911:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: [ 'fetch', '--no-tags', 'sandbox-slopify-run-42-implement-api-2-ae19a905', 'HEAD:refs/slopify/checkpoints/slopify-run-42-implement-api-2-ae19a905' ],
+    expected: [ 'fetch', '--no-tags', 'sandbox-slopify-run-42-implement-api-2-ae19a905', '+HEAD:refs/slopify/checkpoints/slopify-run-42-implement-api-2-ae19a905' ],
+    operator: 'deepStrictEqual',
+    diff: 'simple'
+  }
+
+test at dist/test/runtime.test.js:169:1
+✖ replaces an internal checkpoint when a new interview prompt starts from the same base (0.573416ms)
+  Error: Unable to fetch the Agent Checkpoint: non-fast-forward
+      at GitPromotion.requireSuccess (file:///Users/dhuyet/Documents/POC/Slopify/acp-sandbox/dist/src/gitPromotion.js:389:19)
+      at async GitPromotion.createAgentCheckpoint (file:///Users/dhuyet/Documents/POC/Slopify/acp-sandbox/dist/src/gitPromotion.js:66:9)
+      at async DockerSandboxRuntime.runCodex (file:///Users/dhuyet/Documents/POC/Slopify/acp-sandbox/dist/src/runtime.js:189:32)
+      at async TestContext.<anonymous> (file:///Users/dhuyet/Documents/POC/Slopify/acp-sandbox/dist/test/runtime.test.js:184:5)
+      at async Test.run (node:internal/test_runner/test:1332:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:911:7)
+npm error Lifecycle script `test` failed with error:
+npm error code 1
+npm error path /Users/dhuyet/Documents/POC/Slopify/acp-sandbox
+npm error workspace @acp-client/sandbox@0.0.0
+npm error location /Users/dhuyet/Documents/POC/Slopify/acp-sandbox
+npm error command failed
+npm error command sh -c npm run build && node --test "dist/test/**/*.test.js"

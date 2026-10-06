@@ -3,7 +3,7 @@ import {
 } from "./PipelineV3Compiler";
 import type { PipelineCompileResult } from "./PipelineV3Types";
 
-export { parseArtifactProducer } from "./PipelineV3Compiler";
+export { bindPipelineAgent, parseArtifactProducer } from "./PipelineV3Compiler";
 
 /**
  * Point d'entrée public du compilateur. Le catalogue résout d'abord le contenu

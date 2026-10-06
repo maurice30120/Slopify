@@ -5,6 +5,7 @@ import * as path from 'node:path';
 import {
   PipelineRuntime,
   PipelineRuntimeAgentAdapter,
+  bindPipelineAgent,
   resolvePipelineStepText,
   workspacePipelineRunStore,
   type AgentNodeSessionFactory,
@@ -36,6 +37,7 @@ export interface CliPipelineBackend {
 export interface CliPipelineBackendContext {
   terminal: Pick<CliTerminal, 'confirm' | 'select'>;
   logger: CliLogger;
+  agentName?: string;
 }
 
 export type CliPipelineBackendFactory = (
@@ -52,6 +54,7 @@ export interface CliPipelineListEntry {
 export interface CliPipelineHostOptions {
   terminal: CliTerminal;
   backendFactory: CliPipelineBackendFactory;
+  agentName?: string;
   verbose?: boolean;
   createSession?: AgentNodeSessionFactory;
   runAgent?: PipelineAgentRunner;
@@ -99,6 +102,7 @@ export class CliPipelineHost {
     this.backend = this.options.backendFactory(this.workspaceCwd, {
       terminal: this.options.terminal,
       logger: this.logger,
+      agentName: this.options.agentName,
     });
     this.programs = this.backend.programs;
 
@@ -123,12 +127,13 @@ export class CliPipelineHost {
   }
 
   async start(pipelineName: string, prompt: string): Promise<PipelineRuntimeResult> {
-    const program = this.programs.find(candidate =>
+    const declaredProgram = this.programs.find(candidate =>
       candidate.id === pipelineName || candidate.title === pipelineName,
     );
-    if (!program) {
+    if (!declaredProgram) {
       throw new Error(`ACP pipeline "${pipelineName}" was not found in .acp/pipelines.`);
     }
+    const program = this.materializeProgram(declaredProgram);
 
     const runId = this.options.runIdFactory?.() ?? randomUUID();
     await this.backend.preflightPipeline?.(program, runId);
@@ -204,6 +209,7 @@ export class CliPipelineHost {
     return new PipelineRuntime({ createSession: this.createSession }, {
       runIdFactory: () => runId,
       programs: [program],
+      agentName: this.options.agentName,
       store: this.runStore,
       onEvent: event => {
         const log = this.runLogs.get(event.runId);
@@ -232,15 +238,26 @@ export class CliPipelineHost {
     const active = this.runtimes.get(runId);
     if (active) return active;
     const snapshot = await this.runStore.load(runId);
-    const program = snapshot
+    const declaredProgram = snapshot
       ? this.programs.find(candidate => candidate.id === snapshot.pipelineId)
       : undefined;
-    if (!snapshot || !program || (snapshot.status !== 'paused' && snapshot.status !== 'running')) {
+    if (!snapshot || !declaredProgram || (snapshot.status !== 'paused' && snapshot.status !== 'running')) {
       throw new Error(`Unknown active ACP pipeline run "${runId}".`);
     }
+    const program = this.materializeProgram(declaredProgram);
     const restored = this.createRuntime(program, runId);
     this.runtimes.set(runId, restored);
     return restored;
+  }
+
+  private materializeProgram(program: CompiledPipelineProgram): CompiledPipelineProgram {
+    if (this.options.agentName) {
+      return bindPipelineAgent(program, this.options.agentName);
+    }
+    if (program.nodes.some(node => node.kind === 'agent' && !node.agent)) {
+      throw new Error('Pipeline agent selection is required; pass --agent <name>.');
+    }
+    return program;
   }
 
   private findRunLog(_input: unknown): PipelineRunLog | undefined {
