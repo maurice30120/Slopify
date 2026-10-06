@@ -272,3 +272,24 @@ test('no implicit retry or agent change on failure', { timeout: 15000 }, async t
   assert.equal(state.tasks[0].agent, 'pi');
   assert.equal(state.tasks[1].agent, 'codex');
 });
+
+test('cross-wave tasks start from the integrated commit of the previous wave', { timeout: 15000 }, async t => {
+  const bases = new Map<string, string>();
+  const f = await fixture(t, [
+    task('wave1-a', 'pi'),
+    task('wave1-b', 'codex'),
+    task('wave2-c', 'pi', ['wave1-a', 'wave1-b']),
+  ], async (id, sandbox) => {
+    bases.set(id, git(sandbox, 'rev-parse', 'HEAD'));
+    await writeFile(path.join(sandbox, `${id}.txt`), `${id} result`);
+    return 0;
+  });
+  const state = await f.service.run(f.batchFile);
+  assert.equal(state.status, 'succeeded');
+  // Wave 1 tasks share the same base (runBaseCommit)
+  assert.equal(bases.get('wave1-a'), f.head);
+  assert.equal(bases.get('wave1-b'), f.head);
+  // Wave 2 task starts from the integrated commit of wave 1
+  assert.notEqual(bases.get('wave2-c'), f.head);
+  assert.equal(bases.get('wave2-c'), state.tasks[1].attempts[0].integratedCommit);
+});
