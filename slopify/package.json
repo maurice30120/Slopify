@@ -27,5 +27,19 @@
   },
   "bin": {
     "slopify": "./dist/src/cli.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/src/cli.d.ts",
+      "default": "./dist/src/cli.js"
+    },
+    "./tasks": {
+      "types": "./dist/src/taskBatch.d.ts",
+      "default": "./dist/src/taskBatch.js"
+    },
+    "./task-execution": {
+      "types": "./dist/src/taskExecution.d.ts",
+      "default": "./dist/src/taskExecution.js"
+    }
   }
 }
