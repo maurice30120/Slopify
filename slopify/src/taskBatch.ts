@@ -173,9 +173,27 @@ export class TaskBatchService {
     snapshot.status = 'running';
     await this.save(snapshot);
     try {
-      await execFileAsync('git', ['clone', '--no-hardlinks', '--quiet', '--', this.repositoryPath, workspacePath]);
+      // Check if workspace already exists (e.g., from a previous run or resume)
+      let workspaceExists = false;
+      try {
+        await stat(workspacePath);
+        workspaceExists = true;
+      } catch {
+        workspaceExists = false;
+      }
+      
+      if (!workspaceExists) {
+        await execFileAsync('git', ['clone', '--no-hardlinks', '--quiet', '--', this.repositoryPath, workspacePath]);
+      }
       await execFileAsync('git', ['-C', workspacePath, 'checkout', '--detach', snapshot.runBaseCommit]);
-      await execFileAsync('git', ['-C', workspacePath, 'branch', snapshot.integrationBranch, snapshot.runBaseCommit]);
+      // Check if branch already exists before trying to create it
+      const branchResult = await execFileAsync('git', ['-C', workspacePath, 'branch', '--list', snapshot.integrationBranch]);
+      if (!branchResult.stdout.trim()) {
+        await execFileAsync('git', ['-C', workspacePath, 'branch', snapshot.integrationBranch, snapshot.runBaseCommit]);
+      } else {
+        // Branch exists, just checkout it
+        await execFileAsync('git', ['-C', workspacePath, 'checkout', snapshot.integrationBranch]);
+      }
       await this.publish(snapshot, workspacePath);
       snapshot.integrationCommit = snapshot.runBaseCommit;
       snapshot.diagnostics.push({ code: 'host_changes_excluded', message: 'Uncommitted user changes are excluded; the private checkout starts from ' + snapshot.runBaseCommit + '.' });
@@ -393,9 +411,10 @@ private blockDescendants(snapshot: TaskBatchSnapshot): void {
       throw new Error(`Task "${taskId}" not found in run "${runId}".`);
     }
 
-    // Only allow resume for failed or interrupted tasks
-    if (task.status !== 'failed' && task.status !== 'interrupted') {
-      throw new Error(`Task "${taskId}" has status "${task.status}" and cannot be resumed. Only failed or interrupted tasks can be resumed.`);
+    // Only allow resume for failed, interrupted, or stale running tasks
+    // A running task with a stopped/removed sandbox is considered stale and can be resumed
+    if (task.status !== 'failed' && task.status !== 'interrupted' && task.status !== 'running') {
+      throw new Error(`Task "${taskId}" has status "${task.status}" and cannot be resumed. Only failed, interrupted, or running tasks can be resumed.`);
     }
 
     // Verify we have an integration branch

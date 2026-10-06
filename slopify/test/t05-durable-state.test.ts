@@ -226,14 +226,15 @@ test('AC2: resume resets failed tasks to pending for re-execution', { timeout: 1
   snapshot.integrationCommit = snapshot.runBaseCommit;
   await writeState(f.service, snapshot);
   
-  // Now resume the run - should reset failed tasks to pending
+  // Now resume the run - with the fix, executeWaves can handle existing workspace
+  // so tasks will be executed (and fail with mock executor)
   const resumed = await f.service.resume(snapshot.runId);
   
-  // Task a should still be succeeded (not duplicated), task b should be reset to pending
+  // Task a should still be succeeded (not duplicated), task b should be failed (executed with mock executor)
   assert.equal(resumed.tasks[0].status, 'succeeded');
   assert.equal(resumed.tasks[0].attempts.length, 1); // Still only 1 attempt
-  assert.equal(resumed.tasks[1].status, 'pending'); // Reset to pending for re-execution
-  assert.equal(resumed.tasks[1].attempts.length, 1); // Still only 1 attempt (new one will be created on execution)
+  assert.equal(resumed.tasks[1].status, 'failed'); // Executed with mock executor, failed
+  assert.equal(resumed.tasks[1].attempts.length, 2); // New attempt was created and failed
 });
 
 // AC3: Interrupted tasks become 'interrupted'; explicit resume creates new attempt identity and sandbox from current integration commit
@@ -397,4 +398,47 @@ test('AC7: tasks CLI resume-task command fails without integration workspace', a
   assert.equal(resume.status, 1);
   // The error should be visible in stderr
   assert.ok(resume.stderr.includes('Error:') || resume.stderr.includes('workspace'));
+});
+
+// AC3c: resumeTask can handle stale running tasks (parent process died, sandbox stopped)
+test('AC3c: resumeTask can resume stale running task', { timeout: 15000 }, async t => {
+  const f = await fixture(t, mockExecutor);
+  await writeFile(path.join(f.root, 'spec.md'), '# Spec');
+  
+  const batchContent = batch([{ id: 'task1', dependsOn: [] }]);
+  await writeFile(f.batchFile, JSON.stringify(batchContent));
+  
+  // Create initial run with execute: false
+  let snapshot = await f.service.run(f.batchFile, { execute: false });
+  
+  // Create integration workspace manually
+  await createIntegrationWorkspace(f.service, snapshot);
+  
+  // Manually set up a stale running state (parent process died, sandbox stopped)
+  snapshot.status = 'running';
+  snapshot.tasks[0].status = 'running';
+  snapshot.tasks[0].attempts.push({ 
+    attemptId: 'attempt-1', 
+    taskBaseCommit: snapshot.runBaseCommit, 
+    status: 'running',
+    resource: { sandboxName: 'stale-sandbox', inspectCommand: ['sbx', 'exec', 'stale-sandbox', 'sh'] }
+  });
+  snapshot.integrationCommit = snapshot.runBaseCommit;
+  await writeState(f.service, snapshot);
+  
+  // Now resume the specific task - it should work even though status is 'running'
+  try {
+    await f.service.resumeTask(snapshot.runId, 'task1');
+  } catch (error) {
+    // Expected to fail due to mock executor
+    assert.match(String(error), /Docker unavailable/);
+  }
+  
+  // Check the state after the failed resume
+  const state = await f.service.status(snapshot.runId);
+  
+  // Should have created a new attempt (executeTask was called)
+  assert.equal(state.tasks[0].attempts.length, 2);
+  // The new attempt should have been created
+  assert.ok(state.tasks[0].attempts[1].attemptId !== 'attempt-1');
 });
