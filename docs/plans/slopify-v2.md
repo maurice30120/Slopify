@@ -46,7 +46,7 @@
 
 Les frontières et la répartition entre agents sont détaillées dans [Limiter Slopify V2 à l’exécution des tâches d’implémentation](../adr/0007-limit-v2-to-implementation-tasks.md) et [Garder un même agent pour la préparation et isoler les implémenteurs](../adr/0008-share-preparation-agent-isolate-implementers.md).
 
-Cette répartition est détaillée dans [Confier le lot à Slopify depuis Vibe (ADR historique)](../adr/0009-submit-task-batch-from-vibe.md).
+Cette répartition était initialement décrite dans [Confier le lot à Slopify depuis Vibe (ADR historique)](../adr/0009-submit-task-batch-from-vibe.md), mais **Vibe est hors du périmètre V2** — Pi le remplace comme coordinateur et comme implémenteur, aux côtés de Codex. Voir [ADR 0011 : Remplacer Vibe par Pi/Codex pour la V2](../adr/0011-replace-vibe-with-pi-codex-for-v2.md) pour la décision finale.
 
 ## Contrat JSON confirmé
 
@@ -81,6 +81,6 @@ Ce document capture la conception en cours ; aucun changement de code n’est ef
 
 ## Évolution du périmètre — 6 octobre 2026
 
-L’utilisateur retire Vibe du périmètre et le remplace par Pi, pour le point d’entrée comme pour l’implémentation. Les agents cibles sont désormais `pi` et `codex`. Les ADR 0008 et 0009 décrivant Vibe restent des documents historiques et devront être alignés lors de la formalisation de la V2. Les essais Vibe sont conservés uniquement comme historique du prototype.
+L’utilisateur retire Vibe du périmètre et le remplace par Pi, pour le point d’entrée comme pour l’implémentation. Les agents cibles sont désormais `pi` et `codex`. Les ADR 0008 et 0009 décrivant Vibe restent des documents historiques. **Voir ADR 0011 pour l’alignement V2 final.** Les essais Vibe sont conservés uniquement comme historique du prototype.
 
 Le [compte rendu du prototype Docker Sandbox](../research/sandbox-skills-prototype.md) décrit les observations et leurs limites. Les sources et preuves sont capturées sur la branche jetable `feature/prototype-sandbox-skills`, dans `docs/prototypes/sandbox-skills/`. Le prototype teste le parcours d’un agent sur une tâche minuscule ; il ne valide pas encore le scheduler, les sources issues ou l’intégration multi-tâches de Slopify V2.

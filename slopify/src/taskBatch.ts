@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile, rename, stat } from 'node:fs/promises';
+import { mkdir, readFile, writeFile, rename, stat, rm } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -57,6 +57,19 @@ export interface TaskBatchConflict {
   output: string;
 }
 
+export interface TaskBatchResolution {
+  resolutionId: string;
+  conflictTaskId: string;
+  conflictAttemptId: string;
+  sandboxName: string;
+  sandboxPath: string;
+  status: 'pending' | 'resolved' | 'failed' | 'validated';
+  resolutionCommit?: string;
+  resolutionBundlePath?: string;
+  createdAt: string;
+  validatedAt?: string;
+}
+
 export interface TaskBatchSnapshot {
   version: 1;
   runId: string;
@@ -71,6 +84,7 @@ export interface TaskBatchSnapshot {
   tasks: BatchTaskState[];
   diagnostics: TaskBatchDiagnostic[];
   conflict?: TaskBatchConflict;
+  resolution?: TaskBatchResolution;
 }
 
 const execFileAsync = promisify(execFile);
@@ -159,9 +173,27 @@ export class TaskBatchService {
     snapshot.status = 'running';
     await this.save(snapshot);
     try {
-      await execFileAsync('git', ['clone', '--no-hardlinks', '--quiet', '--', this.repositoryPath, workspacePath]);
+      // Check if workspace already exists (e.g., from a previous run or resume)
+      let workspaceExists = false;
+      try {
+        await stat(workspacePath);
+        workspaceExists = true;
+      } catch {
+        workspaceExists = false;
+      }
+      
+      if (!workspaceExists) {
+        await execFileAsync('git', ['clone', '--no-hardlinks', '--quiet', '--', this.repositoryPath, workspacePath]);
+      }
       await execFileAsync('git', ['-C', workspacePath, 'checkout', '--detach', snapshot.runBaseCommit]);
-      await execFileAsync('git', ['-C', workspacePath, 'branch', snapshot.integrationBranch, snapshot.runBaseCommit]);
+      // Check if branch already exists before trying to create it
+      const branchResult = await execFileAsync('git', ['-C', workspacePath, 'branch', '--list', snapshot.integrationBranch]);
+      if (!branchResult.stdout.trim()) {
+        await execFileAsync('git', ['-C', workspacePath, 'branch', snapshot.integrationBranch, snapshot.runBaseCommit]);
+      } else {
+        // Branch exists, just checkout it
+        await execFileAsync('git', ['-C', workspacePath, 'checkout', snapshot.integrationBranch]);
+      }
       await this.publish(snapshot, workspacePath);
       snapshot.integrationCommit = snapshot.runBaseCommit;
       snapshot.diagnostics.push({ code: 'host_changes_excluded', message: 'Uncommitted user changes are excluded; the private checkout starts from ' + snapshot.runBaseCommit + '.' });
@@ -379,9 +411,10 @@ private blockDescendants(snapshot: TaskBatchSnapshot): void {
       throw new Error(`Task "${taskId}" not found in run "${runId}".`);
     }
 
-    // Only allow resume for failed or interrupted tasks
-    if (task.status !== 'failed' && task.status !== 'interrupted') {
-      throw new Error(`Task "${taskId}" has status "${task.status}" and cannot be resumed. Only failed or interrupted tasks can be resumed.`);
+    // Only allow resume for failed, interrupted, or stale running tasks
+    // A running task with a stopped/removed sandbox is considered stale and can be resumed
+    if (task.status !== 'failed' && task.status !== 'interrupted' && task.status !== 'running') {
+      throw new Error(`Task "${taskId}" has status "${task.status}" and cannot be resumed. Only failed, interrupted, or running tasks can be resumed.`);
     }
 
     // Verify we have an integration branch
@@ -447,6 +480,260 @@ private blockDescendants(snapshot: TaskBatchSnapshot): void {
 
     return snapshot;
   }
+
+  /**
+   * Resolve a conflict explicitly with user-provided resolution.
+   * After validated resolution, pending results integrate and the frontier is recomputed.
+   * An interruption during resolution is recoverable and does not modify the user repository.
+   */
+  async resolveConflict(
+    runId: string,
+    options: {
+      resolutionStrategy?: 'use-current' | 'use-incoming' | 'manual';
+      signal?: AbortSignal;
+    } = {},
+  ): Promise<TaskBatchSnapshot> {
+    const snapshot = await this.status(runId);
+
+    // Verify the run belongs to this repository
+    if (snapshot.repositoryPath !== this.repositoryPath) {
+      throw new Error('Run belongs to another repository.');
+    }
+
+    // Verify we have a conflict to resolve
+    if (!snapshot.conflict) {
+      throw new Error('No conflict to resolve. Run is not in conflicted state.');
+    }
+
+    // Verify we have an integration workspace
+    const runDirectory = path.join(this.storePath, runId);
+    const workspacePath = path.join(runDirectory, 'integration');
+
+    try {
+      await stat(workspacePath);
+    } catch {
+      throw new Error('Integration workspace not found. Cannot resolve conflict without integration state.');
+    }
+
+    const conflict = snapshot.conflict;
+
+    try {
+      // Apply the resolution based on strategy
+      let resolutionCommit: string;
+
+      if (options.resolutionStrategy === 'use-current') {
+        // Use the current state (reject incoming changes)
+        resolutionCommit = snapshot.integrationCommit!;
+
+      } else if (options.resolutionStrategy === 'use-incoming') {
+        // Use the incoming changes (accept incoming changes)
+        resolutionCommit = conflict.incomingCommit;
+
+      } else if (options.resolutionStrategy === 'manual' || !options.resolutionStrategy) {
+        // Manual resolution: create a dedicated sandbox from the conflict context
+        const resolutionId = randomUUID();
+        const sandboxName = `slopify-resolution-${runId}-${conflict.attemptId}-${resolutionId}`;
+        const resolutionSandboxPath = path.join(this.storePath, runId, 'resolutions', sandboxName);
+        const resolutionResultDir = path.join(this.storePath, runId, 'resolutions', resolutionId);
+
+        await mkdir(path.dirname(resolutionSandboxPath), { recursive: true });
+        await mkdir(resolutionResultDir, { recursive: true });
+
+        // Clone the integration workspace to the resolution sandbox
+        await execFileAsync('git', ['clone', '--no-hardlinks', '--quiet', '--', workspacePath, resolutionSandboxPath]);
+
+        // Checkout the current integration commit (the one that has the conflict)
+        await execFileAsync('git', ['-C', resolutionSandboxPath, 'checkout', '--detach', snapshot.integrationCommit!]);
+
+        // Create the resolution record
+        const resolution: TaskBatchResolution = {
+          resolutionId,
+          conflictTaskId: conflict.taskId,
+          conflictAttemptId: conflict.attemptId,
+          sandboxName,
+          sandboxPath: resolutionSandboxPath,
+          status: 'pending',
+          createdAt: new Date().toISOString(),
+        };
+
+        snapshot.resolution = resolution;
+        await this.save(snapshot);
+
+        // Return early - manual resolution requires user to work in the sandbox
+        return snapshot;
+
+      } else {
+        throw new Error(`Invalid resolution strategy: ${options.resolutionStrategy}. Use 'use-current', 'use-incoming', or 'manual'.`);
+      }
+
+      // Resolution is validated - now integrate pending results
+      snapshot.conflict = undefined;
+      snapshot.status = 'running';
+
+      // Find the conflicted task
+      const conflictedTask = snapshot.tasks.find(t => t.id === conflict.taskId);
+      if (conflictedTask) {
+        if (options.resolutionStrategy === 'use-incoming') {
+          // For use-incoming, mark the task as completed so it can be integrated
+          conflictedTask.status = 'completed';
+          const attempt = conflictedTask.attempts.find(a => a.attemptId === conflict.attemptId);
+          if (attempt) {
+            attempt.checkpoint = {
+              commit: resolutionCommit,
+              bundlePath: attempt.checkpoint?.bundlePath ?? '',
+            };
+          }
+        } else {
+          // For use-current, mark the task as failed (its changes are rejected)
+          conflictedTask.status = 'failed';
+        }
+      }
+
+      await this.save(snapshot);
+      await this.executeWaves(snapshot, options.signal);
+
+    } catch (error) {
+      snapshot.diagnostics.push({
+        code: 'resolution_failed',
+        message: error instanceof Error ? error.message : String(error)
+      });
+      snapshot.status = 'conflicted';
+      await this.save(snapshot);
+      throw error;
+    }
+
+    return snapshot;
+  }
+
+  async getConflict(runId: string): Promise<TaskBatchConflict | undefined> {
+    const snapshot = await this.status(runId);
+    return snapshot.conflict;
+  }
+
+  /**
+   * Validate and integrate a manual resolution from a dedicated sandbox.
+   * This is the second step of manual resolution: after the user has resolved conflicts
+   * in the dedicated sandbox, this method validates the resolution and integrates it.
+   */
+  async validateResolution(
+    runId: string,
+    resolutionId: string,
+    options: { signal?: AbortSignal } = {},
+  ): Promise<TaskBatchSnapshot> {
+    const snapshot = await this.status(runId);
+
+    // Verify the run belongs to this repository
+    if (snapshot.repositoryPath !== this.repositoryPath) {
+      throw new Error('Run belongs to another repository.');
+    }
+
+    // Verify we have a resolution to validate
+    if (!snapshot.resolution) {
+      throw new Error('No resolution to validate. Run has no pending resolution.');
+    }
+
+    if (snapshot.resolution.resolutionId !== resolutionId) {
+      throw new Error(`Resolution ${resolutionId} does not match the pending resolution ${snapshot.resolution.resolutionId}.`);
+    }
+
+    if (snapshot.resolution.status !== 'pending') {
+      throw new Error(`Resolution ${resolutionId} is not in pending state (current: ${snapshot.resolution.status}).`);
+    }
+
+    const resolution = snapshot.resolution;
+    const runDirectory = path.join(this.storePath, runId);
+    const workspacePath = path.join(runDirectory, 'integration');
+
+    try {
+      await stat(workspacePath);
+    } catch {
+      throw new Error('Integration workspace not found. Cannot validate resolution without integration state.');
+    }
+
+    try {
+      // Verify the resolution sandbox exists
+      try {
+        await stat(resolution.sandboxPath);
+      } catch {
+        throw new Error(`Resolution sandbox ${resolution.sandboxPath} not found.`);
+      }
+
+      // Get the current HEAD of the resolution sandbox
+      const resolutionHead = (await execFileAsync('git', ['-C', resolution.sandboxPath, 'rev-parse', 'HEAD'])).stdout.trim();
+
+      // Validate that the resolution commit descends from the conflict base
+      try {
+        await execFileAsync('git', ['-C', resolution.sandboxPath, 'merge-base', '--is-ancestor', snapshot.conflict!.taskBaseCommit, resolutionHead]);
+      } catch (error) {
+        const failure = error as Error & { code?: number; stdout?: string; stderr?: string };
+        if (failure.code !== 1) throw error;
+        // merge-base --is-ancestor returns exit code 1 when not an ancestor
+        throw new Error(`Resolution commit ${resolutionHead} does not descend from conflict base ${snapshot.conflict!.taskBaseCommit}.`);
+      }
+
+      // Create a bundle from the resolution sandbox
+      const resolutionBundlePath = path.join(runDirectory, 'resolutions', resolution.resolutionId, 'resolution.bundle');
+      await execFileAsync('git', ['-C', resolution.sandboxPath, 'bundle', 'create', resolutionBundlePath, 'HEAD']);
+
+      // Update the resolution record
+      resolution.status = 'validated';
+      resolution.resolutionCommit = resolutionHead;
+      resolution.resolutionBundlePath = resolutionBundlePath;
+      resolution.validatedAt = new Date().toISOString();
+
+      // Clear the conflict and set resolution as validated
+      snapshot.conflict = undefined;
+      snapshot.status = 'running';
+
+      // Find the conflicted task and update it with the resolution
+      const conflictedTask = snapshot.tasks.find(t => t.id === resolution.conflictTaskId);
+      if (conflictedTask) {
+        conflictedTask.status = 'completed';
+        const attempt = conflictedTask.attempts.find(a => a.attemptId === resolution.conflictAttemptId);
+        if (attempt) {
+          attempt.checkpoint = {
+            commit: resolutionHead,
+            bundlePath: resolutionBundlePath,
+          };
+        }
+      }
+
+      await this.save(snapshot);
+
+      // Now continue with wave execution to integrate pending results
+      await this.executeWaves(snapshot, options.signal);
+
+      // Clean up the resolution sandbox after successful integration
+      try {
+        await rm(resolution.sandboxPath, { recursive: true, force: true });
+      } catch (error) {
+        snapshot.diagnostics.push({ code: 'resolution_cleanup_failed', message: String(error) });
+        await this.save(snapshot);
+      }
+
+    } catch (error) {
+      // Validation failed - update resolution status
+      snapshot.resolution.status = 'failed';
+      snapshot.diagnostics.push({
+        code: 'resolution_validation_failed',
+        message: error instanceof Error ? error.message : String(error)
+      });
+      snapshot.status = 'conflicted';
+      await this.save(snapshot);
+      throw error;
+    }
+
+    return snapshot;
+  }
+
+  /**
+   * Get resolution details for a run.
+   */
+  async getResolution(runId: string): Promise<TaskBatchResolution | undefined> {
+    const snapshot = await this.status(runId);
+    return snapshot.resolution;
+  }
+
 }
 
 export type TaskAgent = 'pi' | 'codex';

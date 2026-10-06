@@ -6,7 +6,7 @@
 
 **Blocked by:** 04 — Exécuter les vagues et intégrer les dépendances.
 
-**Status:** claimed
+**Status:** resolved
 
 - [x] L’état par run est écrit atomiquement et conserve bases, tentatives, commits, ressources, rapports et branche.
 - [x] La reprise après redémarrage réutilise les résultats intégrés et les résultats enregistrés encore à intégrer sans les dupliquer.
@@ -82,3 +82,5 @@ All 7 acceptance criteria verified by tests:
 - **Stale dist artifacts:** Debug test files (test-cli-debug.test.ts) were deleted from source but compiled artifacts remained in dist/, causing test failures. Fixed by clean rebuild. Always run clean build before full suite.
 - **P1 spec compliance:** Direct execution in resumeTask bypassed wave scheduler's dependency and conflict handling. Fixed by adding explicit dependency validation.
 - **Frozen context validation:** Spec requires resume to work even if sources are deleted. Implemented by copying spec/batch to run directory and validating their existence before resume.
+
+**Integration acceptance:** merged no-ff into feature/slopify-v2 (tip after merge); full workspace build and 106/106 slopify tests pass. Standards/Spec review ran as two real parallel Pi subagents with the mistral/mistral-medium-latest:off override (artifacts /private/tmp/slopify-v2-agent-notes/pi-sessions/subagent-artifacts/36c94830*, 8682268f*); the P1 resumeTask-scope finding was fixed by explicit dependency validation in 0a88ab803. Residual note for T07: resumeTask intentionally does not delegate to executeWaves; the real smoke must exercise resume through the public CLI. Notes: /private/tmp/slopify-v2-agent-notes/merges.md.
