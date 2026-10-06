@@ -16,7 +16,8 @@
   },
   "dependencies": {
     "@acp-client/pipeline": "file:../acp-pipeline",
-    "@acp-client/workspace": "file:../acp-workspace"
+    "@acp-client/workspace": "file:../acp-workspace",
+    "@acp-client/sandbox": "file:../acp-sandbox"
   },
   "devDependencies": {
     "@types/node": "^24.13.6",

@@ -6,7 +6,7 @@
 
 **Blocked by:** 01 — Valider et figer le lot complet.
 
-**Status:** ready-for-agent
+**Status:** claimed — T02 implementer
 
 - [ ] Le sandbox part du commit choisi dans une copie privée, avec un contexte figé lisible et les commits de comparaison explicites.
 - [ ] Codex reçoit son prompt intact et les skills officiels installés via `sbx skills` en lecture seule, sans mise à jour implicite.

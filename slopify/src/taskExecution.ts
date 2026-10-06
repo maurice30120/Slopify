@@ -5,6 +5,7 @@ export interface TaskSandboxResource {
   sandboxName: string;
   sandboxId?: string;
   inspectCommand: string[];
+  diagnosticsDirectory?: string;
 }
 
 export interface TaskExecutionRequest {
