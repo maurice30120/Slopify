@@ -46,7 +46,7 @@
 
 Les frontières et la répartition entre agents sont détaillées dans [Limiter Slopify V2 à l’exécution des tâches d’implémentation](../adr/0007-limit-v2-to-implementation-tasks.md) et [Garder un même agent pour la préparation et isoler les implémenteurs](../adr/0008-share-preparation-agent-isolate-implementers.md).
 
-Cette répartition est détaillée dans [Confier le lot à Slopify depuis Vibe (ADR historique)](../adr/0009-submit-task-batch-from-vibe.md).
+Cette répartition était initialement décrite dans [Confier le lot à Slopify depuis Vibe (ADR historique)](../adr/0009-submit-task-batch-from-vibe.md), mais **Vibe est hors du périmètre V2** — Pi le remplace comme coordinateur et comme implémenteur, aux côtés de Codex. Voir [ADR 0011 : Remplacer Vibe par Pi/Codex pour la V2](../adr/0011-replace-vibe-with-pi-codex-for-v2.md) pour la décision finale.
 
 ## Contrat JSON confirmé
 
