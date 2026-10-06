@@ -6,6 +6,7 @@ import { CliPipelineHost, type CliPipelineBackendFactory } from './host.js';
 import { formatPipelineList, runPipelineInteractive } from './run.js';
 import { NodeCliTerminal } from './terminal.js';
 import { createRuntimeCliBackend } from './runtimeBackend.js';
+import { runTaskBatchCli } from './taskBatchCli.js';
 
 export async function main(
   backendFactory: CliPipelineBackendFactory = createRuntimeCliBackend,
@@ -14,6 +15,7 @@ export async function main(
   const terminal = new NodeCliTerminal();
   let host: CliPipelineHost | null = null;
   try {
+    if (argv[0] === 'tasks') return await runTaskBatchCli(argv.slice(1), terminal);
     const command = parseCliArgs(argv);
     if (command.kind === 'help') {
       terminal.write(formatHelp());

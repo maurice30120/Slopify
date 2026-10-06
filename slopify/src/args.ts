@@ -144,6 +144,7 @@ export function formatHelp(): string {
     'Slopify',
     '',
     'Usage:',
+    '  slopify tasks <run|status> [--help]',
     '  slopify list [--cwd <path>] [--json] [--verbose]',
     '  slopify run <pipeline-name> <prompt> --agent <name> [--cwd <path>] [--yes] [--keep-sandboxes] [--json] [--verbose]',
     '  slopify resume <run-id> --agent <name> [--cwd <path>] [--yes] [--keep-sandboxes] [--json] [--verbose]',

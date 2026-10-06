@@ -99,3 +99,50 @@ Le CLI réutilise :
 - l'injection explicite des skills, y compris `grill-me` lorsqu'il est déclaré par un nœud.
 
 Les pipelines v2 sont ignorés par le catalogue v3 et aucun mécanisme de compatibilité caché n'est ajouté.
+
+## V2 task batches
+
+V2 accepts a complete, approved specification and task graph prepared outside Slopify.
+The dedicated entry point accepts only `pi` and `codex` per task:
+
+```json
+{
+  "specFile": "spec.md",
+  "tasks": [
+    {
+      "id": "implement",
+      "prompt": "/implement\nThe complete approved ticket and testing interfaces.",
+      "dependsOn": [],
+      "agent": "codex",
+      "source": "issues/01-implement.md"
+    }
+  ]
+}
+```
+
+`specFile` resolves relative to the JSON file. `source` preserves a file or issue
+reference; the full ticket text belongs in `prompt`. Skill invocations are passed
+through without interpretation.
+
+```sh
+slopify tasks run ./batch.json --cwd ./repository --json
+slopify tasks status <run-id> --cwd ./repository --json
+```
+
+`--base <ref>` selects a committed starting point (default `HEAD`). Uncommitted
+host changes remain outside the run. `--store <directory>` overrides the durable
+run store, also configurable with `SLOPIFY_TASK_STORE`; otherwise each repository
+has a store under `~/.local/share/slopify/task-runs/`. The frozen specification,
+prompts, references and base commit remain available through status after the
+original files change or disappear. Invalid input returns diagnostics before
+creating any run, branch or sandbox. The initial validated state is `ready`;
+scheduling and external execution build on this same public batch interface.
+
+The same API is exported from `slopify/tasks`:
+
+```typescript
+import { TaskBatchService } from 'slopify/tasks';
+const batches = new TaskBatchService({ repositoryPath: '/path/to/repository' });
+const run = await batches.run('/path/to/batch.json', { baseRef: 'HEAD' });
+const state = await batches.status(run.runId);
+```
