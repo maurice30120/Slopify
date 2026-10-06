@@ -5,6 +5,7 @@ import * as path from 'node:path';
 import { createNodeSubprocessExecutor, DockerSandboxRuntime, GitPromotion, type SubprocessExecutor, type SubprocessRequest, type SubprocessResult } from '@acp-client/sandbox';
 import type { TaskBatchDiagnostic } from './taskBatch.js';
 import type { TaskExecutor, TaskExecutionRequest, TaskExecutionResult, TaskSandboxResource } from './taskExecution.js';
+import { createPiTaskAdapter } from './piTaskAdapter.js';
 
 export interface TaskAgentContext extends TaskExecutionRequest {
   sandboxName: string;
@@ -26,7 +27,7 @@ export class DockerTaskExecutor implements TaskExecutor {
   private readonly adapters: Map<string, TaskAgentAdapter>;
   constructor(options: DockerTaskExecutorOptions = {}) {
     this.executor = options.executor ?? createNodeSubprocessExecutor();
-    this.adapters = new Map([codexAdapter, ...(options.adapters ?? [])].map(a => [a.agent,a]));
+    this.adapters = new Map([codexAdapter, createPiTaskAdapter(), ...(options.adapters ?? [])].map(a => [a.agent,a]));
   }
   async execute(request: TaskExecutionRequest): Promise<TaskExecutionResult> {
     await mkdir(request.resultDirectory,{recursive:true,mode:0o700});
