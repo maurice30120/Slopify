@@ -1,6 +1,6 @@
 # Documenter en français les classes et méthodes pertinentes des 5 packages actifs
 
-Status: ready-for-agent
+Status: resolved
 Spec: .scratch/documentation-fonctionnelle-fr/spec.md
 Type: task
 
@@ -22,3 +22,8 @@ La spécification de référence est `.scratch/documentation-fonctionnelle-fr/sp
 ## Hors périmètre
 
 Package hérité `acp-sandcastle`, fichiers de build (`dist/`), renommage ou reformatage, documentation générée externe, nouvelles règles lint.
+
+## Comments
+
+- 2026-10-07 : livré par le pipeline `implement-ticket` (run `48e3d23f-59c2-42da-b5e5-bec93f480c9e`, agent `Codex Sandbox`). Diff de 58 fichiers (+1640/-121), 100 % lignes de commentaires. Validation sandbox puis hôte : build OK, 373 tests OK, 0 échec. Promotion du Pipeline Change Set (`d2ac02a46`) approuvée explicitement par l'utilisateur après rejet automatique de la confirmation interactive en processus d'arrière-plan.
+- 2026-10-07 : remarque de revue — une partie des blocs de `acp-pipeline/src/PipelineService.ts` est stéréotypée (formule identique répétée par méthode) ; le reste de la couverture est spécifique au symbole documenté.
