@@ -1,4 +1,3 @@
-import type { SessionNotification } from '@agentclientprotocol/sdk';
 import type { PipelinePauseFormat, PipelinePauseType } from './PipelineV3Types';
 
 /** Type métier PipelineStatus utilisé pour représenter une étape ou un résultat du cycle de vie du pipeline. */
@@ -39,18 +38,3 @@ export interface PipelinePauseEvent {
   revised?: boolean;
 }
 
-/** Contrat fonctionnel de PipelinePlanReadyEvent dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
-export interface PipelinePlanReadyEvent extends Omit<PipelinePauseEvent, 'pauseId' | 'content' | 'format'> {
-  plan: string;
-}
-
-/** Contrat fonctionnel de PipelineSessionUpdateEvent dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
-export interface PipelineSessionUpdateEvent {
-  sessionId: string;
-  phase: string;
-  update: SessionNotification;
-  stepId?: string;
-  branchId?: string;
-  role?: string;
-  agentName?: string;
-}

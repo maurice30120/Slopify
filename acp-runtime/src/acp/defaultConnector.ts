@@ -7,7 +7,7 @@ import type { Logger, RuntimePermissionContext } from '../types.js';
 /** Contrat fonctionnel de AcpConnectorInput dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface AcpConnectorInput {
   agentName: string;
-  processConfig: ProcessAgentConfig;
+  processConfig?: ProcessAgentConfig;
   workspaceCwd: string;
   sessionUpdateHandler: SessionUpdateHandler;
   getPermissionContext: () => RuntimePermissionContext | undefined;
@@ -29,6 +29,10 @@ export type AcpConnector = (input: AcpConnectorInput) => Promise<ConnectedAcpAge
 
 /** Constante defaultAcpConnector qui fixe un contrat partagé du pipeline. */
 export const defaultAcpConnector: AcpConnector = async (input) => {
+  if (!input.processConfig) {
+    throw new Error('defaultAcpConnector requires a processConfig to spawn the ACP agent process.');
+  }
+
   const agentManager = new AgentProcessManager(input.logger);
   const connectionManager = new ConnectionManager(input.sessionUpdateHandler, {
     logger: input.logger,

@@ -7,7 +7,7 @@ import type { DockerSandboxRuntime } from '../src/runtime.js';
 async function bridgeOutput(stdout: string, agent: 'codex' | 'vibe') {
   const updates: unknown[] = [];
   const connection = { sessionUpdate: async (update: unknown) => { updates.push(update); } } as unknown as AgentSideConnection;
-  const runtime = { runCodex: async () => ({ stdout, stderr: '' }) } as unknown as DockerSandboxRuntime;
+  const runtime = { runAgent: async () => ({ stdout, stderr: '' }) } as unknown as DockerSandboxRuntime;
   const bridge = new DockerSandboxAcpBridgeAgent(connection, runtime, {
     agent, runId: 'bridge-test', nodeId: 'plan', attempt: 1, model: 'test',
   });

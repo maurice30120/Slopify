@@ -70,7 +70,12 @@ export class DockerTaskExecutor implements TaskExecutor {
       const adapter=this.adapters.get(request.agent);
       if(!adapter)throw new Error(`Agent ${request.agent} is unavailable.`);
       const sandboxName='slopify-'+createHash('sha256').update(`${request.runId}/${request.taskId}/${request.attemptId}`).digest('hex').slice(0,24);
-      await new DockerSandboxRuntime(logged).preflightWorkspace(request.workspacePath,false,request.signal,[sandboxName]);
+      await new DockerSandboxRuntime(logged).preflightWorkspace({
+        cwd: request.workspacePath,
+        workspaceEffects: false,
+        signal: request.signal,
+        plannedSandboxNames: [sandboxName],
+      });
       const inventory=JSON.parse((await requireSuccess(['skills','ls','--json'])).stdout) as {store?:string;skills?:string[]};
       if(!inventory.store || !Array.isArray(inventory.skills) || !['implement','tdd','code-review'].every(skill=>inventory.skills!.includes(skill))) {
         throw new Error('Official skills are missing. Install them explicitly with sbx skills add mattpocock/skills.');

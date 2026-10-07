@@ -5,22 +5,24 @@ import path from 'node:path';
 import test from 'node:test';
 
 import {
-  DOCKER_SANDBOX_NETWORK_POLICY_CHOICES,
   DockerSandboxRuntime,
   IntegrationConflictError,
-  SANDBOX_EXTENSION_METHODS,
-  SandboxRunCancelledError,
-  SandboxRunTimeoutError,
-  retainedSandboxCommands,
   stableSandboxName,
   type DockerSandboxNetworkPolicyChoice,
-  type DockerSandboxNetworkPolicyPreset,
   type RetainedSandbox,
   type SandboxRunState,
   type SubprocessExecutor,
   type SubprocessRequest,
   type SubprocessResult,
 } from '../src/index.js';
+import {
+  DOCKER_SANDBOX_NETWORK_POLICY_CHOICES,
+  SandboxRunCancelledError,
+  SandboxRunTimeoutError,
+  retainedSandboxCommands,
+  type DockerSandboxNetworkPolicyPreset,
+} from '../src/runtime.js';
+import { SANDBOX_EXTENSION_METHODS } from '../src/extensions.js';
 
 test('exports only the neutral ACP sandbox extension methods', () => {
   assert.deepEqual(SANDBOX_EXTENSION_METHODS, [
@@ -127,7 +129,7 @@ test('creates and previews an attributed Agent Checkpoint without mutating the h
   const runtime = new DockerSandboxRuntime(fake.execute);
   const states: SandboxRunState[] = [];
 
-  const output = await runtime.runCodex({
+  const output = await runtime.runAgent({
     workspaceCwd: '/repo',
     runId: 'Run 42',
     nodeId: 'Implement/API',
@@ -141,7 +143,6 @@ test('creates and previews an attributed Agent Checkpoint without mutating the h
 
   const sandboxName = stableSandboxName('Run 42', 'Implement/API', 2);
   const checkpointRef = `refs/slopify/checkpoints/${sandboxName}`;
-  assert.equal(output.status, undefined);
   assert.equal(output.checkpointStatus, 'checkpointed');
   assert.equal(output.sandboxName, sandboxName);
   assert.deepEqual(output.checkpoint, {
@@ -206,8 +207,8 @@ test('replaces an internal checkpoint when a new interview prompt starts from th
   });
   const runtime = new DockerSandboxRuntime(fake.execute);
   const input = { workspaceCwd: '/repo', runId: 'interview', nodeId: 'plan', attempt: 1, model: 'test' };
-  await runtime.runCodex({ ...input, prompt: 'Ask a question.' });
-  await runtime.runCodex({ ...input, prompt: 'Use the answer and return a plan.' });
+  await runtime.runAgent({ ...input, prompt: 'Ask a question.' });
+  await runtime.runAgent({ ...input, prompt: 'Use the answer and return a plan.' });
   assert.equal(fake.calls.filter(call => call.command === 'git' && call.args[0] === 'fetch').length, 2);
   assert.deepEqual(hostMutatingGitCalls(fake.calls), []);
 });
@@ -216,7 +217,7 @@ test('launches Mistral Vibe programmatically inside a Vibe sandbox', async () =>
   const scenario = sandboxScenario();
   const fake = fakeExecutor(scenario.respond);
 
-  await new DockerSandboxRuntime(fake.execute).runCodex({
+  await new DockerSandboxRuntime(fake.execute).runAgent({
     workspaceCwd: '/repo',
     runId: 'run-vibe',
     nodeId: 'comments',
@@ -259,7 +260,7 @@ test('prepares a descendant from multiple parent checkpoints without mutating th
     preview: { baseCommit: 'base123', checkpointCommit: `commit-${nodeId}`, fileCount: 1, files: [`${nodeId}.ts`], diff: 'diff' },
   });
 
-  await runtime.runCodex({ workspaceCwd: '/repo', runId: 'run-join', nodeId: 'join', attempt: 1, prompt: 'Join', model: 'model', dependencyCheckpoints: [dependency('left'), dependency('right')] });
+  await runtime.runAgent({ workspaceCwd: '/repo', runId: 'run-join', nodeId: 'join', attempt: 1, prompt: 'Join', model: 'model', dependencyCheckpoints: [dependency('left'), dependency('right')] });
 
   assert.deepEqual(fake.calls.filter(call => call.command === 'git' && call.args[0] === 'merge-tree').map(call => call.args.at(-1)), ['refs/checkpoints/left', 'refs/checkpoints/right']);
   assert.equal(fake.calls.some(call => call.command === 'git' && call.args[0] === 'reset'), false);
@@ -280,7 +281,7 @@ test('reports a real Integration Conflict before launching the descendant agent'
   };
 
   await assert.rejects(
-    new DockerSandboxRuntime(fake.execute).runCodex({ workspaceCwd: '/repo', runId: 'run-conflict', nodeId: 'join', attempt: 1, prompt: 'Join', model: 'model', dependencyCheckpoints: [dependency] }),
+    new DockerSandboxRuntime(fake.execute).runAgent({ workspaceCwd: '/repo', runId: 'run-conflict', nodeId: 'join', attempt: 1, prompt: 'Join', model: 'model', dependencyCheckpoints: [dependency] }),
     (error: unknown) => error instanceof IntegrationConflictError && error.conflict.files.includes('shared.ts'),
   );
   assert.equal(fake.calls.some(call => call.command === 'sbx' && call.args[0] === 'exec' && call.args[2] === 'codex'), false);
@@ -289,12 +290,12 @@ test('reports a real Integration Conflict before launching the descendant agent'
 
 test('creates an empty technical checkpoint and returns no_changes when its preview is empty', async () => {
   const fake = fakeExecutor(sandboxScenario().respond);
-  const output = await new DockerSandboxRuntime(fake.execute).runCodex({
+  const output = await new DockerSandboxRuntime(fake.execute).runAgent({
     workspaceCwd: '/repo', runId: 'run', nodeId: 'node', attempt: 1,
     prompt: 'Do nothing.', model: 'gpt', workspaceEffects: true,
   });
 
-  assert.equal(output.status, 'no_changes');
+  assert.equal(output.checkpointStatus, 'no_changes');
   assert.equal(output.checkpointStatus, 'no_changes');
   assert.equal(output.checkpoint.commit, 'checkpoint456');
   assert.equal(output.preview.fileCount, 0);
@@ -306,7 +307,7 @@ test('creates an empty technical checkpoint and returns no_changes when its prev
 test('stops after a checkpoint failure and never fetches or previews implicitly', async () => {
   const fake = fakeExecutor(sandboxScenario({ checkpointFailure: 'commit failed' }).respond);
   await assert.rejects(
-    new DockerSandboxRuntime(fake.execute).runCodex({
+    new DockerSandboxRuntime(fake.execute).runAgent({
       workspaceCwd: '/repo', runId: 'run', nodeId: 'node', attempt: 1,
       prompt: 'Change files.', model: 'gpt', workspaceEffects: true,
     }),
@@ -321,7 +322,7 @@ test('stops after a checkpoint failure and never fetches or previews implicitly'
 test('stops after a checkpoint fetch failure and never produces an implicit preview or Promotion', async () => {
   const fake = fakeExecutor(sandboxScenario({ fetchFailure: 'remote unavailable' }).respond);
   await assert.rejects(
-    new DockerSandboxRuntime(fake.execute).runCodex({
+    new DockerSandboxRuntime(fake.execute).runAgent({
       workspaceCwd: '/repo', runId: 'run', nodeId: 'node', attempt: 1,
       prompt: 'Change files.', model: 'gpt', workspaceEffects: true,
     }),
@@ -341,7 +342,7 @@ test('rejects a dirty workspace before creating a sandbox with corrective guidan
   });
 
   await assert.rejects(
-    new DockerSandboxRuntime(fake.execute).runCodex({ workspaceCwd: '/repo', runId: 'run', nodeId: 'node', attempt: 1, prompt: 'x', model: 'gpt', workspaceEffects: true }),
+    new DockerSandboxRuntime(fake.execute).runAgent({ workspaceCwd: '/repo', runId: 'run', nodeId: 'node', attempt: 1, prompt: 'x', model: 'gpt', workspaceEffects: true }),
     /sbx --clone cannot see uncommitted changes, so safe Promotion is impossible/,
   );
   assert.equal(fake.calls.some(call => call.args[0] === 'create' && !call.args.includes('--help')), false);
@@ -358,12 +359,12 @@ test('ignores Slopify run state created before the clean-workspace preflight', a
     return scenario.respond(request);
   });
 
-  const output = await new DockerSandboxRuntime(fake.execute).runCodex({
+  const output = await new DockerSandboxRuntime(fake.execute).runAgent({
     workspaceCwd: '/repo', runId: 'run', nodeId: 'node', attempt: 1,
     prompt: 'x', model: 'gpt', workspaceEffects: true,
   });
 
-  assert.equal(output.status, 'no_changes');
+  assert.equal(output.checkpointStatus, 'no_changes');
   assert.equal(fake.calls.some(call => call.args[0] === 'create'), true);
 });
 
@@ -373,7 +374,7 @@ test('does not apply the clean-workspace check to a read-only pipeline node', as
     if (request.command === 'git' && request.args[0] === 'status') return result(' M local.ts\n');
     return scenario.respond(request);
   });
-  await new DockerSandboxRuntime(fake.execute).runCodex({ workspaceCwd: '/repo', runId: 'run', nodeId: 'read', attempt: 1, prompt: 'inspect', model: 'gpt', workspaceEffects: false });
+  await new DockerSandboxRuntime(fake.execute).runAgent({ workspaceCwd: '/repo', runId: 'run', nodeId: 'read', attempt: 1, prompt: 'inspect', model: 'gpt', workspaceEffects: false });
   assert.equal(fake.calls.some(call => call.command === 'git' && call.args[0] === 'status'), false);
   assert.equal(fake.calls.some(call => call.args[0] === 'create'), true);
 });
@@ -381,11 +382,11 @@ test('does not apply the clean-workspace check to a read-only pipeline node', as
 test('requires sbx 0.35.0 and required clone/list capabilities', async () => {
   const baseline = sandboxScenario();
   const old = fakeExecutor(request => request.args.join(' ') === 'version' ? result('sbx 0.34.9') : baseline.respond(request));
-  await assert.rejects(new DockerSandboxRuntime(old.execute).preflightWorkspace('/repo'), /0\.35\.0 or newer.*0\.34\.9/);
+  await assert.rejects(new DockerSandboxRuntime(old.execute).preflightWorkspace({ cwd: '/repo' }), /0\.35\.0 or newer.*0\.34\.9/);
 
   const missingBaseline = sandboxScenario();
   const missing = fakeExecutor(request => request.args.join(' ') === 'create --help' ? result('Usage: sbx create') : missingBaseline.respond(request));
-  await assert.rejects(new DockerSandboxRuntime(missing.execute).preflightWorkspace('/repo'), /required --clone capability/);
+  await assert.rejects(new DockerSandboxRuntime(missing.execute).preflightWorkspace({ cwd: '/repo' }), /required --clone capability/);
 });
 
 test('accepts the installed sbx version output format', async () => {
@@ -394,7 +395,7 @@ test('accepts the installed sbx version output format', async () => {
     ? result('sbx version: v0.35.0 01e01520456e4126a9653471e7072e4d9b280321\n')
     : scenario.respond(request));
 
-  await new DockerSandboxRuntime(fake.execute).preflightWorkspace('/repo');
+  await new DockerSandboxRuntime(fake.execute).preflightWorkspace({ cwd: '/repo' });
 });
 
 test('rejects an occupied planned sandbox name before creation', async () => {
@@ -405,7 +406,7 @@ test('rejects an occupied planned sandbox name before creation', async () => {
     : scenario.respond(request));
 
   await assert.rejects(
-    new DockerSandboxRuntime(fake.execute).runCodex({
+    new DockerSandboxRuntime(fake.execute).runAgent({
       workspaceCwd: '/repo', runId: 'run', nodeId: 'node', attempt: 1,
       prompt: 'x', model: 'gpt', workspaceEffects: true,
     }),
@@ -438,7 +439,7 @@ test('initializes each Docker global network preset from the exact CLI choices w
         reportNetworkPolicy: message => messages.push(message),
       });
 
-      await runtime.runCodex({
+      await runtime.runAgent({
         workspaceCwd: '/repo', runId: `run-${preset}`, nodeId: 'node', attempt: 1,
         prompt: 'Inspect.', model: 'gpt', workspaceEffects: false,
       });
@@ -462,8 +463,8 @@ test('reuses an initialized global network policy without prompting again', asyn
     },
   });
 
-  await runtime.preflightWorkspace('/repo');
-  await runtime.preflightWorkspace('/repo');
+  await runtime.preflightWorkspace({ cwd: '/repo' });
+  await runtime.preflightWorkspace({ cwd: '/repo' });
 
   assert.equal(prompts, 0);
   assert.equal(fake.calls.filter(call => call.args.join(' ') === 'policy ls --json').length, 1);
@@ -489,9 +490,9 @@ test('cancelling one preflight does not abort global policy initialization share
   });
   const cancelled = new AbortController();
 
-  const firstPreflight = runtime.preflightWorkspace('/repo', true, cancelled.signal);
+  const firstPreflight = runtime.preflightWorkspace({ cwd: '/repo', workspaceEffects: true, signal: cancelled.signal });
   await initializationStarted;
-  const secondPreflight = runtime.preflightWorkspace('/repo');
+  const secondPreflight = runtime.preflightWorkspace({ cwd: '/repo' });
   cancelled.abort();
 
   await assert.rejects(firstPreflight, error => error instanceof Error && error.name === 'AbortError');
@@ -523,7 +524,7 @@ test('cancelling the last preflight aborts its global policy subprocess', async 
   });
   const cancelled = new AbortController();
 
-  const preflight = runtime.preflightWorkspace('/repo', true, cancelled.signal);
+  const preflight = runtime.preflightWorkspace({ cwd: '/repo', workspaceEffects: true, signal: cancelled.signal });
   await initializationStarted;
   cancelled.abort();
 
@@ -543,7 +544,7 @@ test('fails before sandbox creation when global network policy initialization fa
   });
 
   await assert.rejects(
-    runtime.runCodex({ workspaceCwd: '/repo', runId: 'run', nodeId: 'node', attempt: 1, prompt: 'x', model: 'gpt' }),
+    runtime.runAgent({ workspaceCwd: '/repo', runId: 'run', nodeId: 'node', attempt: 1, prompt: 'x', model: 'gpt' }),
     /Unable to initialize the Docker Sandbox global network policy as Balanced: daemon refused policy/,
   );
   assert.equal(fake.calls.some(call => call.args[0] === 'create' && !call.args.includes('--help')), false);
@@ -556,7 +557,7 @@ test('fails with corrective guidance when policy initialization needs a non-inte
     : baseline.respond(request));
 
   await assert.rejects(
-    new DockerSandboxRuntime(fake.execute).preflightWorkspace('/repo'),
+    new DockerSandboxRuntime(fake.execute).preflightWorkspace({ cwd: '/repo' }),
     /Choose Open, Balanced or Locked Down.*sbx policy init/,
   );
 });
@@ -566,7 +567,7 @@ test('cleans the sandbox when Codex fails', async () => {
   const fake = fakeExecutor(request => request.args[0] === 'exec' && request.args.includes('codex')
     ? result('', 'codex failed', 7)
     : scenario.respond(request));
-  await assert.rejects(new DockerSandboxRuntime(fake.execute).runCodex({ workspaceCwd: '/repo', runId: 'run', nodeId: 'node', attempt: 1, prompt: 'x', model: 'gpt' }), /codex failed/);
+  await assert.rejects(new DockerSandboxRuntime(fake.execute).runAgent({ workspaceCwd: '/repo', runId: 'run', nodeId: 'node', attempt: 1, prompt: 'x', model: 'gpt' }), /codex failed/);
   assert.deepEqual(fake.calls.at(-1)?.args.slice(0, 2), ['rm', '--force']);
 });
 
@@ -585,12 +586,12 @@ test('an already absent sandbox does not turn successful cleanup into a pipeline
       return scenario.respond(request);
     });
 
-    const output = await new DockerSandboxRuntime(fake.execute).runCodex({
+    const output = await new DockerSandboxRuntime(fake.execute).runAgent({
       workspaceCwd: cwd, runId: 'run', nodeId: 'node', attempt: 1,
       prompt: 'inspect', model: 'gpt', diagnosticsDirectory,
     });
 
-    assert.equal(output.status, 'no_changes');
+    assert.equal(output.checkpointStatus, 'no_changes');
     const diagnostic = JSON.parse(fs.readFileSync(diagnosticPath, 'utf8')) as { cleanup: { exitCode: number }; status: string };
     assert.equal(diagnostic.status, 'completed');
     assert.equal(diagnostic.cleanup.exitCode, 1);
@@ -614,7 +615,7 @@ test('external cancellation aborts the active sbx exec process and still cleans 
     return scenario.respond(request);
   });
 
-  const running = new DockerSandboxRuntime(fake.execute).runCodex({
+  const running = new DockerSandboxRuntime(fake.execute).runAgent({
     workspaceCwd: '/repo', runId: 'run', nodeId: 'cancelled', attempt: 1,
     prompt: 'work', model: 'gpt', signal: controller.signal,
   });
@@ -641,7 +642,7 @@ test('timeout aborts the active sbx exec process and exports a timed_out diagnos
     });
 
     await assert.rejects(
-      new DockerSandboxRuntime(fake.execute).runCodex({
+      new DockerSandboxRuntime(fake.execute).runAgent({
         workspaceCwd: cwd, runId: 'run', nodeId: 'timeout', attempt: 1,
         prompt: 'work', model: 'gpt', timeoutMs: 10, diagnosticsDirectory,
       }),
@@ -672,7 +673,7 @@ test('a hung cleanup is aborted on its own deadline and recorded without blockin
       return scenario.respond(request);
     });
 
-    const output = await new DockerSandboxRuntime(fake.execute, 10).runCodex({
+    const output = await new DockerSandboxRuntime(fake.execute, { cleanupTimeoutMs: 10 }).runAgent({
       workspaceCwd: cwd,
       runId: 'run',
       nodeId: 'cleanup-timeout',
@@ -682,7 +683,7 @@ test('a hung cleanup is aborted on its own deadline and recorded without blockin
       diagnosticsDirectory,
     });
 
-    assert.equal(output.status, 'no_changes');
+    assert.equal(output.checkpointStatus, 'no_changes');
     assert.equal(cleanupSignal?.aborted, true);
     const sandboxName = stableSandboxName('run', 'cleanup-timeout', 1);
     const diagnostic = JSON.parse(fs.readFileSync(path.join(diagnosticsDirectory, `${sandboxName}.json`), 'utf8')) as {
@@ -713,7 +714,7 @@ test('keepSandbox preserves resources and reports copyable commands after succes
         const fake = fakeExecutor(request => current.fail && request.args[0] === 'exec' && request.args.includes('codex')
           ? result('', 'codex failed', 7)
           : scenario.respond(request));
-        const run = new DockerSandboxRuntime(fake.execute).runCodex({
+        const run = new DockerSandboxRuntime(fake.execute).runAgent({
           workspaceCwd: cwd,
           runId: 'run',
           nodeId: current.name,
@@ -784,7 +785,7 @@ test('resumes a matching sandbox after creation without creating a second resour
     return scenario.respond(request);
   });
 
-  const output = await new DockerSandboxRuntime(fake.execute).runCodex({
+  const output = await new DockerSandboxRuntime(fake.execute).runAgent({
     workspaceCwd: '/repo', runId: 'run-resume', nodeId: 'work', attempt: 1,
     prompt: 'Continue safely.', model: 'gpt',
     resumeState: {
@@ -803,7 +804,7 @@ test('resumes after checkpoint persistence without relaunching Codex or requirin
   const scenario = sandboxScenario({ changedFiles: ['work.ts'], diff: 'diff' });
   const fake = fakeExecutor(scenario.respond);
 
-  const output = await new DockerSandboxRuntime(fake.execute).runCodex({
+  const output = await new DockerSandboxRuntime(fake.execute).runAgent({
     workspaceCwd: '/repo', runId: 'run-checkpointed', nodeId: 'work', attempt: 1,
     prompt: 'Do not run again.', model: 'gpt',
     resumeState: {
@@ -840,7 +841,7 @@ test('repeats cleanup idempotently when a checkpointed sandbox disappeared befor
     return scenario.respond(request);
   });
 
-  const output = await new DockerSandboxRuntime(fake.execute).runCodex({
+  const output = await new DockerSandboxRuntime(fake.execute).runAgent({
     workspaceCwd: '/repo', runId: 'run-cleanup-crash', nodeId: 'work', attempt: 1,
     prompt: 'Do not run again.', model: 'gpt',
     resumeState: {
@@ -924,7 +925,7 @@ test('launches descendants of unchanged approval checkpoints without creating an
   const scenario = sandboxScenario();
   const fake = fakeExecutor(request => request.command === 'git' && request.args[0] === 'bundle'
     ? result('', 'fatal: Refusing to create empty bundle.', 1) : scenario.respond(request));
-  await new DockerSandboxRuntime(fake.execute).runCodex({ workspaceCwd: '/repo', runId: 'empty-parent', nodeId: 'spec', attempt: 1, prompt: 'Write spec', model: 'model', dependencyCheckpoints: [{
+  await new DockerSandboxRuntime(fake.execute).runAgent({ workspaceCwd: '/repo', runId: 'empty-parent', nodeId: 'spec', attempt: 1, prompt: 'Write spec', model: 'model', dependencyCheckpoints: [{
     checkpointStatus: 'no_changes',
     checkpoint: { runId: 'empty-parent', nodeId: 'plan', attempt: 1, sandboxName: 'plan', baseCommit: 'base123', commit: 'empty-commit', remote: 'remote-plan', ref: 'refs/checkpoints/plan' },
     preview: { baseCommit: 'base123', checkpointCommit: 'empty-commit', fileCount: 0, files: [], diff: '' },

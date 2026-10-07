@@ -25,6 +25,7 @@ export type DockerSandboxNetworkPolicyPreset = 'allow-all' | 'balanced' | 'deny-
 
 /** Contrat fonctionnel de DockerSandboxRuntimeOptions dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface DockerSandboxRuntimeOptions {
+  cleanupTimeoutMs?: number;
   selectNetworkPolicy?: (
     choices: readonly DockerSandboxNetworkPolicyChoice[],
   ) => DockerSandboxNetworkPolicyChoice | undefined | Promise<DockerSandboxNetworkPolicyChoice | undefined>;
@@ -53,6 +54,14 @@ export interface SubprocessResult {
 
 /** Type métier SubprocessExecutor utilisé pour représenter une étape ou un résultat du cycle de vie du pipeline. */
 export type SubprocessExecutor = (request: SubprocessRequest) => Promise<SubprocessResult>;
+
+/** Contrat fonctionnel de SandboxPreflightInput dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
+export interface SandboxPreflightInput {
+  cwd: string;
+  workspaceEffects?: boolean;
+  signal?: AbortSignal;
+  plannedSandboxNames?: readonly string[];
+}
 
 /** Contrat fonctionnel de SandboxRunInput dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface SandboxRunInput {
@@ -94,7 +103,6 @@ export interface SandboxRunState {
 
 /** Contrat fonctionnel de SandboxRunResult dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface SandboxRunResult {
-  status?: 'no_changes';
   checkpointStatus: 'checkpointed' | 'no_changes';
   sandboxName: string;
   stdout: string;
@@ -229,19 +237,14 @@ export class DockerSandboxRuntime {
 /** Initialise ce composant pour le cycle de vie du pipeline concerné. */
   constructor(
     private readonly execute: SubprocessExecutor = createNodeSubprocessExecutor(),
-    cleanupTimeoutMsOrOptions: number | DockerSandboxRuntimeOptions = DEFAULT_SANDBOX_CLEANUP_TIMEOUT_MS,
     options: DockerSandboxRuntimeOptions = {},
   ) {
-    this.cleanupTimeoutMs = typeof cleanupTimeoutMsOrOptions === 'number'
-      ? cleanupTimeoutMsOrOptions
-      : DEFAULT_SANDBOX_CLEANUP_TIMEOUT_MS;
-    this.options = typeof cleanupTimeoutMsOrOptions === 'number'
-      ? options
-      : cleanupTimeoutMsOrOptions;
+    this.cleanupTimeoutMs = options.cleanupTimeoutMs ?? DEFAULT_SANDBOX_CLEANUP_TIMEOUT_MS;
+    this.options = options;
   }
 
 /** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
-  async runCodex(input: SandboxRunInput): Promise<SandboxRunResult> {
+  async runAgent(input: SandboxRunInput): Promise<SandboxRunResult> {
     const sandboxName = input.resumeState?.sandboxName ?? stableSandboxName(input.runId, input.nodeId, input.attempt);
     const execution = createExecutionSignal(input.signal, input.timeoutMs);
     const startedAt = new Date().toISOString();
@@ -253,12 +256,12 @@ export class DockerSandboxRuntime {
     let durableState: SandboxRunState | undefined;
 
     try {
-      await this.preflightWorkspace(
-        input.workspaceCwd,
-        input.workspaceEffects !== false,
-        execution.signal,
-        input.resumeState ? [] : [sandboxName],
-      );
+      await this.preflightWorkspace({
+        cwd: input.workspaceCwd,
+        workspaceEffects: input.workspaceEffects !== false,
+        signal: execution.signal,
+        plannedSandboxNames: input.resumeState ? [] : [sandboxName],
+      });
       let baseCommit: string;
       if (input.resumeState) {
         baseCommit = input.resumeState.baseCommit;
@@ -357,7 +360,6 @@ export class DockerSandboxRuntime {
         terminalStatus = 'completed';
         return {
           ...durableState.checkpoint,
-          ...(durableState.checkpoint.checkpointStatus === 'no_changes' ? { status: 'no_changes' as const } : {}),
           sandboxName,
           stdout,
           stderr,
@@ -409,7 +411,6 @@ export class DockerSandboxRuntime {
       terminalStatus = 'completed';
       return {
         ...checkpoint,
-        ...(checkpoint.checkpointStatus === 'no_changes' ? { status: 'no_changes' as const } : {}),
         sandboxName,
         stdout,
         stderr,
@@ -556,12 +557,8 @@ export class DockerSandboxRuntime {
   }
 
 /** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
-  async preflightWorkspace(
-    cwd: string,
-    workspaceEffects = true,
-    signal?: AbortSignal,
-    plannedSandboxNames: readonly string[] = [],
-  ): Promise<void> {
+  async preflightWorkspace(input: SandboxPreflightInput): Promise<void> {
+    const { cwd, workspaceEffects = true, signal, plannedSandboxNames = [] } = input;
     this.activePreflights += 1;
     try {
       await this.requireSuccess({ command: 'git', args: ['rev-parse', '--is-inside-work-tree'], cwd, stdin: 'ignore', signal }, 'verify that the workspace is a Git repository');

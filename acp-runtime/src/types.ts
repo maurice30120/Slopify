@@ -19,14 +19,3 @@ export interface Logger {
 /** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   error(message: string, error?: unknown): void;
 }
-
-/** Constante consoleLogger qui fixe un contrat partagé du pipeline. */
-export const consoleLogger: Logger = {
-/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
-  log(message) { console.log(`[acp-runtime] ${message}`); },
-/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
-  error(message, error) {
-    if (error === undefined) console.error(`[acp-runtime] ${message}`);
-    else console.error(`[acp-runtime] ${message}`, error);
-  },
-};

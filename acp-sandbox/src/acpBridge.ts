@@ -26,9 +26,24 @@ export type DockerSandboxAcpBridgeOptions = Omit<
   'workspaceCwd' | 'prompt' | 'signal'
 >;
 
+/** Codes fermés que le pont ACP produit réellement ; le contrat reste visible pour l'appelant.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
+const SANDBOX_BRIDGE_FAILURE_CODES = Object.freeze([
+  'integration_conflict',
+  'sandbox_resume_divergence',
+  'sandbox_cancelled',
+  'sandbox_timeout',
+  'sandbox_result_missing',
+  'sandbox_run_failed',
+] as const);
+
+/** Type métier SandboxBridgeFailureCode utilisé pour représenter une étape ou un résultat du cycle de vie du pipeline. */
+export type SandboxBridgeFailureCode = typeof SANDBOX_BRIDGE_FAILURE_CODES[number];
+
 /** Contrat fonctionnel de SandboxBridgeFailure dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface SandboxBridgeFailure {
-  code: string;
+  code: SandboxBridgeFailureCode;
   message: string;
   diagnostic?: string;
   conflict?: IntegrationConflict;
@@ -85,7 +100,7 @@ export class DockerSandboxAcpBridgeAgent implements Agent {
     session.active = controller;
     session.failure = undefined;
     try {
-      session.result = await this.runtime.runCodex({
+      session.result = await this.runtime.runAgent({
         ...this.options,
         workspaceCwd: session.cwd,
         prompt: textPrompt(params),
@@ -231,6 +246,13 @@ function vibeResponseText(stdout: string): string {
   return text;
 }
 
+/** Point d'entrée isSandboxBridgeFailureCode du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
+function isSandboxBridgeFailureCode(code: unknown): code is SandboxBridgeFailureCode {
+  return typeof code === 'string' && (SANDBOX_BRIDGE_FAILURE_CODES as readonly string[]).includes(code);
+}
+
 /** Point d'entrée bridgeFailure du cycle de vie du pipeline.
  * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
  */
@@ -243,7 +265,7 @@ function bridgeFailure(error: unknown): SandboxBridgeFailure {
   }
   if (error instanceof Error) {
     const withCode = error as Error & { code?: unknown };
-    const code = typeof withCode.code === 'string'
+    const code = isSandboxBridgeFailureCode(withCode.code)
       ? withCode.code
       : 'sandbox_run_failed';
     return { code, message: error.message };

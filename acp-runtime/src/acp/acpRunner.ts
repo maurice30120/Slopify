@@ -17,7 +17,7 @@ import type { Logger, RuntimePermissionContext } from '../types.js';
 export interface AcpRunRequest<TFinal = undefined> {
   agentName: string;
   sessionCwd: string;
-  processConfig: ProcessAgentConfig;
+  processConfig?: ProcessAgentConfig;
   prompt: ContentBlock[];
   connector?: AcpConnector;
   getPermissionContext?: () => RuntimePermissionContext | undefined;

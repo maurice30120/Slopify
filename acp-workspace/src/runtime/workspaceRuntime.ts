@@ -186,7 +186,10 @@ export function createWorkspaceRuntime(options: CreateWorkspaceRuntimeOptions): 
         checkpoints.set(nodeId, attempts);
         checkpointsByRunId.set(runId, checkpoints);
       }
-      return { text: acpResult.text, promotion: result.status };
+      return {
+        text: acpResult.text,
+        promotion: result.checkpointStatus === 'no_changes' ? ('no_changes' as const) : undefined,
+      };
     }
     const result = await runner.run<PipelinePromotionStatus | undefined>({
       agentName: input.agentName,
@@ -234,12 +237,11 @@ export function createWorkspaceRuntime(options: CreateWorkspaceRuntimeOptions): 
         return [stableSandboxName(runId, node.id, 1)];
       });
       if (plannedSandboxNames.length > 0) {
-        await sandboxRuntime.preflightWorkspace(
-          options.workspaceCwd,
-          true,
-          undefined,
+        await sandboxRuntime.preflightWorkspace({
+          cwd: options.workspaceCwd,
+          workspaceEffects: true,
           plannedSandboxNames,
-        );
+        });
       }
     },
     clearRunLogs: () => fs.rmSync(path.join(options.workspaceCwd, '.acp', 'logs', 'sandboxes'), { recursive: true, force: true }),

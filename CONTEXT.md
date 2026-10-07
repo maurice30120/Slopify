@@ -6,6 +6,10 @@ Slopify exécute des agents dans des environnements isolés et contrôle explici
 
 ### V2 — vocabulaire confirmé pendant la conception
 
+**Agent Hôte**:
+CLI interactive depuis laquelle l'utilisateur pilote Slopify : choisir un pipeline, lancer, suivre et reprendre les runs. Distinct des agents qui exécutent les nœuds d'un pipeline.
+_Avoid_: agent, coordinateur, agent de pipeline
+
 **Tâche d’implémentation**:
 Travail de développement défini pendant la préparation, accompagné des dépendances qui conditionnent son démarrage.
 _Avoid_: étape de clarification, étape de planification, nœud de pipeline générique

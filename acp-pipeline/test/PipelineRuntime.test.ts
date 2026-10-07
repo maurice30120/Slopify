@@ -1,9 +1,9 @@
 import * as assert from "node:assert/strict";
 import { test } from "node:test";
 
+import { renderRuntimeTemplate } from "../dist/PipelineRuntime.js";
 import {
   PipelineRuntime,
-  renderRuntimeTemplate,
   compilePipelineV3Definition,
   InMemoryPipelineRunStore,
   NATIVE_ACP_BASELINE_CAPABILITIES,

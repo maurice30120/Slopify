@@ -1,6 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { EventEmitter } from 'node:events';
 
 import type { Logger } from '../types.js';
 import { isCodexAcpCommand, normalizeCodexModelsCacheForLegacyCli } from './codexModelsCacheCompat.js';
@@ -34,14 +33,12 @@ export interface AgentProcessExit {
  * est la seule couche autorisée à lancer ou arrêter ces processus, afin que les
  * connexions ne survivent pas au run qui les a créées.
  */
-export class AgentProcessManager extends EventEmitter {
+export class AgentProcessManager {
   private readonly agents = new Map<string, AgentInstance>();
   private nextId = 1;
 
 /** Initialise ce composant pour le cycle de vie du pipeline concerné. */
-  constructor(private readonly logger?: Logger) {
-    super();
-  }
+  constructor(private readonly logger?: Logger) {}
 
 /** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   spawnAgent(name: string, config: ProcessAgentConfig, cwd?: string): AgentInstance {
@@ -73,13 +70,11 @@ export class AgentProcessManager extends EventEmitter {
 
     child.on('error', error => {
       this.logger?.error(`Agent "${name}" process error`, error);
-      this.emit('agent-error', { agentId: id, error });
     });
 
     child.on('close', (code, signal) => {
       this.logger?.log(`Agent "${name}" exited (code=${code}, signal=${signal})`);
       this.agents.delete(id);
-      this.emit('agent-closed', { agentId: id, code, signal });
     });
 
     return instance;
@@ -121,7 +116,6 @@ export class AgentProcessManager extends EventEmitter {
 /** Termine cette étape du cycle de vie et libère les ressources qui lui appartiennent. */
   dispose(): void {
     this.killAll();
-    this.removeAllListeners();
   }
 }
 

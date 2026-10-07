@@ -119,11 +119,6 @@ export class ConnectionManager {
   }
 
 /** Termine cette étape du cycle de vie et libère les ressources qui lui appartiennent. */
-  removeConnection(agentId: string): void {
-    this.connections.delete(agentId);
-  }
-
-/** Termine cette étape du cycle de vie et libère les ressources qui lui appartiennent. */
   dispose(): void {
     for (const info of this.connections.values()) {
       info.client.dispose();

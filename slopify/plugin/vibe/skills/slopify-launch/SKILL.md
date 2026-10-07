@@ -14,9 +14,9 @@ suivre ou reprendre un run en cours.
 1. Identifier si la demande est nouvelle, fondée sur un ticket approuvé, ou
    une revue d’une livraison existante.
 2. Vérifier les pipelines réellement disponibles avec
-   `slopify list --json --cwd <workspace>`. Dans ce dépôt, utiliser
-   `npm run slopify -- list --json --cwd <workspace>` si le binaire global n’est
-   pas installé.
+   `slopify list --json --cwd <workspace>`. Si le binaire global n’est pas
+   installé, utiliser le préfixe du projet hôte (par exemple
+   `npm run slopify --` ou `npx slopify`).
 3. Lire [pipeline-choice.md](references/pipeline-choice.md) et appliquer ses
    prérequis.
 4. Choisir le niveau le plus léger qui couvre clairement la demande.
@@ -46,7 +46,8 @@ pouvoir lire la sortie pendant l’exécution) :
 slopify run <niveau> "<demande confirmée>" --agent "<agent configuré>" --cwd <workspace> [--yes] [--json] [--verbose]
 ```
 
-Utiliser `npm run slopify -- run ...` lorsque le binaire local est nécessaire.
+Si le binaire global n’est pas installé, préfixer avec le mécanisme du projet
+hôte (par exemple `npm run slopify -- run ...` ou `npx slopify run ...`).
 Passer les arguments séparément ou avec un échappement shell sûr.
 `--agent` est obligatoire pour `run` et sélectionne un nom défini dans
 `<workspace>/.acp/acp-agents.json` (clé exacte de `agents`, par exemple
@@ -64,7 +65,13 @@ pour toute la session.
 promotion finale. Une pause non approuvée automatiquement bloque le processus
 en attente d’une décision : lire la question sur la sortie, la soumettre à
 l’utilisateur, puis relancer `resume` ou écrire la réponse au processus selon
-le mécanisme du lanceur.
+le mécanisme du lanceur. Comme une Promotion exige toujours une décision
+interactive explicite, un lancement en processus d’arrière-plan sans stdin
+aboutit à un rejet automatique : préférer un lancement où le processus peut
+recevoir la confirmation, ou prévoir de récupérer l’Agent Checkpoint
+(commit durable, référé par l’état du run sous
+`.acp/runs-v3/workspace/runs/<runId>/snapshot.json`) et de le promouvoir par
+fast-forward après décision explicite de l’utilisateur.
 
 ## Suivre l’avancement
 
@@ -97,11 +104,15 @@ Après une interruption du processus, relancer le même run avec le même
 slopify resume <run-id> --agent "<agent configuré>" --cwd <workspace>
 ```
 
-Après une erreur, ne pas reprendre, annuler, relancer ou changer de niveau
-automatiquement. Proposer ces actions sur demande explicite.
+Un run à l’état terminal (`cancelled`, `rejected`, `failed`) n’est pas
+récupérable par `resume`. Après une erreur, ne pas reprendre, annuler,
+relancer ou changer de niveau automatiquement. Proposer ces actions sur
+demande explicite.
 
 ## Portée
 
 Le prompt transmis doit rester limité à l’objectif, aux fichiers concernés et
 aux critères de validation annoncés. Cette skill route, lance et suit les
-pipelines ; elle ne modifie pas le code applicatif.
+pipelines ; elle ne modifie pas le code applicatif. Les prérequis
+d’installation et la configuration du workspace sont décrits dans la
+connaissance `slopify-setup`.

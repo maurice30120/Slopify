@@ -1,0 +1,13 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "slopify",
+  "version": "0.1.0",
+  "description": "Workflow Slopify : choisir, lancer, suivre et reprendre des pipelines d'agents en sandbox Docker, avec les conventions du tracker local en Markdown.",
+  "license": "MIT",
+  "keywords": ["slopify", "agents", "pipelines", "sandbox"],
+  "extensions": {
+    "ai.mistral.vibe": {
+      "schemaVersion": 1
+    }
+  }
+}

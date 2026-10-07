@@ -1,70 +1,35 @@
-import type { PromotionPolicy } from './gitPromotion.js';
-
 export {
   DockerSandboxAcpBridgeAgent,
   SandboxAcpExtensionAgent,
-  type DockerSandboxAcpBridgeOptions,
-  type SandboxBridgeFailure,
   type SandboxBridgePreviewResponse,
 } from './acpBridge.js';
 
 export {
-  SANDBOX_EXTENSION_METHODS,
   SandboxAcpExtensionHandler,
-  isSandboxExtensionMethod,
-  type SandboxExtensionHandler,
-  type SandboxExtensionHandlers,
-  type SandboxExtensionMethod,
 } from './extensions.js';
 
 export {
   GitPromotion,
   IntegrationConflictError,
-  PROMOTION_POLICIES,
-  SLOPIFY_GIT_EMAIL,
-  SLOPIFY_GIT_NAME,
-  type AgentCheckpoint,
-  type AgentCheckpointPreview,
   type AgentCheckpointResult,
-  type CreateAgentCheckpointInput,
   type IntegrateAgentCheckpointsInput,
   type IntegrationConflict,
-  type PipelineChangeSet,
   type PipelineChangeSetPreview,
   type PipelineChangeSetResult,
   type PromotePipelineChangeSetInput,
-  type PromotionDecider,
   type PromotionDecision,
-  type PromotionPolicy,
-  type PromotionRequest,
   type PromotionResult,
-  type PromotionStatus,
 } from './gitPromotion.js';
 
 export {
-  DOCKER_SANDBOX_NETWORK_POLICY_CHOICES,
   DockerSandboxRuntime,
-  DEFAULT_SANDBOX_CLEANUP_TIMEOUT_MS,
-  MINIMUM_SBX_VERSION,
-  SandboxRunCancelledError,
-  SandboxRunTimeoutError,
-  SandboxResumeDivergenceError,
   createNodeSubprocessExecutor,
-  retainedSandboxCommands,
   stableSandboxName,
   type DockerSandboxNetworkPolicyChoice,
-  type DockerSandboxNetworkPolicyPreset,
-  type DockerSandboxRuntimeOptions,
   type RetainedSandbox,
-  type RetainedSandboxCommands,
-  type SandboxCleanupDiagnostic,
-  type SandboxRunDiagnostic,
-  type SandboxRunInput,
-  type SandboxRunResult,
-  type SandboxRunState,
-  type SandboxRunTerminalStatus,
   type SandboxReconciliationResult,
   type SandboxResumeSnapshot,
+  type SandboxRunState,
   type SubprocessExecutor,
   type SubprocessRequest,
   type SubprocessResult,
@@ -82,8 +47,3 @@ export interface SandboxAgentConfig {
 
 /** CLI d'agent pris en charge dans un Docker Sandbox. */
 export type SandboxAgent = 'codex' | 'vibe';
-
-/** Contrat fonctionnel de SandboxPipelineConfig dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
-export interface SandboxPipelineConfig {
-  promotion: PromotionPolicy;
-}
