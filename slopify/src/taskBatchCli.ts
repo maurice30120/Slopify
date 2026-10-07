@@ -1,7 +1,7 @@
 import * as path from 'node:path';
-import { TaskBatchService, TaskBatchValidationError } from './taskBatch.js';
+import { taskBatchReport, formatTaskBatchReport } from './taskBatchReport.js';
+import { TaskBatchService, TaskBatchValidationError, TaskBatchExecutionError, type TaskBatchSnapshot, type TaskBatchServiceOptions } from './taskBatch.js';
 
-/** Constante taskBatchHelp qui fixe un contrat partagé du pipeline. */
 export const taskBatchHelp = [
   'Task batches (Pi / Codex):',
   '  slopify tasks run <batch.json> [--cwd <repository>] [--store <directory>] [--base <ref>] [--json]',
@@ -13,25 +13,36 @@ export const taskBatchHelp = [
   '  slopify tasks validate-resolution <run-id> <resolution-id> [--cwd <repository>] [--store <directory>] [--json]',
   '  slopify tasks resolution <run-id> [--cwd <repository>] [--store <directory>] [--json]',
   '',
+  'Runs execute the first five ready tasks in JSON order, then integrate the entire wave.',
+  'Execution exit codes: 0 succeeded, 2 failed/interrupted/conflicted, 1 invalid input or command.',
+  'Status and final output include progress, issues, evidence paths and next actions.',
+  'During execution progress is written to stderr (JSON lines with --json); stdout keeps one final result.',
+  'Running is durable state; inspect sandbox liveness before retrying an interrupted process.',
   'Batch paths are relative to the calling directory; specFile is relative to the batch file.',
 ].join('\n');
 
+
+type BatchCliService = Pick<TaskBatchService,
+  'run' | 'status' | 'resume' | 'resumeTask' | 'resolveConflict' | 'getConflict' | 'validateResolution' | 'getResolution'>;
 
 export async function runTaskBatchCli(
   argv: string[],
   output: { write(message: string): void; writeError(message: string): void },
   baseCwd = process.cwd(),
+  createService: (options: TaskBatchServiceOptions) => BatchCliService = options => new TaskBatchService(options),
 ): Promise<number> {
-  let json = false;
+  let json = argv.includes('--json');
+  let reportStorePath: string | undefined;
+  const controller = new AbortController();
+  const interrupt = () => controller.abort();
   try {
     if (argv.length === 0 || argv.includes('--help') || argv.includes('-h')) {
       output.write(taskBatchHelp);
       return 0;
     }
     const action = argv[0];
-    if (action !== 'run' && action !== 'status' && action !== 'resume' && action !== 'resume-task' && action !== 'resolve-conflict' && action !== 'conflict' && action !== 'validate-resolution' && action !== 'resolution') {
-      throw new Error(`Unknown tasks command "${action}".\n${taskBatchHelp}`);
-    }
+    const actions = ['run', 'status', 'resume', 'resume-task', 'resolve-conflict', 'conflict', 'validate-resolution', 'resolution'];
+    if (!actions.includes(action)) throw new Error(`Unknown tasks command "${action}".\n${taskBatchHelp}`);
     let repositoryPath = baseCwd;
     let storePath: string | undefined;
     let baseRef: string | undefined;
@@ -41,119 +52,85 @@ export async function runTaskBatchCli(
       const value = argv[index];
       if (value === '--json') { json = true; continue; }
       if (value === '--cwd' || value === '--store' || value === '--base' || value === '--strategy') {
+        if (value === '--base' && action !== 'run') throw new Error('--base is only supported by tasks run.');
+        if (value === '--strategy' && action !== 'resolve-conflict') throw new Error('--strategy is only supported by tasks resolve-conflict.');
         const next = argv[++index];
-        if (!next || next.startsWith('--')) throw new Error(`${value} requires a value.`);
+        if (!next || next.startsWith('-')) throw new Error(`${value} requires a value.`);
         if (value === '--cwd') repositoryPath = path.resolve(baseCwd, next);
         else if (value === '--store') storePath = path.resolve(baseCwd, next);
         else if (value === '--base') baseRef = next;
-        else if (value === '--strategy') {
-          if (next === 'use-current' || next === 'use-incoming' || next === 'manual') {
-            strategy = next;
-          } else {
-            throw new Error(`Invalid strategy: ${next}. Use 'use-current', 'use-incoming', or 'manual'.`);
-          }
-        }
+        else if (next === 'use-current' || next === 'use-incoming' || next === 'manual') strategy = next;
+        else throw new Error(`Invalid strategy: ${next}. Use 'use-current', 'use-incoming', or 'manual'.`);
         continue;
       }
       if (value.startsWith('-')) throw new Error(`Unknown tasks option "${value}".`);
       positional.push(value);
     }
-    const service = new TaskBatchService({ repositoryPath, storePath });
-    
-    if (action === 'run') {
-      if (positional.length !== 1) throw new Error(taskBatchHelp);
-      const snapshot = await service.run(path.resolve(baseCwd, positional[0]), { baseRef });
-      output.write(json ? JSON.stringify(snapshot) : `Run ${snapshot.runId}: ${snapshot.status}\nIntegration branch: ${snapshot.integrationBranch}\n${snapshot.tasks.map((task) => `${task.id}: ${task.status} (${task.agent})`).join('\n')}`);
-      return 0;
-    }
-    
-    if (action === 'status') {
-      if (positional.length !== 1) throw new Error(taskBatchHelp);
-      const snapshot = await service.status(positional[0]);
-      output.write(json ? JSON.stringify(snapshot) : `Run ${snapshot.runId}: ${snapshot.status}\nIntegration branch: ${snapshot.integrationBranch}\n${snapshot.tasks.map((task) => `${task.id}: ${task.status} (${task.agent})`).join('\n')}`);
-      return 0;
-    }
-    
-    if (action === 'resume') {
-      if (positional.length !== 1) throw new Error(taskBatchHelp);
-      const snapshot = await service.resume(positional[0]);
-      output.write(json ? JSON.stringify(snapshot) : `Run ${snapshot.runId}: ${snapshot.status}\nIntegration branch: ${snapshot.integrationBranch}\n${snapshot.tasks.map((task) => `${task.id}: ${task.status} (${task.agent})`).join('\n')}`);
-      return 0;
-    }
-    
-    if (action === 'resume-task') {
-      if (positional.length !== 2) throw new Error(taskBatchHelp);
-      const [runId, taskId] = positional;
-      const snapshot = await service.resumeTask(runId, taskId);
-      output.write(json ? JSON.stringify(snapshot) : `Run ${snapshot.runId}: ${snapshot.status}\nIntegration branch: ${snapshot.integrationBranch}\n${snapshot.tasks.map((task) => `${task.id}: ${task.status} (${task.agent})`).join('\n')}`);
-      return 0;
-    }
-
-    if (action === 'resolve-conflict') {
-      if (positional.length !== 1) throw new Error(taskBatchHelp);
-      const runId = positional[0];
-      const snapshot = await service.resolveConflict(runId, { resolutionStrategy: strategy });
-      output.write(json ? JSON.stringify(snapshot) : `Run ${snapshot.runId}: ${snapshot.status}\nIntegration branch: ${snapshot.integrationBranch}\nConflict resolved: ${!snapshot.conflict}\n${snapshot.tasks.map((task) => `${task.id}: ${task.status} (${task.agent})`).join('\n')}`);
-      return 0;
-    }
-
+    const arity = action === 'resume-task' || action === 'validate-resolution' ? 2 : 1;
+    if (positional.length !== arity) throw new Error(taskBatchHelp);
+    reportStorePath = storePath;
+    let lastProgress = '';
+    const onUpdate = action === 'status' || action === 'conflict' || action === 'resolution' ? undefined
+      : (snapshot: TaskBatchSnapshot) => {
+        const { progress, issues, nextActions } = taskBatchReport(snapshot, storePath);
+        const tasks = snapshot.tasks.map(task => ({ id: task.id, agent: task.agent, status: task.status }));
+        const fingerprint = JSON.stringify({ runId: snapshot.runId, status: snapshot.status, progress, issues, tasks, nextActions });
+        if (fingerprint === lastProgress) return;
+        lastProgress = fingerprint;
+        output.writeError(json ? JSON.stringify({ type: 'progress', runId: snapshot.runId, status: snapshot.status,
+          updatedAt: snapshot.updatedAt, progress, tasks, issues, nextActions })
+          : `Run ${snapshot.runId}: ${snapshot.status} (${progress.phase}); ${progress.counts.succeeded}/${progress.total} integrated; running: ${progress.activeTaskIds.join(', ') || 'none'}; awaiting integration: ${progress.awaitingIntegrationTaskIds.join(', ') || 'none'}\n`
+            + tasks.map(task => `${task.id}: ${task.status} (${task.agent})`).join(', ')
+            + issues.filter(issue => issue.severity !== 'info' && !issue.historical).map(issue => `\n[${issue.code}] ${issue.taskId ?? 'run'}: ${issue.message}`).join(''));
+      };
+    const service = createService({ repositoryPath, storePath, onUpdate });
+    const [runId, taskId] = positional;
     if (action === 'conflict') {
-      if (positional.length !== 1) throw new Error(taskBatchHelp);
-      const runId = positional[0];
       const conflict = await service.getConflict(runId);
-      if (json) {
-        output.write(JSON.stringify(conflict ?? null));
-      } else {
-        if (conflict) {
-          output.write(`Conflict in run ${runId}:\n`);
-          output.write(`  Task: ${conflict.taskId}\n`);
-          output.write(`  Attempt: ${conflict.attemptId}\n`);
-          output.write(`  Files: ${conflict.files.join(', ')}\n`);
-          output.write(`  Output: ${conflict.output.substring(0, 200)}${conflict.output.length > 200 ? '...' : ''}\n`);
-        } else {
-          output.write(`No conflict in run ${runId}.\n`);
-        }
-      }
+      output.write(json ? JSON.stringify(conflict ?? null) : conflict
+        ? `Conflict in run ${runId}:\n  Task: ${conflict.taskId}\n  Attempt: ${conflict.attemptId}\n  Files: ${conflict.files.join(', ')}\n  Output: ${conflict.output.slice(0, 200)}`
+        : `No conflict in run ${runId}.`);
       return 0;
     }
-
-    if (action === 'validate-resolution') {
-      if (positional.length !== 2) throw new Error(taskBatchHelp);
-      const [runId, resolutionId] = positional;
-      const snapshot = await service.validateResolution(runId, resolutionId);
-      output.write(json ? JSON.stringify(snapshot) : `Run ${snapshot.runId}: ${snapshot.status}\nResolution ${resolutionId}: ${snapshot.resolution?.status}\nIntegration branch: ${snapshot.integrationBranch}\n${snapshot.tasks.map((task) => `${task.id}: ${task.status} (${task.agent})`).join('\n')}`);
-      return 0;
-    }
-
     if (action === 'resolution') {
-      if (positional.length !== 1) throw new Error(taskBatchHelp);
-      const runId = positional[0];
       const resolution = await service.getResolution(runId);
-      if (json) {
-        output.write(JSON.stringify(resolution ?? null));
-      } else {
-        if (resolution) {
-          output.write(`Resolution for run ${runId}:\n`);
-          output.write(`  ID: ${resolution.resolutionId}\n`);
-          output.write(`  Status: ${resolution.status}\n`);
-          output.write(`  Sandbox: ${resolution.sandboxName}\n`);
-          output.write(`  Created: ${resolution.createdAt}\n`);
-          if (resolution.validatedAt) output.write(`  Validated: ${resolution.validatedAt}\n`);
-          if (resolution.resolutionCommit) output.write(`  Commit: ${resolution.resolutionCommit}\n`);
-        } else {
-          output.write(`No resolution for run ${runId}.\n`);
-        }
-      }
+      output.write(json ? JSON.stringify(resolution ?? null) : resolution
+        ? `Resolution for run ${runId}:\n${JSON.stringify(resolution, null, 2)}`
+        : `No resolution for run ${runId}.`);
       return 0;
     }
-
-    throw new Error(taskBatchHelp);
+    if (action !== 'status') {
+      process.on('SIGINT', interrupt);
+      process.on('SIGTERM', interrupt);
+    }
+    const options = { signal: controller.signal };
+    let snapshot: TaskBatchSnapshot;
+    switch (action) {
+      case 'run': snapshot = await service.run(path.resolve(baseCwd, runId), { ...options, baseRef }); break;
+      case 'status': snapshot = await service.status(runId); break;
+      case 'resume': snapshot = await service.resume(runId, options); break;
+      case 'resume-task': snapshot = await service.resumeTask(runId, taskId, options); break;
+      case 'resolve-conflict': snapshot = await service.resolveConflict(runId, { ...options, resolutionStrategy: strategy }); break;
+      case 'validate-resolution': snapshot = await service.validateResolution(runId, taskId, options); break;
+      default: throw new Error(taskBatchHelp);
+    }
+    output.write(json ? JSON.stringify(taskBatchReport(snapshot, storePath)) : formatTaskBatchReport(snapshot, storePath));
+    return action === 'status' || snapshot.status === 'succeeded' ? 0 : 2;
   } catch (error) {
-    if (json && error instanceof TaskBatchValidationError) {
-      output.write(JSON.stringify({ status: 'invalid', diagnostics: error.diagnostics }));
+    if (error instanceof TaskBatchExecutionError) {
+      output.write(json ? JSON.stringify({ ...taskBatchReport(error.snapshot, reportStorePath), error: error.message }) : formatTaskBatchReport(error.snapshot, reportStorePath));
+      if (!json) output.writeError(error.message);
+      return 2;
+    }
+    if (json) {
+      output.write(JSON.stringify({ status: 'invalid', diagnostics: error instanceof TaskBatchValidationError ? error.diagnostics
+        : [{ code: 'command_error', message: error instanceof Error ? error.message : String(error) }] }));
     } else {
       output.writeError(`Error: ${error instanceof Error ? error.message : String(error)}`);
     }
     return 1;
+  } finally {
+    process.off('SIGINT', interrupt);
+    process.off('SIGTERM', interrupt);
   }
 }

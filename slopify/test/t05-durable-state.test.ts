@@ -270,7 +270,7 @@ test('AC7: tasks CLI status command reads durable state', async (t) => {
     env: { ...process.env, PATH: bin + path.delimiter + process.env.PATH }
   });
   
-  assert.equal(run.status, 0, run.stderr);
+  assert.equal(run.status, 2, run.stderr);
   const initial = JSON.parse(run.stdout) as TaskBatchSnapshot;
   
   const status = spawnSync(process.execPath, [cli, 'tasks', 'status', initial.runId, '--cwd', f.repo, '--store', f.storePath, '--json'], {
@@ -356,6 +356,7 @@ test('AC3: resumeTask resets interrupted task to pending for re-execution', { ti
   assert.equal(state.tasks[0].attempts.length, 2);
   // The new attempt should have been created with 'running' status initially
   assert.equal(state.tasks[0].attempts[1].status, 'failed'); // But failed due to mock executor
+  assert.equal(state.status, 'failed', 'isolated resume records its terminal run status');
 });
 
 // AC4: Explicit request can relaunch failed task; no attempt created by merely reading status

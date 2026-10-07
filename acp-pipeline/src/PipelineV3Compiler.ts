@@ -40,6 +40,7 @@ export function compilePipelineV3Definition(
   const id = readRequiredId(value, "id", "pipeline", errors);
   const title = readRequiredString(value, "title", "pipeline", errors);
   const promotion = readPipelinePromotion(value.promotion, errors);
+  const maxConcurrency = readPipelineMaxConcurrency(value.maxConcurrency, errors);
   const rawPolicies = readPolicies(value.policies, errors);
   const nodes = readNodes(value.nodes, rawPolicies, agentConfigs, errors);
 
@@ -52,7 +53,13 @@ export function compilePipelineV3Definition(
     return { errors };
   }
 
-  return { program: createCompiledProgram({ version: 3, id, title, promotion }, nodes), errors: [] };
+  return {
+    program: createCompiledProgram({
+      version: 3, id, title, promotion,
+      ...(maxConcurrency === undefined ? {} : { maxConcurrency }),
+    }, nodes),
+    errors: [],
+  };
 }
 
 /** Point d'entrée appendCompiledPipelineNodes du cycle de vie du pipeline.
@@ -93,7 +100,7 @@ export function bindPipelineAgent(
  * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
  */
 function createCompiledProgram(
-  metadata: Pick<CompiledPipelineProgram, "version" | "id" | "title" | "promotion">,
+  metadata: Pick<CompiledPipelineProgram, "version" | "id" | "title" | "promotion" | "maxConcurrency">,
   nodes: readonly CompiledPipelineNode[],
 ): CompiledPipelineProgram {
   const nodesById = new Map(nodes.map(node => [node.id, node] as const));
@@ -131,6 +138,18 @@ function readPipelinePromotion(value: unknown, errors: string[]): NormalizedProm
   }
   errors.push('pipeline promotion must be "discard", "ask", "auto-apply", or "auto-reject".');
   return "discard";
+}
+
+/** Point d'entrée readPipelineMaxConcurrency du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
+function readPipelineMaxConcurrency(value: unknown, errors: string[]): number | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 1) {
+    errors.push("pipeline maxConcurrency must be an integer greater than or equal to 1.");
+    return undefined;
+  }
+  return value;
 }
 
 /** Point d'entrée readNodes du cycle de vie du pipeline.

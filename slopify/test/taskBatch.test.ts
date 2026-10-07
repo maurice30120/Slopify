@@ -131,9 +131,9 @@ test('tasks CLI launches a frozen batch and reads its public status after source
   const bin=path.join(f.root,'bin');await mkdir(bin);
   await writeFile(path.join(bin,'sbx'),'#!/bin/sh\necho "Docker unavailable in CLI context-freezing test" >&2\nexit 1\n',{mode:0o755});
   const run = spawnSync(process.execPath, [cli, 'tasks', 'run', f.batchFile, '--cwd', f.repo, '--store', f.storePath, '--json'], { encoding: 'utf8',env:{...process.env,PATH:bin+path.delimiter+process.env.PATH} });
-  assert.equal(run.status, 0, run.stderr);
+  assert.equal(run.status, 2, run.stderr);
   const initial = JSON.parse(run.stdout);
-  assert.ok(['succeeded','failed'].includes(initial.status));
+  assert.equal(initial.status, 'failed');
   await rm(f.batchFile);
   const status = spawnSync(process.execPath, [cli, 'tasks', 'status', initial.runId, '--cwd', f.repo, '--store', f.storePath, '--json'], { encoding: 'utf8' });
   assert.equal(status.status, 0, status.stderr);
@@ -171,4 +171,20 @@ test('tasks CLI reports an invalid batch as machine-readable diagnostics without
   assert.equal(error.status, 'invalid');
   assert.equal(error.diagnostics[0].code, 'invalid_json');
   await assert.rejects(readdir(f.storePath), { code: 'ENOENT' });
+});
+
+test('durable updates publish isolated snapshots before execution and observer failures cannot corrupt state', async t => {
+  const f = await fixture(t);
+  await writeFile(path.join(f.root, 'spec.md'), '# Spec');
+  await writeFile(f.batchFile, JSON.stringify(batch()));
+  const observed: string[] = [];
+  const service = new TaskBatchService({ repositoryPath: f.repo, storePath: f.storePath, onUpdate: snapshot => {
+    observed.push(snapshot.runId);
+    snapshot.tasks[0].status = 'failed';
+    throw new Error('Observer unavailable');
+  } });
+  const saved = await service.run(f.batchFile, { execute: false });
+  assert.deepEqual(observed, [saved.runId]);
+  assert.equal(saved.tasks[0].status, 'pending');
+  assert.equal((await service.status(saved.runId)).tasks[0].status, 'pending');
 });

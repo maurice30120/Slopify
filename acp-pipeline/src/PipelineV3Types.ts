@@ -114,6 +114,8 @@ export interface PipelineV3Definition {
   id: string;
   title: string;
   promotion?: NormalizedPromotionPolicy;
+  /** Nombre maximal de nœuds agent actifs simultanément dans un run de ce pipeline. */
+  maxConcurrency?: number;
   agents?: Record<string, unknown>;
   policies?: Record<string, PipelinePolicyReference>;
   nodes: PipelineNodeDefinition[];
@@ -149,6 +151,8 @@ export interface CompiledPipelineProgram {
   id: string;
   title: string;
   promotion: NormalizedPromotionPolicy;
+  /** Nombre maximal de nœuds agent actifs simultanément dans un run de ce pipeline. */
+  maxConcurrency?: number;
   nodes: readonly CompiledPipelineNode[];
   nodesById: ReadonlyMap<string, CompiledPipelineNode>;
   dependentsById: ReadonlyMap<string, readonly string[]>;

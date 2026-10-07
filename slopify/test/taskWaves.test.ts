@@ -5,7 +5,7 @@ import * as path from 'node:path';
 import { tmpdir } from 'node:os';
 import test from 'node:test';
 import type { SubprocessExecutor } from '@acp-client/sandbox';
-import { TaskBatchService, type BatchTask } from '../src/taskBatch.js';
+import { TaskBatchService, type BatchTask, type TaskBatchSnapshot } from '../src/taskBatch.js';
 
 function git(repo: string, ...args: string[]) {
   return execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8' }).trim();
@@ -100,8 +100,9 @@ async function fixture(t: { after(fn: () => Promise<void>): void }, tasks: Batch
     }
     throw new Error(`Unhandled sbx ${a.join(' ')}`);
   };
-  const service = new TaskBatchService({ repositoryPath: repo, storePath: path.join(root, 'runs'), subprocessExecutor: execute });
-  return { root, repo, head, dirty, batchFile, service, launched, removed, sandboxes };
+  const updates: TaskBatchSnapshot[] = [];
+  const service = new TaskBatchService({ repositoryPath: repo, storePath: path.join(root, 'runs'), subprocessExecutor: execute, onUpdate: snapshot => { updates.push(snapshot); } });
+  return { root, repo, head, dirty, batchFile, service, launched, removed, sandboxes, updates };
 }
 
 test('a mixed wave overlaps, waits for every task and gives its descendant the combined published result', { timeout: 15000 }, async t => {
@@ -293,3 +294,73 @@ test('cross-wave tasks start from the integrated commit of the previous wave', {
   assert.notEqual(bases.get('wave2-c'), f.head);
   assert.equal(bases.get('wave2-c'), state.tasks[1].attempts[0].integratedCommit);
 });
+
+for (const resume of [false, true]) {
+  test(`seven ready mixed-agent tasks execute in waves of five${resume ? ' after explicit resume' : ''}`, { timeout: 30000 }, async t => {
+    const fiveStarted = gate(); const finishSlow = gate(); const fourFinished = gate();
+    t.after(async () => { fiveStarted.release(); finishSlow.release(); });
+    const ids = Array.from({ length: 7 }, (_, index) => `task-${index}`);
+    const bases = new Map<string, string>();
+    let executing = !resume;
+    let active = 0; let maximum = 0; let finished = 0;
+    const tasks = ids.map((id, index) => task(id, index % 2 ? 'codex' : 'pi', resume ? ['seed'] : []));
+    if (resume) tasks.unshift(task('seed', 'codex'));
+    const f = await fixture(t, tasks, async (id, sandbox) => {
+      if (id === 'seed') { await writeFile(path.join(sandbox, 'seed.txt'), 'preserved'); return 0; }
+      if (!executing) return 1;
+      bases.set(id, git(sandbox, 'rev-parse', 'HEAD'));
+      active++; maximum = Math.max(maximum, active);
+      if (ids.indexOf(id) < 5) {
+        if (active === 5) fiveStarted.release();
+        await fiveStarted.promise;
+        if (id === ids[0]) await finishSlow.promise;
+      } else {
+        for (const earlier of ids.slice(0, 5)) {
+          assert.equal(await readFile(path.join(sandbox, `${earlier}.txt`), 'utf8'), earlier);
+        }
+      }
+      await writeFile(path.join(sandbox, `${id}.txt`), id);
+      active--; finished++;
+      if (finished === 4) fourFinished.release();
+      return 0;
+    });
+    let result: ReturnType<TaskBatchService['run']>;
+    let firstBase = f.head;
+    if (resume) {
+      const failed = await f.service.run(f.batchFile);
+      assert.equal(failed.status, 'failed');
+      assert.equal(failed.tasks[0].status, 'succeeded');
+      firstBase = failed.integrationCommit!;
+      f.launched.length = 0;
+      executing = true;
+      result = f.service.resume(failed.runId);
+    } else result = f.service.run(f.batchFile);
+    assert.equal(await Promise.race([fiveStarted.promise.then(() => 'started'), result.then(() => 'returned')]), 'started');
+    await fourFinished.promise;
+    assert.deepEqual([...f.launched].sort(), ids.slice(0, 5));
+    const runId = (await readdir(path.join(f.root, 'runs')))[0];
+    const during = await f.service.status(runId);
+    assert.equal(git(f.repo, 'rev-parse', during.integrationBranch), firstBase);
+    assert.ok(during.tasks.filter(task => task.status === 'running').length <= 5);
+    finishSlow.release();
+    const state = await result;
+    assert.equal(state.status, 'succeeded');
+    assert.equal(maximum, 5);
+    assert.equal(f.updates[0].status, 'ready', 'host learns the run ID before tasks launch');
+    assert.equal(f.updates[0].runId, state.runId);
+    assert.ok(f.updates.every(update => update.tasks.filter(task => task.status === 'running').length <= 5));
+    assert.ok(f.updates.some(update => update.tasks.some(task => task.status === 'completed')), 'host sees results awaiting integration');
+    assert.equal(f.updates.at(-1)!.status, 'succeeded');
+    const work = state.tasks.filter(task => task.id !== 'seed');
+    for (const id of ids.slice(0, 5)) assert.equal(bases.get(id), firstBase);
+    for (const id of ids.slice(5)) assert.equal(bases.get(id), work[4].attempts.at(-1)!.integratedCommit);
+    for (const [index, task] of work.entries()) {
+      assert.equal(task.attempts.length, resume ? 2 : 1);
+      const commit = task.attempts.at(-1)!.integratedCommit!;
+      const parent = git(f.repo, 'rev-parse', `${commit}^1`);
+      if (index > 0) assert.equal(parent, work[index - 1].attempts.at(-1)!.integratedCommit);
+    }
+    if (resume) assert.equal(state.tasks[0].attempts.length, 1, 'successful seed never re-executes');
+    assert.equal(f.sandboxes.size, resume ? 15 : 7, 'each attempt has a distinct sandbox');
+  });
+}

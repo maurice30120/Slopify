@@ -169,7 +169,10 @@ export class CliPipelineHost {
     });
     const runtime = this.createRuntime(program, runId);
     this.runtimes.set(runId, runtime);
-    const result = await runtime.start(program, { inputs: { userPrompt: prompt } });
+    const result = await runtime.start(program, {
+      inputs: { userPrompt: prompt },
+      ...(program.maxConcurrency ? { maxConcurrency: program.maxConcurrency } : {}),
+    });
     runLog.append('run_result', summarizeRuntimeResult(result));
     this.cleanupTerminalResult(result);
     return result;

@@ -226,15 +226,15 @@ Avant tout lancement, Slopify :
 
 Slopify exécute les tâches par **vagues** :
 
-1. **Vague 0** : Toutes les tâches sans dépendance (`dependsOn: []`)
-2. **Vague 1** : Toutes les tâches dont les dépendances ont réussi dans la vague 0
-3. **Vague N** : Toutes les tâches dont **toutes** les dépendances ont réussi
+1. **Vague 0** : Les cinq premières tâches sans dépendance (`dependsOn: []`), dans l’ordre du JSON
+2. **Vague suivante** : Les cinq premières tâches encore prêtes, après intégration de la vague précédente
+3. **Vague N** : Les cinq premières tâches encore prêtes dont **toutes** les dépendances ont réussi
 
 **Propriétés :**
-- Toutes les tâches d'une vague sont **lancées en parallèle**
+- Au maximum **cinq tâches** sont lancées en parallèle, y compris après reprise ; le plafond est fixe. Les tâches prêtes restantes attendent la vague suivante.
 - Chaque tâche dans son **propre sandbox Docker**
 - Les tâches d'une vague partagent le **même commit de base** (état intégré courant)
-- L'intégration attend la fin de **toute la vague** avant de passer à la suivante
+- L’intégration attend la fin de **toute la vague**, intègre les réussites dans l’ordre du JSON, puis recalcule les tâches prêtes.
 
 ### 3.2 États des tâches
 
@@ -296,9 +296,15 @@ slopify tasks status <run-id> --cwd /chemin/vers/depot --store /chemin/vers/stoc
 }
 ```
 
+Le `runId` est annoncé dès le lancement sur stderr, sans attendre la fin. Avec `--json`, les changements d’avancement sont des lignes JSON `type: "progress"` sur stderr ; stdout reste un seul résultat final. Lire ensuite `tasks status` avec les mêmes `--cwd` et `--store`.
+
+Le statut JSON conserve le snapshot et ajoute `progress` (phase, compteurs, tâches actives, checkpoints à intégrer, tâches prêtes et dépendances attendues), `issues` (causes des problèmes, avec tâche et tentative) et `nextActions` (commandes en tableaux d’arguments et préconditions). Le texte expose les mêmes informations avec les rapports, logs, commits et sandboxes inspectables. Les diagnostics historiques sont marqués `historical: true` : ils ne constituent pas un nouveau problème de la reprise.
+
+`running` indique l’état enregistré, sans prouver que le processus travaille encore. Utiliser la date de dernière sauvegarde et l’inspection du sandbox pour diagnostiquer un arrêt ; vérifier que l’ancien processus Slopify et l’agent précédent ont terminé avant de relancer. Une tâche `completed` attend l’intégration et ne doit pas être relancée.
+
 ### 3.4 Comprendre les diagnostics
 
-Les diagnostics sont des messages **non bloquants** ajoutés pendant l'exécution :
+Les diagnostics décrivent le contexte et les problèmes observés. Consulter aussi ceux de la dernière tentative de chaque tâche ; un code de sortie agent 0 peut accompagner un verdict d’échec explicite. Les codes ci-dessous peuvent informer ou expliquer un échec :
 
 | Code | Signification |
 |------|--------------|
@@ -754,10 +760,17 @@ Aucune configuration spéciale. Pi fonctionne dans la session de l'utilisateur.
 
 ## 10. Résumé des commandes Slopify V2
 
+La CLI expose uniquement les commandes `tasks`. `list`, `run <pipeline> <prompt>` et `resume --agent` sont retirées. Les commandes d’exécution et de reprise retournent 0 si le run réussit, 2 s’il échoue, est interrompu ou en conflit, et 1 pour une erreur d’entrée ou de commande. Les consultations réussies retournent 0.
+
+`slopify tasks resume <run-id>` reprend explicitement les échecs/interruption et les tâches en attente sans réexécuter les réussites. Arrêter les anciens agents avant de reprendre les tentatives encore marquées `running` avec `resume-task`. Une reprise isolée attend qu’une place soit disponible si cinq autres tâches sont encore en cours.
+
 | Commande | Description |
 |----------|-------------|
 | `slopify tasks run <batch> [--cwd <repo>] [--store <dir>] [--base <ref>]` | Lancer un nouveau run |
 | `slopify tasks status <run-id> [--cwd <repo>] [--store <dir>]` | Lire l'état d'un run |
+| `slopify tasks resume <run-id> [--cwd <repo>] [--store <dir>]` | Reprendre le lot |
+| `slopify tasks validate-resolution <run-id> <resolution-id> [--cwd <repo>] [--store <dir>]` | Valider une résolution manuelle et reprendre |
+| `slopify tasks resolution <run-id> [--cwd <repo>] [--store <dir>]` | Consulter la résolution |
 | `slopify tasks resume-task <run-id> <task-id> [--cwd <repo>] [--store <dir>]` | Reprendre une tâche |
 | `slopify tasks conflict <run-id> [--cwd <repo>] [--store <dir>]` | Lister les conflits |
 | `slopify tasks resolve-conflict <run-id> --strategy <use-current\|use-incoming\|manual> [--cwd <repo>] [--store <dir>]` | Résoudre un conflit |

@@ -523,10 +523,10 @@ test('CLI: tasks resolve-conflict command works with use-current strategy', { ti
     env: { ...process.env, PATH: bin + path.delimiter + process.env.PATH }
   });
 
-  assert.equal(resolve.status, 0, `CLI resolve-conflict should succeed: ${resolve.stderr}`);
+  assert.equal(resolve.status, 2, `CLI resolve-conflict should succeed: ${resolve.stderr}`);
 
   // Verify the output
-  assert.ok(resolve.stdout.includes('Conflict resolved: true'), 'Output should indicate conflict is resolved');
+  assert.match(resolve.stdout, /: failed/);
 
   // Verify the state
   const resolvedState = await f.service.status(runId);

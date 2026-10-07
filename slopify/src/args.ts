@@ -1,3 +1,4 @@
+import { taskBatchHelp } from './taskBatchCli.js';
 import * as path from 'node:path';
 
 /** Contrat fonctionnel de CliCommonOptions dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
@@ -152,18 +153,5 @@ export function parseCliArgs(argv: string[], baseCwd = process.cwd()): CliComman
  * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
  */
 export function formatHelp(): string {
-  return [
-    'Slopify',
-    '',
-    'Usage:',
-    '  slopify tasks <run|status> [--help]',
-    '  slopify list [--cwd <path>] [--json] [--verbose]',
-    '  slopify run <pipeline-name> <prompt> --agent <name> [--cwd <path>] [--yes] [--keep-sandboxes] [--json] [--verbose]',
-    '  slopify resume <run-id> --agent <name> [--cwd <path>] [--yes] [--keep-sandboxes] [--json] [--verbose]',
-    '',
-    'Pipelines do not select an agent. --agent selects one configured workspace agent for every agent node.',
-    'Agent names come from .acp/acp-agents.json. Pass the same --agent when resuming a run after a process restart.',
-    '--agent <name> selects the configured agent for every agent node.',
-    '--keep-sandboxes preserves every Docker Sandbox created by the run for local diagnostics.',
-  ].join('\n');
+  return `Slopify V2\n\n${taskBatchHelp}`;
 }

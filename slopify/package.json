@@ -2,12 +2,15 @@
   "name": "slopify",
   "version": "0.1.0",
   "private": false,
-  "description": "Run ACP v3 pipelines and Docker Sandbox Codex agents from a terminal with Slopify.",
+  "description": "Run Pi and Codex task batches in Docker sandboxes, in waves of five.",
   "type": "module",
   "main": "./dist/src/cli.js",
   "types": "./dist/src/cli.d.ts",
   "files": [
-    "dist/src"
+    "dist/src",
+    "init",
+    "plugin/pi",
+    "plugin/codex"
   ],
   "scripts": {
     "build": "npm --prefix .. run build -w @acp-client/pipeline -w @acp-client/runtime -w @acp-client/sandbox -w @acp-client/workspace && npm --prefix .. exec -- tsc -p tsconfig.json --incremental false",
@@ -41,6 +44,10 @@
     "./task-execution": {
       "types": "./dist/src/taskExecution.d.ts",
       "default": "./dist/src/taskExecution.js"
+    },
+    "./init": {
+      "types": "./dist/src/initService.d.ts",
+      "default": "./dist/src/initService.js"
     }
   }
 }

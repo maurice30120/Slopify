@@ -37,7 +37,7 @@ export interface SubprocessRequest {
   command: string;
   args: string[];
   cwd: string;
-  stdin: 'ignore';
+  stdin: 'ignore' | 'inherit';
   observeOutput?: boolean;
   /** Reçoit chaque fragment brut immédiatement, avant la fin du processus. */
   onOutput?: (stream: 'stdout' | 'stderr', chunk: string) => void;
@@ -810,7 +810,7 @@ export function createNodeSubprocessExecutor(): SubprocessExecutor {
   return request => new Promise((resolve, reject) => {
     const child = spawn(request.command, request.args, {
       cwd: request.cwd,
-      stdio: ['ignore', 'pipe', 'pipe'],
+      stdio: [request.stdin, 'pipe', 'pipe'],
       signal: request.signal,
       env: request.env ? { ...process.env, ...request.env } : process.env,
     });

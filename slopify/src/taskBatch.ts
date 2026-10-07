@@ -8,37 +8,33 @@ import { createNodeSubprocessExecutor, type SubprocessExecutor } from '@acp-clie
 import { DockerTaskExecutor } from './dockerTaskExecutor.js';
 import type { TaskExecutionResult, TaskSandboxResource } from './taskExecution.js';
 
-/** Contrat fonctionnel de TaskBatchDiagnostic dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface TaskBatchDiagnostic {
   code: string;
   message: string;
   path?: string;
 }
 
-/** Composant TaskBatchValidationError qui coordonne une étape observable du cycle de vie du pipeline et en préserve les invariants. */
 export class TaskBatchValidationError extends Error {
-/** Initialise ce composant pour le cycle de vie du pipeline concerné. */
   constructor(readonly diagnostics: TaskBatchDiagnostic[]) {
     super(diagnostics.map((d) => `${d.path ? `${d.path}: ` : ''}${d.message}`).join('\n'));
     this.name = 'TaskBatchValidationError';
   }
 }
 
-/** Contrat fonctionnel de TaskBatchServiceOptions dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface TaskBatchServiceOptions {
   repositoryPath: string;
   storePath?: string;
   subprocessExecutor?: SubprocessExecutor;
+  /** Receives a copy after each durable save, for CLI progress reporting. */
+  onUpdate?: (snapshot: TaskBatchSnapshot) => void;
 }
 
-/** Contrat fonctionnel de TaskBatchRunOptions dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface TaskBatchRunOptions {
   baseRef?: string;
   execute?: boolean;
   signal?: AbortSignal;
 }
 
-/** Contrat fonctionnel de BatchTaskAttempt dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface BatchTaskAttempt extends Partial<TaskExecutionResult> {
   attemptId: string;
   taskBaseCommit: string;
@@ -47,14 +43,12 @@ export interface BatchTaskAttempt extends Partial<TaskExecutionResult> {
   integratedCommit?: string;
 }
 
-/** Contrat fonctionnel de BatchTaskState dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface BatchTaskState extends BatchTask {
   status: 'pending' | 'running' | 'completed' | 'conflicted' | 'succeeded' | 'failed' | 'interrupted' | 'blocked';
   attempts: BatchTaskAttempt[];
   blockedBy?: string[];
 }
 
-/** Contrat fonctionnel de TaskBatchConflict dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface TaskBatchConflict {
   taskId: string;
   attemptId: string;
@@ -65,7 +59,6 @@ export interface TaskBatchConflict {
   output: string;
 }
 
-/** Contrat fonctionnel de TaskBatchResolution dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface TaskBatchResolution {
   resolutionId: string;
   conflictTaskId: string;
@@ -79,7 +72,6 @@ export interface TaskBatchResolution {
   validatedAt?: string;
 }
 
-/** Contrat fonctionnel de TaskBatchSnapshot dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface TaskBatchSnapshot {
   version: 1;
   runId: string;
@@ -97,28 +89,35 @@ export interface TaskBatchSnapshot {
   resolution?: TaskBatchResolution;
 }
 
+/** An execution stopped after durable state was available; CLI can report its outcome. */
+export class TaskBatchExecutionError extends Error {
+  constructor(readonly snapshot: TaskBatchSnapshot, cause: unknown) {
+    super(cause instanceof Error ? cause.message : String(cause), { cause });
+    this.name = 'TaskBatchExecutionError';
+  }
+}
+
 const execFileAsync = promisify(execFile);
+const WAVE_SIZE = 5;
 
 /** Seam public V2 : la validation et le contexte durable ne pénètrent jamais dans le runtime de pipeline V1. */
 export class TaskBatchService {
   readonly repositoryPath: string;
   readonly storePath: string;
   private readonly subprocessExecutor: SubprocessExecutor;
+  private readonly onUpdate?: TaskBatchServiceOptions['onUpdate'];
   private readonly saves = new Map<string, Promise<void>>();
 
-/** Initialise ce composant pour le cycle de vie du pipeline concerné. */
   constructor(options: TaskBatchServiceOptions) {
     this.repositoryPath = path.resolve(options.repositoryPath);
+    this.onUpdate = options.onUpdate;
     this.subprocessExecutor = options.subprocessExecutor ?? createNodeSubprocessExecutor();
     this.storePath = path.resolve(options.storePath ?? process.env.SLOPIFY_TASK_STORE ?? path.join(
-/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
       homedir(), '.local', 'share', 'slopify', 'task-runs',
-/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
       createHash('sha256').update(this.repositoryPath).digest('hex').slice(0, 16),
     ));
   }
 
-/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   async run(batchFile: string, options: TaskBatchRunOptions = {}): Promise<TaskBatchSnapshot> {
     const file = path.resolve(batchFile);
     let raw: string;
@@ -166,7 +165,6 @@ export class TaskBatchService {
     return snapshot;
   }
 
-/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   private async save(snapshot: TaskBatchSnapshot): Promise<void> {
     snapshot.updatedAt = new Date().toISOString();
     const file = path.join(this.storePath, snapshot.runId, 'state.json');
@@ -177,11 +175,14 @@ export class TaskBatchService {
       await rename(file + '.tmp', file);
     });
     this.saves.set(snapshot.runId, current);
-    try { await current; }
+    try {
+      await current;
+      try { this.onUpdate?.(JSON.parse(contents)); }
+      catch { /* A reporting failure must not change an already persisted task outcome. */ }
+    }
     finally { if (this.saves.get(snapshot.runId) === current) this.saves.delete(snapshot.runId); }
   }
 
-/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   private async executeWaves(snapshot: TaskBatchSnapshot, signal?: AbortSignal): Promise<void> {
     const runDirectory = path.join(this.storePath, snapshot.runId);
     const workspacePath = path.join(runDirectory, 'integration');
@@ -227,7 +228,7 @@ export class TaskBatchService {
         this.blockDescendants(snapshot);
         const byId = new Map(snapshot.tasks.map(task => [task.id, task]));
         const wave = snapshot.tasks.filter(task => task.status === 'pending'
-          && task.dependsOn.every(id => byId.get(id)!.status === 'succeeded'));
+          && task.dependsOn.every(id => byId.get(id)!.status === 'succeeded')).slice(0, WAVE_SIZE);
         if (wave.length === 0) break;
         const taskBaseCommit = snapshot.integrationCommit!;
         // Chaque tentative possède son clone et ses refs de checkpoint. Les nœuds frères ne partagent que leur base figée.
@@ -241,10 +242,7 @@ export class TaskBatchService {
         await execFileAsync('git', ['-C', workspacePath, 'checkout', '--detach', snapshot.integrationCommit!]);
         await this.save(snapshot);
       }
-      this.blockDescendants(snapshot);
-      snapshot.status = snapshot.tasks.every(task => task.status === 'succeeded') ? 'succeeded'
-        : signal?.aborted || snapshot.tasks.some(task => task.status === 'interrupted') ? 'interrupted' : 'failed';
-      await this.save(snapshot);
+      await this.finishExecution(snapshot, signal);
     } catch (error) {
       snapshot.status = signal?.aborted ? 'interrupted' : 'failed';
       snapshot.diagnostics.push({ code: 'integration_failed', message: error instanceof Error ? error.message : String(error) });
@@ -252,7 +250,16 @@ export class TaskBatchService {
     }
   }
 
-private blockDescendants(snapshot: TaskBatchSnapshot): void {
+  private async finishExecution(snapshot: TaskBatchSnapshot, signal?: AbortSignal): Promise<void> {
+    this.blockDescendants(snapshot);
+    snapshot.status = snapshot.conflict ? 'conflicted'
+      : snapshot.tasks.every(task => task.status === 'succeeded') ? 'succeeded'
+      : signal?.aborted || snapshot.tasks.some(task => task.status === 'interrupted') ? 'interrupted'
+      : snapshot.tasks.some(task => task.status === 'running') ? 'running' : 'failed';
+    await this.save(snapshot);
+  }
+
+  private blockDescendants(snapshot: TaskBatchSnapshot): void {
     const byId = new Map(snapshot.tasks.map(task => [task.id, task]));
     let changed: boolean;
     do {
@@ -265,7 +272,6 @@ private blockDescendants(snapshot: TaskBatchSnapshot): void {
     } while (changed);
   }
 
-/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   private async executeTask(snapshot: TaskBatchSnapshot, task: BatchTaskState, taskBaseCommit: string,
     integrationPath: string, executor: DockerTaskExecutor, signal?: AbortSignal): Promise<void> {
     const attemptId = randomUUID();
@@ -298,7 +304,6 @@ private blockDescendants(snapshot: TaskBatchSnapshot): void {
     await this.save(snapshot);
   }
 
-/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   private async integrateTask(snapshot: TaskBatchSnapshot, task: BatchTaskState, workspacePath: string,
     executor: DockerTaskExecutor): Promise<void> {
     const attempt = task.attempts.at(-1)!;
@@ -352,13 +357,11 @@ private blockDescendants(snapshot: TaskBatchSnapshot): void {
     }
   }
 
-/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   private async publish(snapshot: TaskBatchSnapshot, workspacePath: string): Promise<void> {
     await execFileAsync('git', ['-C', this.repositoryPath, 'fetch', '--no-tags', workspacePath,
       `refs/heads/${snapshot.integrationBranch}:refs/heads/${snapshot.integrationBranch}`]);
   }
 
-/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   async status(runId: string): Promise<TaskBatchSnapshot> {
     if (!/^[a-zA-Z0-9-]+$/.test(runId)) throw new Error('Invalid run ID.');
     const file = path.join(this.storePath, runId, 'state.json');
@@ -379,8 +382,11 @@ private blockDescendants(snapshot: TaskBatchSnapshot): void {
    */
   async resume(runId: string, options: { signal?: AbortSignal } = {}): Promise<TaskBatchSnapshot> {
     const snapshot = await this.status(runId);
+    if (snapshot.tasks.some(task => task.status === 'running')) {
+      throw new Error('Run has running tasks. Stop the previous agents and use tasks resume-task for each interrupted task before resuming.');
+    }
     if (snapshot.conflict) {
-      throw new Error('Run has an unresolved conflict. Validate an explicit resolution before resuming.');
+      throw new TaskBatchExecutionError(snapshot, 'Run has an unresolved conflict. Validate an explicit resolution before resuming.');
     }
 
     // Vérifie qu'une branche d'intégration est disponible.
@@ -419,13 +425,7 @@ private blockDescendants(snapshot: TaskBatchSnapshot): void {
     snapshot.status = 'running';
     await this.save(snapshot);
 
-    // Reprend l'exécution à partir de l'état persistant.
-    try {
-      await this.executeWaves(snapshot, options.signal);
-    } catch (error) {
-      // executeWaves persiste déjà l'état.
-      throw error;
-    }
+    await this.executeWaves(snapshot, options.signal);
 
     return snapshot;
   }
@@ -439,10 +439,9 @@ private blockDescendants(snapshot: TaskBatchSnapshot): void {
    */
   async resumeTask(runId: string, taskId: string, options: { signal?: AbortSignal } = {}): Promise<TaskBatchSnapshot> {
     const snapshot = await this.status(runId);
-
-    // Vérifie que le run appartient à ce dépôt.
-    if (snapshot.repositoryPath !== this.repositoryPath) {
-      throw new Error('Run belongs to another repository.');
+    if (snapshot.conflict) throw new TaskBatchExecutionError(snapshot, 'Run has an unresolved conflict. Use tasks resolve-conflict first.');
+    if (snapshot.tasks.filter(task => task.id !== taskId && task.status === 'running').length >= WAVE_SIZE) {
+      throw new Error('Five other tasks are still running. Wait for the current wave before resuming a task.');
     }
 
     // Recherche la tâche concernée.
@@ -510,12 +509,12 @@ private blockDescendants(snapshot: TaskBatchSnapshot): void {
         await this.integrateTask(snapshot, updatedTask, workspacePath, executor);
       }
 
-      await this.save(snapshot);
+      await this.finishExecution(snapshot, options.signal);
     } catch (error) {
       snapshot.status = options.signal?.aborted ? 'interrupted' : 'failed';
       snapshot.diagnostics.push({ code: 'resume_failed', message: error instanceof Error ? error.message : String(error) });
       await this.save(snapshot);
-      throw error;
+      throw new TaskBatchExecutionError(snapshot, error);
     }
 
     return snapshot;
@@ -536,11 +535,6 @@ private blockDescendants(snapshot: TaskBatchSnapshot): void {
     } = {},
   ): Promise<TaskBatchSnapshot> {
     const snapshot = await this.status(runId);
-
-    // Vérifie que le run appartient à ce dépôt.
-    if (snapshot.repositoryPath !== this.repositoryPath) {
-      throw new Error('Run belongs to another repository.');
-    }
 
     // Vérifie qu'un conflit est à résoudre.
     if (!snapshot.conflict) {
@@ -641,13 +635,12 @@ private blockDescendants(snapshot: TaskBatchSnapshot): void {
       });
       snapshot.status = 'conflicted';
       await this.save(snapshot);
-      throw error;
+      throw new TaskBatchExecutionError(snapshot, error);
     }
 
     return snapshot;
   }
 
-/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   async getConflict(runId: string): Promise<TaskBatchConflict | undefined> {
     const snapshot = await this.status(runId);
     return snapshot.conflict;
@@ -666,11 +659,6 @@ private blockDescendants(snapshot: TaskBatchSnapshot): void {
     options: { signal?: AbortSignal } = {},
   ): Promise<TaskBatchSnapshot> {
     const snapshot = await this.status(runId);
-
-    // Vérifie que le run appartient à ce dépôt.
-    if (snapshot.repositoryPath !== this.repositoryPath) {
-      throw new Error('Run belongs to another repository.');
-    }
 
     // Vérifie qu'une résolution est disponible pour validation.
     if (!snapshot.resolution) {
@@ -765,7 +753,7 @@ private blockDescendants(snapshot: TaskBatchSnapshot): void {
       });
       snapshot.status = 'conflicted';
       await this.save(snapshot);
-      throw error;
+      throw new TaskBatchExecutionError(snapshot, error);
     }
 
     return snapshot;
@@ -781,10 +769,8 @@ private blockDescendants(snapshot: TaskBatchSnapshot): void {
 
 }
 
-/** Type métier TaskAgent utilisé pour représenter une étape ou un résultat du cycle de vie du pipeline. */
 export type TaskAgent = 'pi' | 'codex';
 
-/** Contrat fonctionnel de BatchTask dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface BatchTask {
   id: string;
   prompt: string;
@@ -793,7 +779,6 @@ export interface BatchTask {
   source: string;
 }
 
-/** Contrat fonctionnel de TaskBatch dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface TaskBatch {
   specFile: string;
   tasks: BatchTask[];
@@ -824,7 +809,6 @@ function validateBatch(input: unknown): TaskBatch {
   }
   if (!nonempty(input.specFile)) report('invalid_spec_file', 'specFile', 'Expected a nonempty spec file path.');
   if (!Array.isArray(input.tasks) || input.tasks.length === 0) {
-/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
     report('invalid_tasks', 'tasks', 'Expected a nonempty task list.');
     throw new TaskBatchValidationError(diagnostics);
   }
@@ -837,7 +821,6 @@ function validateBatch(input: unknown): TaskBatch {
     else ids.add(task.id);
     if (!nonempty(task.prompt)) report('invalid_prompt', `${at}.prompt`, 'Expected the complete nonempty task prompt.');
     if (!Array.isArray(task.dependsOn) || !task.dependsOn.every(nonempty)) {
-/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
       report('invalid_dependencies', `${at}.dependsOn`, 'Expected a list of nonempty task IDs.');
     }
     if (task.agent !== 'pi' && task.agent !== 'codex') report('invalid_agent', `${at}.agent`, 'Agent must be pi or codex.');
