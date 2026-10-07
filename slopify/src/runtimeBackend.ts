@@ -5,6 +5,7 @@ type RuntimeCliPipelineBackendContext = Parameters<CliPipelineBackendFactory>[1]
   keepSandboxes?: boolean;
 };
 
+/** Contrat fonctionnel de RetainedSandboxOutput dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 interface RetainedSandboxOutput {
   sandboxName: string;
   commands: {
@@ -15,6 +16,7 @@ interface RetainedSandboxOutput {
   diagnosticsPath?: string;
 }
 
+/** Constante createRuntimeCliBackend qui fixe un contrat partagé du pipeline. */
 export const createRuntimeCliBackend: CliPipelineBackendFactory = (workspaceCwd, context) => {
   const runtimeContext = context as RuntimeCliPipelineBackendContext;
   const terminalWrite = 'write' in context.terminal && typeof context.terminal.write === 'function'
@@ -36,6 +38,7 @@ export const createRuntimeCliBackend: CliPipelineBackendFactory = (workspaceCwd,
       }),
       requestPipelinePromotion: async request => {
         const selected = await context.terminal.select(
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
           formatPipelineChangeSetPrompt(request),
           ['Promote Pipeline Change Set', 'Reject Pipeline Change Set'],
         );
@@ -55,6 +58,9 @@ export const createRuntimeCliBackend: CliPipelineBackendFactory = (workspaceCwd,
   };
 };
 
+/** Point d'entrée formatPipelineChangeSetPrompt du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 export function formatPipelineChangeSetPrompt(request: {
   pipelineId: string;
   integratedNodeIds: readonly string[];
@@ -78,6 +84,9 @@ export function formatPipelineChangeSetPrompt(request: {
   ].join('\n');
 }
 
+/** Point d'entrée formatRetainedSandbox du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 export function formatRetainedSandbox(sandbox: RetainedSandboxOutput): string {
   return [
     `Docker Sandbox kept: ${sandbox.sandboxName}`,

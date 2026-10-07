@@ -9,6 +9,7 @@ import type {
 const SPECIFICATION_TYPE = 'acp.specification/v1';
 const TICKET_GRAPH_TYPE = 'acp.ticket-graph/v1';
 
+/** Contrat fonctionnel de PipelineArtifactPublication dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface PipelineArtifactPublication {
   featureSlug: string;
   directory: string;
@@ -16,23 +17,27 @@ export interface PipelineArtifactPublication {
   ticketCount: number;
 }
 
+/** Type métier PipelineArtifactPublisher utilisé pour représenter une étape ou un résultat du cycle de vie du pipeline. */
 export type PipelineArtifactPublisher = (
   workspaceCwd: string,
   snapshot: PipelineRuntimeSnapshot,
 ) => PipelineArtifactPublication | null;
 
+/** Contrat fonctionnel de TicketDocument dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 interface TicketDocument {
   id?: string;
   title: string;
   content: string;
 }
 
+/** Contrat fonctionnel de TicketStart dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 interface TicketStart {
   lineIndex: number;
   id?: string;
   title: string;
 }
 
+/** Constante publishPipelineArtifacts qui fixe un contrat partagé du pipeline. */
 export const publishPipelineArtifacts: PipelineArtifactPublisher = (
   workspaceCwd,
   snapshot,
@@ -58,12 +63,14 @@ export const publishPipelineArtifacts: PipelineArtifactPublisher = (
   const featureSlug = resolveFeatureSlug(snapshot, specification);
   const scratchRoot = path.resolve(workspaceCwd, '.scratch');
   const directoryPath = path.resolve(scratchRoot, featureSlug);
+/** Valide ou résout les données de cette étape du cycle de vie ; les entrées invalides restent signalées au point d'appel. */
   assertChildPath(scratchRoot, directoryPath);
   fs.mkdirSync(directoryPath, { recursive: true });
 
   const writtenFiles: string[] = [];
   if (specification) {
     const specPath = path.join(directoryPath, 'spec.md');
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
     writeMarkdown(specPath, renderSpecification(specification.value));
     writtenFiles.push(toWorkspacePath(workspaceCwd, specPath));
   }
@@ -75,9 +82,11 @@ export const publishPipelineArtifacts: PipelineArtifactPublisher = (
 
     const rendered = renderTicketGraph(ticketGraph.value);
     const readmePath = path.join(issuesDirectory, 'README.md');
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
     writeMarkdown(readmePath, rendered.combined);
     writtenFiles.push(toWorkspacePath(workspaceCwd, readmePath));
 
+/** Termine cette étape du cycle de vie et libère les ressources qui lui appartiennent. */
     clearGeneratedTicketFiles(issuesDirectory);
     rendered.tickets.forEach((ticket, index) => {
       const issueNumber = String(index + 1).padStart(2, '0');
@@ -86,6 +95,7 @@ export const publishPipelineArtifacts: PipelineArtifactPublisher = (
         issuesDirectory,
         `${issueNumber}-${titleSlug}.md`,
       );
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
       writeMarkdown(issuePath, normalizeTicketDocument(ticket, issueNumber));
       writtenFiles.push(toWorkspacePath(workspaceCwd, issuePath));
     });
@@ -100,6 +110,9 @@ export const publishPipelineArtifacts: PipelineArtifactPublisher = (
   };
 };
 
+/** Point d'entrée findArtifact du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function findArtifact(
   snapshot: PipelineRuntimeSnapshot,
   type: string,
@@ -115,6 +128,9 @@ function findArtifact(
   return matches[matches.length - 1];
 }
 
+/** Point d'entrée resolveFeatureSlug du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function resolveFeatureSlug(
   snapshot: PipelineRuntimeSnapshot,
   specification: PipelineArtifact | undefined,
@@ -126,6 +142,7 @@ function resolveFeatureSlug(
     ? snapshot.inputVariables.userPrompt
     : '';
   const candidates = [
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
     stripSpecificationPrefix(title),
     userPrompt,
     snapshot.pipelineId,
@@ -140,6 +157,9 @@ function resolveFeatureSlug(
   return 'pipeline-artifacts';
 }
 
+/** Point d'entrée extractSpecificationTitle du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function extractSpecificationTitle(value: unknown): string {
   if (typeof value === 'string') {
     const heading = value.match(/^\s*#\s+(.+?)\s*$/m);
@@ -158,6 +178,9 @@ function extractSpecificationTitle(value: unknown): string {
   return '';
 }
 
+/** Point d'entrée stripSpecificationPrefix du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function stripSpecificationPrefix(value: string): string {
   return value
     .replace(/^#+\s*/, '')
@@ -168,6 +191,9 @@ function stripSpecificationPrefix(value: string): string {
     .trim();
 }
 
+/** Point d'entrée renderSpecification du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function renderSpecification(value: unknown): string {
   if (typeof value === 'string') {
     return value;
@@ -181,7 +207,9 @@ function renderSpecification(value: unknown): string {
       const sections = [
         title ? `# ${title}` : '# Specification',
         summary ? `## Summary\n\n${summary}` : '',
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
         renderBulletSection('Requirements', requirements),
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
         renderBulletSection('Out of Scope', nonGoals),
       ].filter(Boolean);
       return sections.join('\n\n');
@@ -190,6 +218,9 @@ function renderSpecification(value: unknown): string {
   return `# Specification\n\n\`\`\`json\n${JSON.stringify(value, null, 2)}\n\`\`\``;
 }
 
+/** Point d'entrée renderTicketGraph du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function renderTicketGraph(value: unknown): {
   combined: string;
   tickets: TicketDocument[];
@@ -209,6 +240,7 @@ function renderTicketGraph(value: unknown): {
       combined: [
         '# Ordered Tracer-Bullet Task Plan',
         ...tickets.map((ticket, index) =>
+/** Valide ou résout les données de cette étape du cycle de vie ; les entrées invalides restent signalées au point d'appel. */
           normalizeTicketDocument(ticket, String(index + 1).padStart(2, '0'))),
       ].join('\n\n'),
       tickets,
@@ -221,6 +253,9 @@ function renderTicketGraph(value: unknown): {
   };
 }
 
+/** Point d'entrée renderStructuredTicket du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function renderStructuredTicket(value: unknown): TicketDocument | null {
   if (!isRecord(value)) {
     return null;
@@ -252,6 +287,9 @@ function renderStructuredTicket(value: unknown): TicketDocument | null {
   };
 }
 
+/** Point d'entrée parseMarkdownTickets du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function parseMarkdownTickets(markdown: string): TicketDocument[] {
   const lines = markdown.split(/\r?\n/);
   const strictStarts = collectTicketStarts(lines, matchStrictTicketStart);
@@ -275,6 +313,9 @@ function parseMarkdownTickets(markdown: string): TicketDocument[] {
   });
 }
 
+/** Point d'entrée collectTicketStarts du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function collectTicketStarts(
   lines: string[],
   matcher: (line: string) => Omit<TicketStart, 'lineIndex'> | null,
@@ -289,6 +330,9 @@ function collectTicketStarts(
   return starts;
 }
 
+/** Point d'entrée matchStrictTicketStart du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function matchStrictTicketStart(
   line: string,
 ): Omit<TicketStart, 'lineIndex'> | null {
@@ -321,6 +365,9 @@ function matchStrictTicketStart(
     : null;
 }
 
+/** Point d'entrée matchNumberedHeadingStart du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function matchNumberedHeadingStart(
   line: string,
 ): Omit<TicketStart, 'lineIndex'> | null {
@@ -332,6 +379,9 @@ function matchNumberedHeadingStart(
     : null;
 }
 
+/** Point d'entrée matchNumberedListStart du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function matchNumberedListStart(
   line: string,
 ): Omit<TicketStart, 'lineIndex'> | null {
@@ -343,12 +393,18 @@ function matchNumberedListStart(
     : null;
 }
 
+/** Point d'entrée sectionLooksLikeTicket du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function sectionLooksLikeTicket(lines: string[], start: number): boolean {
   return lines
     .slice(start + 1, Math.min(lines.length, start + 14))
     .some(line => /\bblocked by\b|\bwhat (?:it delivers|to build)\b/i.test(line));
 }
 
+/** Point d'entrée findFrontierIndex du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function findFrontierIndex(
   lines: string[],
   start: number,
@@ -362,6 +418,9 @@ function findFrontierIndex(
   return -1;
 }
 
+/** Point d'entrée normalizeTicketDocument du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function normalizeTicketDocument(
   ticket: TicketDocument,
   issueNumber: string,
@@ -373,6 +432,9 @@ function normalizeTicketDocument(
     .join('\n\n');
 }
 
+/** Point d'entrée clearGeneratedTicketFiles du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function clearGeneratedTicketFiles(issuesDirectory: string): void {
   for (const entry of fs.readdirSync(issuesDirectory, { withFileTypes: true })) {
     if (entry.isFile() && /^\d{2,3}-.*\.md$/i.test(entry.name)) {
@@ -381,24 +443,39 @@ function clearGeneratedTicketFiles(issuesDirectory: string): void {
   }
 }
 
+/** Point d'entrée writeMarkdown du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function writeMarkdown(filePath: string, content: string): void {
   fs.writeFileSync(filePath, ensureTrailingNewline(content), 'utf8');
 }
 
+/** Point d'entrée ensureTrailingNewline du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function ensureTrailingNewline(value: string): string {
   return `${value.trimEnd()}\n`;
 }
 
+/** Point d'entrée renderBulletSection du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function renderBulletSection(title: string, values: string[]): string {
   return values.length > 0
     ? `## ${title}\n\n${values.map(value => `- ${value}`).join('\n')}`
     : '';
 }
 
+/** Point d'entrée readString du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function readString(value: unknown): string {
   return typeof value === 'string' ? value.trim() : '';
 }
 
+/** Point d'entrée readStringArray du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function readStringArray(value: unknown): string[] {
   return Array.isArray(value)
     ? value
@@ -408,6 +485,9 @@ function readStringArray(value: unknown): string[] {
     : [];
 }
 
+/** Point d'entrée cleanTicketTitle du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function cleanTicketTitle(value: string): string {
   return value
     .replace(/\s+#+\s*$/, '')
@@ -416,6 +496,9 @@ function cleanTicketTitle(value: string): string {
     .trim();
 }
 
+/** Point d'entrée slugify du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function slugify(value: string): string {
   return value
     .normalize('NFKD')
@@ -427,17 +510,26 @@ function slugify(value: string): string {
     .replace(/-+$/g, '');
 }
 
+/** Point d'entrée toWorkspacePath du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function toWorkspacePath(workspaceCwd: string, filePath: string): string {
   const relative = path.relative(workspaceCwd, filePath);
   return relative.split(path.sep).join('/');
 }
 
+/** Point d'entrée assertChildPath du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function assertChildPath(parent: string, child: string): void {
   if (child !== parent && !child.startsWith(`${parent}${path.sep}`)) {
     throw new Error(`Refusing to publish pipeline artifacts outside "${parent}".`);
   }
 }
 
+/** Point d'entrée isRecord du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

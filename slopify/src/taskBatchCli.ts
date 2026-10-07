@@ -1,6 +1,7 @@
 import * as path from 'node:path';
 import { TaskBatchService, TaskBatchValidationError } from './taskBatch.js';
 
+/** Constante taskBatchHelp qui fixe un contrat partagé du pipeline. */
 export const taskBatchHelp = [
   'Task batches (Pi / Codex):',
   '  slopify tasks run <batch.json> [--cwd <repository>] [--store <directory>] [--base <ref>] [--json]',

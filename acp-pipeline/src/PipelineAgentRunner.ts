@@ -13,14 +13,18 @@ import type {
 	PipelineSandboxRunSnapshot,
 } from "./PipelineV3Types";
 
+/** Type métier PipelineSideEffects utilisé pour représenter une étape ou un résultat du cycle de vie du pipeline. */
 export type PipelineSideEffects = "none" | "workspace";
+/** Type métier PipelinePermissions utilisé pour représenter une étape ou un résultat du cycle de vie du pipeline. */
 export type PipelinePermissions = "ask" | "allowAll";
 
+/** Contrat fonctionnel de PipelineStepStatusUpdate dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface PipelineStepStatusUpdate {
 	status: PipelineStatus;
 	message: string;
 }
 
+/** Type métier PipelineStepStatusHandler utilisé pour représenter une étape ou un résultat du cycle de vie du pipeline. */
 export type PipelineStepStatusHandler = (update: PipelineStepStatusUpdate) => void;
 
 /**
@@ -38,6 +42,7 @@ export interface PipelineNodePrompt {
 	context: PipelineArtifact[];
 }
 
+/** Contrat fonctionnel de PipelineAcpPromptRenderOptions dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface PipelineAcpPromptRenderOptions {
 	renderSkills?: (skillNames: readonly string[]) => string;
 }
@@ -78,6 +83,7 @@ export function renderAcpPrompt(
 	return blocks;
 }
 
+/** Contrat fonctionnel de PipelineAgentRunInput dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface PipelineAgentRunInput {
 	runId?: string;
 	nodeId?: string;
@@ -100,6 +106,7 @@ export interface PipelineAgentRunInput {
 	dependencyCheckpoints?: import("./PipelineV3Types").PipelineDependencyCheckpoint[];
 }
 
+/** Contrat fonctionnel de PipelineChangeSetPreview dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface PipelineChangeSetPreview {
 	baseCommit: string;
 	changeSetCommit: string;
@@ -108,12 +115,14 @@ export interface PipelineChangeSetPreview {
 	diff: string;
 }
 
+/** Contrat fonctionnel de PipelineChangeSetFinalizationInput dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface PipelineChangeSetFinalizationInput {
 	runId: string;
 	program: CompiledPipelineProgram;
 	snapshot?: PipelineRuntimeSnapshot;
 }
 
+/** Contrat fonctionnel de PipelineChangeSetFinalizationResult dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface PipelineChangeSetFinalizationResult {
 	promotion: PipelinePromotionStatus;
 	preview: PipelineChangeSetPreview;
@@ -122,6 +131,7 @@ export interface PipelineChangeSetFinalizationResult {
 	integratedNodeIds: string[];
 }
 
+/** Contrat fonctionnel de PipelineIntegrationConflictCheckpoint dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface PipelineIntegrationConflictCheckpoint {
 	nodeId: string;
 	attempt: number;
@@ -129,6 +139,7 @@ export interface PipelineIntegrationConflictCheckpoint {
 	ref: string;
 }
 
+/** Contrat fonctionnel de PipelineIntegrationConflict dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface PipelineIntegrationConflict {
 	runId: string;
 	retryNodeId: string;
@@ -136,6 +147,7 @@ export interface PipelineIntegrationConflict {
 	files: string[];
 }
 
+/** Contrat fonctionnel de PipelineSandboxResumeDivergence dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface PipelineSandboxResumeDivergence {
 	runId: string;
 	sandboxName: string;
@@ -144,6 +156,7 @@ export interface PipelineSandboxResumeDivergence {
 	diagnostic: string;
 }
 
+/** Composant PipelineSandboxResumeDivergenceError qui coordonne une étape observable du cycle de vie du pipeline et en préserve les invariants. */
 export class PipelineSandboxResumeDivergenceError extends Error {
 	readonly code = "sandbox_resume_divergence";
 
@@ -153,6 +166,7 @@ export class PipelineSandboxResumeDivergenceError extends Error {
 	}
 }
 
+/** Composant PipelineIntegrationConflictError qui coordonne une étape observable du cycle de vie du pipeline et en préserve les invariants. */
 export class PipelineIntegrationConflictError extends Error {
 	readonly code = "integration_conflict";
 
@@ -169,6 +183,7 @@ export class PipelineIntegrationConflictError extends Error {
 	}
 }
 
+/** Contrat fonctionnel de PipelineAgentRunner dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface PipelineAgentRunner {
 	(input: PipelineAgentRunInput): Promise<PipelineStepRunResult>;
 	finalizePipelineChangeSet?(

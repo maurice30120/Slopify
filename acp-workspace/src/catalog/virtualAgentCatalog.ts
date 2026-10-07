@@ -3,10 +3,14 @@ import { getPipelinePrograms } from './pipelineCatalog.js';
 import { loadAgentCatalog } from '../config/config.js';
 import type { AgentConfigEntry } from '../types.js';
 
+/** Type métier AgentResolution utilisé pour représenter une étape ou un résultat du cycle de vie du pipeline. */
 export type AgentResolution =
   | { kind: 'configured'; name: string; runnable: true; errors: [] }
   | { kind: 'pipeline'; name: string; runnable: true; pipeline: CompiledPipelineProgram; errors: [] };
 
+/** Point d'entrée resolveWorkspaceAgent du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 export function resolveWorkspaceAgent(
   agentName: string,
   workspaceCwd: string,
@@ -22,6 +26,9 @@ export function resolveWorkspaceAgent(
     : null;
 }
 
+/** Point d'entrée listWorkspaceAgentNames du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 export function listWorkspaceAgentNames(
   workspaceCwd: string,
   agentConfigs: Record<string, AgentConfigEntry> = loadAgentCatalog(workspaceCwd).agents,

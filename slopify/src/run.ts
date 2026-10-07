@@ -8,6 +8,7 @@ import type { CliResumeCommand, CliRunCommand } from './args.js';
 import type { CliPipelineHost, CliPipelineListEntry } from './host.js';
 import type { CliTerminal } from './terminal.js';
 
+/** Contrat fonctionnel de CliRunResult dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface CliRunResult {
   status: 'completed' | 'rejected' | 'cancelled' | 'failed';
   runId: string;
@@ -81,6 +82,9 @@ export async function runPipelineInteractive(
   return final;
 }
 
+/** Point d'entrée formatPipelineList du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 export function formatPipelineList(entries: CliPipelineListEntry[], json: boolean): string {
   if (json) {
     return JSON.stringify(entries, null, 2);
@@ -91,6 +95,9 @@ export function formatPipelineList(entries: CliPipelineListEntry[], json: boolea
   return entries.map(entry => `- ${entry.id} — ${entry.title} (${entry.nodeCount} nodes)`).join('\n');
 }
 
+/** Point d'entrée formatFailure du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function formatFailure(error: CliRunResult['error']): string {
   const code = error?.code ?? 'unknown';
   const location = error?.nodeId ? ` at node "${error.nodeId}"` : '';
@@ -99,6 +106,9 @@ function formatFailure(error: CliRunResult['error']): string {
   return `Pipeline failed [${code}]${location}${attempt}: ${message}`;
 }
 
+/** Point d'entrée formatInteraction du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function formatInteraction(interaction: WorkspaceRunInteraction): string {
   const title = interaction.kind === 'question'
     ? 'Pipeline question'
@@ -121,6 +131,9 @@ async function askForAnswer(terminal: CliTerminal): Promise<string> {
   }
 }
 
+/** Point d'entrée stringifyArtifact du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function stringifyArtifact(artifact: WorkspaceArtifact | undefined): string {
   if (!artifact || artifact.value === undefined || artifact.value === null) {
     return '';

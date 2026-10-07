@@ -1,5 +1,6 @@
 import type { PipelineArtifact, PipelineArtifactFormat } from "./PipelineV3Types";
 
+/** Type métier MultiAgentArtifactContractId utilisé pour représenter une étape ou un résultat du cycle de vie du pipeline. */
 export type MultiAgentArtifactContractId =
   | "acp.grill-decision/v1"
   | "acp.specification/v1"
@@ -8,6 +9,7 @@ export type MultiAgentArtifactContractId =
   | "acp.merge-result/v1"
   | "acp.verification-report/v1";
 
+/** Contrat fonctionnel de ArtifactValidationResult dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface ArtifactValidationResult<T = unknown> {
   ok: boolean;
   value?: T;
@@ -34,7 +36,7 @@ export interface SpecificationArtifact {
 /** Contrat d'un graphe de tickets et des informations nécessaires à leur traitement. */
 export interface TicketGraphArtifact {
   contract: "acp.ticket-graph/v1";
-  /** Backticked workspace references to the human-readable ticket adapters. */
+  /** Références de workspace entre backticks vers les adaptateurs de tickets lisibles par l'humain. */
   documentation?: string;
   tickets: Array<{
     id: string;
@@ -77,6 +79,7 @@ export interface VerificationReportArtifact {
   }>;
 }
 
+/** Type métier MultiAgentArtifact utilisé pour représenter une étape ou un résultat du cycle de vie du pipeline. */
 export type MultiAgentArtifact =
   | GrillDecisionArtifact
   | SpecificationArtifact
@@ -112,35 +115,54 @@ export function validateMultiAgentArtifact(
 
   switch (contract) {
     case "acp.grill-decision/v1":
+/** Valide ou résout les données de cette étape du cycle de vie ; les entrées invalides restent signalées au point d'appel. */
       readEnum(payload.decision, `${contract}.decision`, ["continue", "revise", "stop"], errors);
+/** Valide ou résout les données de cette étape du cycle de vie ; les entrées invalides restent signalées au point d'appel. */
       readString(payload.rationale, `${contract}.rationale`, errors);
+/** Valide ou résout les données de cette étape du cycle de vie ; les entrées invalides restent signalées au point d'appel. */
       readStringArray(payload.questions, `${contract}.questions`, errors);
       break;
     case "acp.specification/v1":
+/** Valide ou résout les données de cette étape du cycle de vie ; les entrées invalides restent signalées au point d'appel. */
       readString(payload.title, `${contract}.title`, errors);
+/** Valide ou résout les données de cette étape du cycle de vie ; les entrées invalides restent signalées au point d'appel. */
       readString(payload.summary, `${contract}.summary`, errors);
+/** Valide ou résout les données de cette étape du cycle de vie ; les entrées invalides restent signalées au point d'appel. */
       readStringArray(payload.requirements, `${contract}.requirements`, errors);
+/** Valide ou résout les données de cette étape du cycle de vie ; les entrées invalides restent signalées au point d'appel. */
       readStringArray(payload.nonGoals, `${contract}.nonGoals`, errors);
       break;
     case "acp.ticket-graph/v1":
+/** Valide ou résout les données de cette étape du cycle de vie ; les entrées invalides restent signalées au point d'appel. */
       validateTicketGraph(payload.tickets, errors);
       if (payload.documentation !== undefined) readString(payload.documentation, `${contract}.documentation`, errors);
       break;
     case "acp.implementation-result/v1":
+/** Valide ou résout les données de cette étape du cycle de vie ; les entrées invalides restent signalées au point d'appel. */
       readString(payload.ticketId, `${contract}.ticketId`, errors);
+/** Valide ou résout les données de cette étape du cycle de vie ; les entrées invalides restent signalées au point d'appel. */
       readString(payload.branch, `${contract}.branch`, errors);
+/** Valide ou résout les données de cette étape du cycle de vie ; les entrées invalides restent signalées au point d'appel. */
       readStringArray(payload.commits, `${contract}.commits`, errors);
+/** Valide ou résout les données de cette étape du cycle de vie ; les entrées invalides restent signalées au point d'appel. */
       readString(payload.summary, `${contract}.summary`, errors);
+/** Valide ou résout les données de cette étape du cycle de vie ; les entrées invalides restent signalées au point d'appel. */
       readStringArray(payload.validations, `${contract}.validations`, errors);
       break;
     case "acp.merge-result/v1":
+/** Valide ou résout les données de cette étape du cycle de vie ; les entrées invalides restent signalées au point d'appel. */
       readStringArray(payload.sourceBranches, `${contract}.sourceBranches`, errors);
+/** Valide ou résout les données de cette étape du cycle de vie ; les entrées invalides restent signalées au point d'appel. */
       readString(payload.integrationBranch, `${contract}.integrationBranch`, errors);
+/** Valide ou résout les données de cette étape du cycle de vie ; les entrées invalides restent signalées au point d'appel. */
       readStringArray(payload.commits, `${contract}.commits`, errors);
+/** Valide ou résout les données de cette étape du cycle de vie ; les entrées invalides restent signalées au point d'appel. */
       validateConflicts(payload.conflicts, errors);
       break;
     case "acp.verification-report/v1":
+/** Valide ou résout les données de cette étape du cycle de vie ; les entrées invalides restent signalées au point d'appel. */
       readEnum(payload.verdict, `${contract}.verdict`, ["passed", "failed"], errors);
+/** Valide ou résout les données de cette étape du cycle de vie ; les entrées invalides restent signalées au point d'appel. */
       validateCategories(payload.categories, errors);
       break;
   }
@@ -194,11 +216,16 @@ function validateTicketGraph(value: unknown, errors: string[]): void {
     if (id) {
       ids.add(id);
     }
+/** Valide ou résout les données de cette étape du cycle de vie ; les entrées invalides restent signalées au point d'appel. */
     readString(ticket.title, `${label}.title`, errors);
+/** Valide ou résout les données de cette étape du cycle de vie ; les entrées invalides restent signalées au point d'appel. */
     readStringArray(ticket.scope, `${label}.scope`, errors);
+/** Valide ou résout les données de cette étape du cycle de vie ; les entrées invalides restent signalées au point d'appel. */
     readStringArray(ticket.needs, `${label}.needs`, errors);
+/** Valide ou résout les données de cette étape du cycle de vie ; les entrées invalides restent signalées au point d'appel. */
     readStringArray(ticket.validation, `${label}.validation`, errors);
     if (ticket.agent !== undefined) {
+/** Valide ou résout les données de cette étape du cycle de vie ; les entrées invalides restent signalées au point d'appel. */
       readString(ticket.agent, `${label}.agent`, errors);
     }
   }
@@ -216,7 +243,9 @@ function validateConflicts(value: unknown, errors: string[]): void {
       errors.push(`${label} must be an object.`);
       continue;
     }
+/** Valide ou résout les données de cette étape du cycle de vie ; les entrées invalides restent signalées au point d'appel. */
     readString(conflict.path, `${label}.path`, errors);
+/** Valide ou résout les données de cette étape du cycle de vie ; les entrées invalides restent signalées au point d'appel. */
     readString(conflict.resolvedBy, `${label}.resolvedBy`, errors);
   }
 }
@@ -233,11 +262,14 @@ function validateCategories(value: unknown, errors: string[]): void {
       errors.push(`${label} must be an object.`);
       continue;
     }
+/** Valide ou résout les données de cette étape du cycle de vie ; les entrées invalides restent signalées au point d'appel. */
     readString(category.name, `${label}.name`, errors);
     if (typeof category.required !== "boolean") {
       errors.push(`${label}.required must be a boolean.`);
     }
+/** Valide ou résout les données de cette étape du cycle de vie ; les entrées invalides restent signalées au point d'appel. */
     readEnum(category.status, `${label}.status`, ["passed", "failed", "skipped"], errors);
+/** Valide ou résout les données de cette étape du cycle de vie ; les entrées invalides restent signalées au point d'appel. */
     readString(category.details, `${label}.details`, errors);
   }
 }

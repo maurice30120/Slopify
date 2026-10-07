@@ -8,28 +8,36 @@ import type { TaskExecutor, TaskExecutionRequest, TaskExecutionResult, TaskSandb
 import { createPiTaskAdapter } from './piTaskAdapter.js';
 import { agentOutcomeDiagnostics } from './agentOutcome.js';
 
+/** Contrat fonctionnel de TaskAgentContext dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface TaskAgentContext extends TaskExecutionRequest {
   sandboxName: string;
   containerWorkspacePath: string;
   containerContextPath: string;
   skillsStore: string;
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   command(args: string[]): Promise<SubprocessResult>;
 }
+/** Contrat fonctionnel de TaskAgentAdapter dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface TaskAgentAdapter {
   agent: 'codex' | 'pi';
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   prepare(context: TaskAgentContext): Promise<{createTarget: string; createMounts?: string[]}>;
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   run(context: TaskAgentContext): Promise<{exitCode: number; report: string; diagnostics: TaskBatchDiagnostic[]}>;
 }
+/** Contrat fonctionnel de DockerTaskExecutorOptions dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface DockerTaskExecutorOptions { executor?: SubprocessExecutor; adapters?: TaskAgentAdapter[] }
 
-/** Owns only sandbox lifecycle; adapters own agent capabilities, arguments and reports. */
+/** Possède uniquement le cycle de vie de la sandbox ; les adaptateurs possèdent les capacités, arguments et rapports de l'agent. */
 export class DockerTaskExecutor implements TaskExecutor {
   private readonly executor: SubprocessExecutor;
   private readonly adapters: Map<string, TaskAgentAdapter>;
+/** Initialise ce composant pour le cycle de vie du pipeline concerné. */
   constructor(options: DockerTaskExecutorOptions = {}) {
     this.executor = options.executor ?? createNodeSubprocessExecutor();
     this.adapters = new Map([codexAdapter, createPiTaskAdapter(), ...(options.adapters ?? [])].map(a => [a.agent,a]));
   }
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   async execute(request: TaskExecutionRequest): Promise<TaskExecutionResult> {
     await mkdir(request.resultDirectory,{recursive:true,mode:0o700});
     const stdoutPath=path.join(request.resultDirectory,'stdout.log');
@@ -38,6 +46,7 @@ export class DockerTaskExecutor implements TaskExecutor {
     const eventsPath=path.join(request.resultDirectory,'commands.jsonl');
     await Promise.all([stdoutPath,stderrPath,eventsPath].map(p=>writeFile(p,'',{mode:0o600})));
     const logged:SubprocessExecutor=async subprocess=>{
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
       appendFileSync(eventsPath,JSON.stringify({type:'start',command:subprocess.command,args:subprocess.args,time:new Date().toISOString()})+'\n');
       const seen={stdout:false,stderr:false};
       const result=await this.executor({...subprocess,onOutput:(stream,chunk)=>{
@@ -46,6 +55,7 @@ export class DockerTaskExecutor implements TaskExecutor {
       }});
       if(!seen.stdout)appendFileSync(stdoutPath,result.stdout);
       if(!seen.stderr)appendFileSync(stderrPath,result.stderr);
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
       appendFileSync(eventsPath,JSON.stringify({type:'end',exitCode:result.exitCode,time:new Date().toISOString()})+'\n');
       return result;
     };
@@ -106,11 +116,13 @@ export class DockerTaskExecutor implements TaskExecutor {
     } catch(error) {
       const message=error instanceof Error?error.message:String(error);
       diagnostics.push({code:request.signal?.aborted?'interrupted':'execution_failed',message});
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
       appendFileSync(stderrPath,message+'\n');
       await writeFile(reportPath,'Execution failed: '+message,{mode:0o600});
       return {exitCode:1,checkpoint,stdoutPath,stderrPath,reportPath,resource,diagnostics};
     }
   }
+/** Termine cette étape du cycle de vie et libère les ressources qui lui appartiennent. */
   async cleanup(resource:TaskSandboxResource):Promise<void> {
     const result=await this.executor({command:'sbx',args:['rm','--force',resource.sandboxName],cwd:resource.diagnosticsDirectory??process.cwd(),stdin:'ignore'});
     if(resource.diagnosticsDirectory)appendFileSync(path.join(resource.diagnosticsDirectory,'commands.jsonl'),JSON.stringify({type:'cleanup',args:['rm','--force',resource.sandboxName],exitCode:result.exitCode,stdout:result.stdout,stderr:result.stderr})+'\n');
@@ -119,7 +131,9 @@ export class DockerTaskExecutor implements TaskExecutor {
 }
 const codexAdapter:TaskAgentAdapter={
   agent:'codex',
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   async prepare(){return {createTarget:'codex'};},
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   async run(context){
     const probe=await context.command(['exec',context.sandboxName,'sh','-c',
       'set -eu; for skill in implement tdd code-review; do test -r "$HOME/.agents/skills/$skill/SKILL.md"; done; target=$(readlink -f "$HOME/.agents/skills/implement"); test -n "$target"; options=$(findmnt -n -o OPTIONS -T "$target"); case ",$options," in *,ro,*) ;; *) echo "Official skills are not readonly" >&2; exit 1;; esac; codex --version']);
@@ -146,6 +160,9 @@ const codexAdapter:TaskAgentAdapter={
 };
 
 
+/** Point d'entrée object du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function object(value: unknown): Record<string,unknown> | undefined {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
     ? value as Record<string,unknown> : undefined;

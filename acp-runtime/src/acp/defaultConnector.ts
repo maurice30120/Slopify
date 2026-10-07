@@ -4,6 +4,7 @@ import type { PartialAcpOperationTimeouts } from './operationGuards.js';
 import { SessionUpdateHandler } from './sessionUpdateHandler.js';
 import type { Logger, RuntimePermissionContext } from '../types.js';
 
+/** Contrat fonctionnel de AcpConnectorInput dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface AcpConnectorInput {
   agentName: string;
   processConfig: ProcessAgentConfig;
@@ -15,6 +16,7 @@ export interface AcpConnectorInput {
   logger?: Logger;
 }
 
+/** Contrat fonctionnel de ConnectedAcpAgent dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface ConnectedAcpAgent {
   agentId: string;
   connInfo: ConnectionInfo;
@@ -22,8 +24,10 @@ export interface ConnectedAcpAgent {
   dispose: () => void;
 }
 
+/** Type métier AcpConnector utilisé pour représenter une étape ou un résultat du cycle de vie du pipeline. */
 export type AcpConnector = (input: AcpConnectorInput) => Promise<ConnectedAcpAgent>;
 
+/** Constante defaultAcpConnector qui fixe un contrat partagé du pipeline. */
 export const defaultAcpConnector: AcpConnector = async (input) => {
   const agentManager = new AgentProcessManager(input.logger);
   const connectionManager = new ConnectionManager(input.sessionUpdateHandler, {

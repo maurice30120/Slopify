@@ -1,15 +1,18 @@
 import * as path from 'node:path';
 
+/** Contrat fonctionnel de CliCommonOptions dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface CliCommonOptions {
   cwd: string;
   json: boolean;
   verbose: boolean;
 }
 
+/** Contrat fonctionnel de CliListCommand dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface CliListCommand extends CliCommonOptions {
   kind: 'list';
 }
 
+/** Contrat fonctionnel de CliRunCommand dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface CliRunCommand extends CliCommonOptions {
   kind: 'run';
   pipelineName: string;
@@ -19,6 +22,7 @@ export interface CliRunCommand extends CliCommonOptions {
   keepSandboxes?: boolean;
 }
 
+/** Contrat fonctionnel de CliResumeCommand dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface CliResumeCommand extends CliCommonOptions {
   kind: 'resume';
   runId: string;
@@ -27,12 +31,17 @@ export interface CliResumeCommand extends CliCommonOptions {
   keepSandboxes?: boolean;
 }
 
+/** Contrat fonctionnel de CliHelpCommand dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface CliHelpCommand {
   kind: 'help';
 }
 
+/** Type métier CliCommand utilisé pour représenter une étape ou un résultat du cycle de vie du pipeline. */
 export type CliCommand = CliListCommand | CliRunCommand | CliResumeCommand | CliHelpCommand;
 
+/** Point d'entrée parseCliArgs du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 export function parseCliArgs(argv: string[], baseCwd = process.cwd()): CliCommand {
   if (argv.length === 0 || argv.includes('--help') || argv.includes('-h')) {
     return { kind: 'help' };
@@ -139,6 +148,9 @@ export function parseCliArgs(argv: string[], baseCwd = process.cwd()): CliComman
   };
 }
 
+/** Point d'entrée formatHelp du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 export function formatHelp(): string {
   return [
     'Slopify',

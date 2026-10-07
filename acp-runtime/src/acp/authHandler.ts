@@ -10,7 +10,9 @@ import {
 import type { RuntimePermissionContext } from '../types.js';
 import type { AgentProcessExit } from './agentProcess.js';
 
+/** Composant SessionAuthHandler qui coordonne une étape observable du cycle de vie du pipeline et en préserve les invariants. */
 export class SessionAuthHandler {
+/** Initialise ce composant pour le cycle de vie du pipeline concerné. */
   constructor(
     private readonly killAgent: (agentId: string) => void,
     private readonly getPermissionContext: () => RuntimePermissionContext | undefined,
@@ -20,12 +22,14 @@ export class SessionAuthHandler {
     } = {},
   ) {}
 
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   isAuthRequiredError(error: unknown): boolean {
     return (error instanceof RequestError && error.code === -32000)
       || (isRecord(error) && error.code === -32000)
       || (isRecord(error) && typeof error.message === 'string' && /auth.?required/i.test(error.message));
   }
 
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   async runAuthFlow(
     agentName: string,
     agentId: string,
@@ -48,6 +52,7 @@ export class SessionAuthHandler {
       const labels = authMethods.map(method => `${method.name} [${method.id}]`);
       const selected = await withTimeout(
         'auth-ui',
+/** Valide ou résout les données de cette étape du cycle de vie ; les entrées invalides restent signalées au point d'appel. */
         resolveTimeouts(this.options.timeouts).authUiMs,
         ctx.ui.select(`${agentName} authentication`, labels),
         () => this.killAgent(agentId),
@@ -61,6 +66,7 @@ export class SessionAuthHandler {
     } else {
       const ok = await withTimeout(
         'auth-ui',
+/** Valide ou résout les données de cette étape du cycle de vie ; les entrées invalides restent signalées au point d'appel. */
         resolveTimeouts(this.options.timeouts).authUiMs,
         ctx.ui.confirm(
           `${agentName} authentication`,
@@ -77,8 +83,10 @@ export class SessionAuthHandler {
     await withProcessGuard(
       'authenticate',
       this.options.processExit,
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
       withTimeout(
         'authenticate',
+/** Valide ou résout les données de cette étape du cycle de vie ; les entrées invalides restent signalées au point d'appel. */
         resolveTimeouts(this.options.timeouts).authenticateMs,
         connInfo.connection.authenticate({ methodId: selectedMethod.id }),
         () => this.killAgent(agentId),
@@ -87,6 +95,9 @@ export class SessionAuthHandler {
   }
 }
 
+/** Point d'entrée isRecord du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
 }

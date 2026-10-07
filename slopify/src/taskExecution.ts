@@ -1,6 +1,6 @@
 import type { TaskAgent, TaskBatchDiagnostic } from './taskBatch.js';
 
-/** External sandbox identity is recorded as soon as it exists, before agent execution. */
+/** L'identité externe de la sandbox est enregistrée dès sa création, avant l'exécution de l'agent. */
 export interface TaskSandboxResource {
   sandboxName: string;
   sandboxId?: string;
@@ -8,6 +8,7 @@ export interface TaskSandboxResource {
   diagnosticsDirectory?: string;
 }
 
+/** Contrat fonctionnel de TaskExecutionRequest dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface TaskExecutionRequest {
   runId: string;
   taskId: string;
@@ -23,6 +24,7 @@ export interface TaskExecutionRequest {
   onResource?: (resource: TaskSandboxResource) => Promise<void>;
 }
 
+/** Contrat fonctionnel de TaskExecutionResult dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface TaskExecutionResult {
   exitCode: number;
   checkpoint?: { commit: string; bundlePath: string };
@@ -33,7 +35,10 @@ export interface TaskExecutionResult {
   diagnostics: TaskBatchDiagnostic[];
 }
 
+/** Contrat fonctionnel de TaskExecutor dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface TaskExecutor {
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   execute(request: TaskExecutionRequest): Promise<TaskExecutionResult>;
+/** Termine cette étape du cycle de vie et libère les ressources qui lui appartiennent. */
   cleanup(resource: TaskSandboxResource): Promise<void>;
 }

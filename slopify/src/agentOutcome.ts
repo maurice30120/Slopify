@@ -1,6 +1,6 @@
 import type { TaskBatchDiagnostic } from './taskBatch.js';
 
-/** A successful CLI transport is not an agent's validation verdict. */
+/** Un transport CLI réussi ne constitue pas le verdict de validation de l'agent. */
 export function agentOutcomeDiagnostics(finalMessage: string): TaskBatchDiagnostic[] {
   const verdicts = finalMessage.split(/\r?\n/).map(line => line.trim())
     .filter(line => line.startsWith('SLOPIFY_RESULT='));

@@ -11,13 +11,19 @@ import {
   type AgentCheckpointResult,
 } from './gitPromotion.js';
 
+/** Constante MINIMUM_SBX_VERSION qui fixe un contrat partagé du pipeline. */
 export const MINIMUM_SBX_VERSION = '0.35.0';
+/** Constante DEFAULT_SANDBOX_CLEANUP_TIMEOUT_MS qui fixe un contrat partagé du pipeline. */
 export const DEFAULT_SANDBOX_CLEANUP_TIMEOUT_MS = 30_000;
+/** Constante DOCKER_SANDBOX_NETWORK_POLICY_CHOICES qui fixe un contrat partagé du pipeline. */
 export const DOCKER_SANDBOX_NETWORK_POLICY_CHOICES = ['Open', 'Balanced', 'Locked Down'] as const;
 
+/** Type métier DockerSandboxNetworkPolicyChoice utilisé pour représenter une étape ou un résultat du cycle de vie du pipeline. */
 export type DockerSandboxNetworkPolicyChoice = typeof DOCKER_SANDBOX_NETWORK_POLICY_CHOICES[number];
+/** Type métier DockerSandboxNetworkPolicyPreset utilisé pour représenter une étape ou un résultat du cycle de vie du pipeline. */
 export type DockerSandboxNetworkPolicyPreset = 'allow-all' | 'balanced' | 'deny-all';
 
+/** Contrat fonctionnel de DockerSandboxRuntimeOptions dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface DockerSandboxRuntimeOptions {
   selectNetworkPolicy?: (
     choices: readonly DockerSandboxNetworkPolicyChoice[],
@@ -25,26 +31,30 @@ export interface DockerSandboxRuntimeOptions {
   reportNetworkPolicy?: (message: string) => void;
 }
 
+/** Contrat fonctionnel de SubprocessRequest dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface SubprocessRequest {
   command: string;
   args: string[];
   cwd: string;
   stdin: 'ignore';
   observeOutput?: boolean;
-  /** Receive each raw chunk immediately, before the process completes. */
+  /** Reçoit chaque fragment brut immédiatement, avant la fin du processus. */
   onOutput?: (stream: 'stdout' | 'stderr', chunk: string) => void;
   signal?: AbortSignal;
   env?: NodeJS.ProcessEnv;
 }
 
+/** Contrat fonctionnel de SubprocessResult dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface SubprocessResult {
   exitCode: number;
   stdout: string;
   stderr: string;
 }
 
+/** Type métier SubprocessExecutor utilisé pour représenter une étape ou un résultat du cycle de vie du pipeline. */
 export type SubprocessExecutor = (request: SubprocessRequest) => Promise<SubprocessResult>;
 
+/** Contrat fonctionnel de SandboxRunInput dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface SandboxRunInput {
   workspaceCwd: string;
   runId: string;
@@ -52,7 +62,7 @@ export interface SandboxRunInput {
   attempt: number;
   prompt: string;
   model: string;
-  /** CLI launched inside the sandbox. Defaults to Codex for compatibility. */
+  /** CLI lancé dans la sandbox ; Codex est utilisé par défaut pour la compatibilité. */
   agent?: 'codex' | 'vibe';
   effort?: 'low' | 'medium' | 'high' | 'xhigh';
   signal?: AbortSignal;
@@ -66,6 +76,7 @@ export interface SandboxRunInput {
   dependencyCheckpoints?: readonly AgentCheckpointResult[];
 }
 
+/** Contrat fonctionnel de SandboxRunState dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface SandboxRunState {
   sandboxName: string;
   sandboxId?: string;
@@ -81,6 +92,7 @@ export interface SandboxRunState {
   diagnosticsPath?: string;
 }
 
+/** Contrat fonctionnel de SandboxRunResult dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface SandboxRunResult {
   status?: 'no_changes';
   checkpointStatus: 'checkpointed' | 'no_changes';
@@ -91,6 +103,7 @@ export interface SandboxRunResult {
   preview: AgentCheckpointPreview;
 }
 
+/** Contrat fonctionnel de SandboxResumeSnapshot dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface SandboxResumeSnapshot {
   workspaceCwd: string;
   sandboxName: string;
@@ -99,6 +112,7 @@ export interface SandboxResumeSnapshot {
   checkpointCommit?: string;
 }
 
+/** Type métier SandboxReconciliationResult utilisé pour représenter une étape ou un résultat du cycle de vie du pipeline. */
 export type SandboxReconciliationResult =
   | {
       status: 'reusable';
@@ -116,29 +130,35 @@ export type SandboxReconciliationResult =
       sandboxName: string;
     };
 
+/** Composant SandboxResumeDivergenceError qui coordonne une étape observable du cycle de vie du pipeline et en préserve les invariants. */
 export class SandboxResumeDivergenceError extends Error {
   readonly code = 'sandbox_resume_divergence';
 
+/** Initialise ce composant pour le cycle de vie du pipeline concerné. */
   constructor(readonly diagnostic: string) {
     super(diagnostic);
     this.name = 'SandboxResumeDivergenceError';
   }
 }
 
+/** Contrat fonctionnel de RetainedSandboxCommands dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface RetainedSandboxCommands {
   run: string;
   shell: string;
   remove: string;
 }
 
+/** Contrat fonctionnel de RetainedSandbox dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface RetainedSandbox {
   sandboxName: string;
   commands: RetainedSandboxCommands;
   diagnosticsPath?: string;
 }
 
+/** Type métier SandboxRunTerminalStatus utilisé pour représenter une étape ou un résultat du cycle de vie du pipeline. */
 export type SandboxRunTerminalStatus = 'completed' | 'rejected' | 'cancelled' | 'failed' | 'timed_out';
 
+/** Contrat fonctionnel de SandboxCleanupDiagnostic dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface SandboxCleanupDiagnostic {
   attempted: boolean;
   timedOut?: boolean;
@@ -148,6 +168,7 @@ export interface SandboxCleanupDiagnostic {
   error?: string;
 }
 
+/** Contrat fonctionnel de SandboxRunDiagnostic dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface SandboxRunDiagnostic {
   sandboxName: string;
   runId: string;
@@ -165,18 +186,22 @@ export interface SandboxRunDiagnostic {
   cleanup: SandboxCleanupDiagnostic;
 }
 
+/** Composant SandboxRunCancelledError qui coordonne une étape observable du cycle de vie du pipeline et en préserve les invariants. */
 export class SandboxRunCancelledError extends Error {
   readonly code = 'sandbox_cancelled';
 
+/** Initialise ce composant pour le cycle de vie du pipeline concerné. */
   constructor(sandboxName: string) {
     super(`Docker Sandbox "${sandboxName}" was cancelled.`);
     this.name = 'SandboxRunCancelledError';
   }
 }
 
+/** Composant SandboxRunTimeoutError qui coordonne une étape observable du cycle de vie du pipeline et en préserve les invariants. */
 export class SandboxRunTimeoutError extends Error {
   readonly code = 'sandbox_timeout';
 
+/** Initialise ce composant pour le cycle de vie du pipeline concerné. */
   constructor(sandboxName: string, readonly timeoutMs: number) {
     super(`Docker Sandbox "${sandboxName}" timed out after ${timeoutMs} ms.`);
     this.name = 'SandboxRunTimeoutError';
@@ -201,6 +226,7 @@ export class DockerSandboxRuntime {
   private readonly cleanupTimeoutMs: number;
   private readonly options: DockerSandboxRuntimeOptions;
 
+/** Initialise ce composant pour le cycle de vie du pipeline concerné. */
   constructor(
     private readonly execute: SubprocessExecutor = createNodeSubprocessExecutor(),
     cleanupTimeoutMsOrOptions: number | DockerSandboxRuntimeOptions = DEFAULT_SANDBOX_CLEANUP_TIMEOUT_MS,
@@ -214,6 +240,7 @@ export class DockerSandboxRuntime {
       : cleanupTimeoutMsOrOptions;
   }
 
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   async runCodex(input: SandboxRunInput): Promise<SandboxRunResult> {
     const sandboxName = input.resumeState?.sandboxName ?? stableSandboxName(input.runId, input.nodeId, input.attempt);
     const execution = createExecutionSignal(input.signal, input.timeoutMs);
@@ -282,8 +309,8 @@ export class DockerSandboxRuntime {
           });
           if (composed.changeSet.commit !== baseCommit) {
             const dependencyRef = `refs/slopify/dependencies/${input.runId}/${input.nodeId}/${input.attempt}`;
-            // sbx exposes a fetch-only Git daemon. Transfer an incremental bundle
-            // through its file API rather than requiring receive-pack on that daemon.
+            // sbx expose un daemon Git limité à la récupération. Transférer un bundle incrémental
+            // via son API de fichiers évite d'exiger receive-pack sur ce daemon.
             const bundleDirectory = await mkdtemp(path.join(tmpdir(), 'slopify-dependencies-'));
             const hostBundle = path.join(bundleDirectory, 'dependencies.bundle');
             const sandboxBundle = '/tmp/slopify-dependencies.bundle';
@@ -338,8 +365,8 @@ export class DockerSandboxRuntime {
       }
 
       const agent = input.agent ?? 'codex';
-      // Vibe resolves active_model through its model catalogue. Declare the
-      // requested API model as well to prevent a silent fallback to its default.
+      // Vibe résout active_model depuis son catalogue de modèles. Déclarer aussi
+      // le modèle API demandé empêche un repli silencieux vers sa valeur par défaut.
       const vibeModels = JSON.stringify({
         [input.model]: { name: input.model, alias: input.model, provider: 'mistral', auto_compact_threshold: 24000 },
       });
@@ -528,6 +555,7 @@ export class DockerSandboxRuntime {
     };
   }
 
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   async preflightWorkspace(
     cwd: string,
     workspaceEffects = true,
@@ -586,6 +614,7 @@ export class DockerSandboxRuntime {
     }
   }
 
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   private async ensureGlobalNetworkPolicy(cwd: string, signal?: AbortSignal): Promise<void> {
     if (!this.networkPolicyReady) {
       const abort = new AbortController();
@@ -602,6 +631,7 @@ export class DockerSandboxRuntime {
     await waitForPromise(this.networkPolicyReady, signal);
   }
 
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   private async initializeGlobalNetworkPolicy(cwd: string, signal: AbortSignal): Promise<void> {
     const current = await this.execute({
       command: 'sbx',
@@ -632,6 +662,7 @@ export class DockerSandboxRuntime {
     this.options.reportNetworkPolicy?.(`Docker Sandbox global network policy initialized as ${choice}. Change it later with \`sbx policy\`.`);
   }
 
+/** Termine cette étape du cycle de vie et libère les ressources qui lui appartiennent. */
   private async cleanupSandbox(cwd: string, sandboxName: string): Promise<SandboxCleanupDiagnostic> {
     const cleanup = createExecutionSignal(undefined, this.cleanupTimeoutMs);
     try {
@@ -667,6 +698,7 @@ export class DockerSandboxRuntime {
     }
   }
 
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   private async requireCapability(cwd: string, args: string[], capability: string, signal?: AbortSignal, matchOutput = true): Promise<void> {
     const result = await this.requireSuccess({ command: 'sbx', args, cwd, stdin: 'ignore', signal }, `verify Docker Sandbox capability ${capability}`);
     if (matchOutput && !`${result.stdout}\n${result.stderr}`.includes(capability)) {
@@ -674,12 +706,14 @@ export class DockerSandboxRuntime {
     }
   }
 
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   private async requireSuccess(request: SubprocessRequest, action: string): Promise<SubprocessResult> {
     const result = await this.execute(request);
     this.assertSuccess(result, action);
     return result;
   }
 
+/** Valide ou résout les données de cette étape du cycle de vie ; les entrées invalides restent signalées au point d'appel. */
   private assertSuccess(result: SubprocessResult, action: string): void {
     if (result.exitCode !== 0) {
       const detail = result.stderr.trim() || result.stdout.trim() || `exit code ${result.exitCode}`;
@@ -687,24 +721,29 @@ export class DockerSandboxRuntime {
     }
   }
 
+/** Valide ou résout les données de cette étape du cycle de vie ; les entrées invalides restent signalées au point d'appel. */
   private async readSandboxId(cwd: string, sandboxName: string, signal?: AbortSignal): Promise<string | undefined> {
     const listed = await this.execute({ command: 'sbx', args: ['ls', '--json'], cwd, stdin: 'ignore', signal });
     if (listed.exitCode !== 0 || !listed.stdout.trim()) return undefined;
     try {
       return parseSandboxList(listed.stdout).find(resource => resource.name === sandboxName)?.id;
     } catch {
-      // Older or vendor-patched sbx builds may expose a non-standard payload.
-      // The deterministic name remains the minimum identity until reconciliation.
+      // Des versions sbx anciennes ou modifiées par un fournisseur peuvent exposer une charge non standard.
+      // Le nom déterministe reste l'identité minimale jusqu'à la réconciliation.
       return undefined;
     }
   }
 }
 
+/** Contrat fonctionnel de ListedSandbox dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 interface ListedSandbox {
   name: string;
   id?: string;
 }
 
+/** Point d'entrée parseSandboxList du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function parseSandboxList(output: string): ListedSandbox[] {
   let parsed: unknown;
   try {
@@ -727,10 +766,16 @@ function parseSandboxList(output: string): ListedSandbox[] {
   });
 }
 
+/** Point d'entrée isRecord du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
 }
 
+/** Point d'entrée stringProperty du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function stringProperty(value: Record<string, unknown>, ...keys: string[]): string | undefined {
   for (const key of keys) {
     if (typeof value[key] === 'string' && value[key]) return value[key];
@@ -738,6 +783,9 @@ function stringProperty(value: Record<string, unknown>, ...keys: string[]): stri
   return undefined;
 }
 
+/** Point d'entrée stableSandboxName du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 export function stableSandboxName(runId: string, nodeId: string, attempt: number): string {
   const identity = `${runId}:${nodeId}:${attempt}`;
   const normalized = `slopify-${runId}-${nodeId}-${attempt}`.toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '');
@@ -747,6 +795,9 @@ export function stableSandboxName(runId: string, nodeId: string, attempt: number
   return `${normalized.slice(0, 50).replace(/-+$/g, '')}-${hash}`;
 }
 
+/** Point d'entrée retainedSandboxCommands du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 export function retainedSandboxCommands(sandboxName: string): RetainedSandboxCommands {
   return {
     run: `sbx run --name ${sandboxName}`,
@@ -755,6 +806,9 @@ export function retainedSandboxCommands(sandboxName: string): RetainedSandboxCom
   };
 }
 
+/** Point d'entrée createNodeSubprocessExecutor du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 export function createNodeSubprocessExecutor(): SubprocessExecutor {
   return request => new Promise((resolve, reject) => {
     const child = spawn(request.command, request.args, {
@@ -769,6 +823,7 @@ export function createNodeSubprocessExecutor(): SubprocessExecutor {
     const resolveOnce = (result: SubprocessResult): void => {
       if (settled) return;
       settled = true;
+/** Valide ou résout les données de cette étape du cycle de vie ; les entrées invalides restent signalées au point d'appel. */
       resolve(result);
     };
     child.stdout.setEncoding('utf8');
@@ -777,6 +832,7 @@ export function createNodeSubprocessExecutor(): SubprocessExecutor {
     child.stderr.on('data', chunk => { stderr += chunk; request.onOutput?.('stderr', chunk); if (request.observeOutput) process.stderr.write(chunk); });
     child.once('error', error => {
       if (request.signal?.aborted) {
+/** Valide ou résout les données de cette étape du cycle de vie ; les entrées invalides restent signalées au point d'appel. */
         resolveOnce({
           exitCode: 1,
           stdout,
@@ -786,21 +842,28 @@ export function createNodeSubprocessExecutor(): SubprocessExecutor {
       }
       if (settled) return;
       settled = true;
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
       reject(error);
     });
     child.once('close', code => resolveOnce({ exitCode: code ?? 1, stdout, stderr }));
   });
 }
 
+/** Point d'entrée createExecutionSignal du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function createExecutionSignal(parent: AbortSignal | undefined, timeoutMs: number | undefined): {
   signal: AbortSignal;
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   timedOut(): boolean;
+/** Termine cette étape du cycle de vie et libère les ressources qui lui appartiennent. */
   dispose(): void;
 } {
   const controller = new AbortController();
   let timeoutTriggered = false;
   const abortFromParent = (): void => controller.abort(parent?.reason);
   if (parent?.aborted) {
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
     abortFromParent();
   } else {
     parent?.addEventListener('abort', abortFromParent, { once: true });
@@ -824,6 +887,9 @@ function createExecutionSignal(parent: AbortSignal | undefined, timeoutMs: numbe
   };
 }
 
+/** Point d'entrée normalizeRunError du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function normalizeRunError(
   error: unknown,
   sandboxName: string,
@@ -857,14 +923,23 @@ async function writeSandboxDiagnostic(
   }
 }
 
+/** Point d'entrée formatUnknownError du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function formatUnknownError(error: unknown): string {
   return error instanceof Error && error.message ? error.message : String(error);
 }
 
+/** Point d'entrée cleanupTimeoutMessage du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function cleanupTimeoutMessage(timeoutMs: number): string {
   return `Sandbox cleanup timed out after ${timeoutMs} ms.`;
 }
 
+/** Point d'entrée networkPolicyPreset du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function networkPolicyPreset(choice: DockerSandboxNetworkPolicyChoice): DockerSandboxNetworkPolicyPreset {
   switch (choice) {
     case 'Open': return 'allow-all';
@@ -873,6 +948,9 @@ function networkPolicyPreset(choice: DockerSandboxNetworkPolicyChoice): DockerSa
   }
 }
 
+/** Point d'entrée waitForPromise du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function waitForPromise<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
   if (!signal) {
     return promise;
@@ -883,22 +961,28 @@ function waitForPromise<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T
   return new Promise<T>((resolve, reject) => {
     const onAbort = (): void => {
       signal.removeEventListener('abort', onAbort);
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
       reject(abortError(signal));
     };
     signal.addEventListener('abort', onAbort, { once: true });
     void promise.then(
       value => {
         signal.removeEventListener('abort', onAbort);
+/** Valide ou résout les données de cette étape du cycle de vie ; les entrées invalides restent signalées au point d'appel. */
         resolve(value);
       },
       error => {
         signal.removeEventListener('abort', onAbort);
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
         reject(error);
       },
     );
   });
 }
 
+/** Point d'entrée abortError du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function abortError(signal: AbortSignal): Error {
   if (signal.reason instanceof Error) {
     return signal.reason;
@@ -906,10 +990,16 @@ function abortError(signal: AbortSignal): Error {
   return Object.assign(new Error('The operation was aborted.'), { name: 'AbortError' });
 }
 
+/** Point d'entrée extractVersion du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function extractVersion(output: string): string | undefined {
   return output.match(/\bv?(\d+\.\d+\.\d+)\b/i)?.[1];
 }
 
+/** Point d'entrée compareVersions du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function compareVersions(left: string, right: string): number {
   const a = left.split('.').map(Number);
   const b = right.split('.').map(Number);

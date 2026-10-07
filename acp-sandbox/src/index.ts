@@ -70,6 +70,7 @@ export {
   type SubprocessResult,
 } from './runtime.js';
 
+/** Contrat fonctionnel de SandboxAgentConfig dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface SandboxAgentConfig {
   transport: 'sandbox';
   agent: SandboxAgent;
@@ -79,9 +80,10 @@ export interface SandboxAgentConfig {
   skills?: boolean;
 }
 
-/** Agent CLI supported inside a Docker Sandbox. */
+/** CLI d'agent pris en charge dans un Docker Sandbox. */
 export type SandboxAgent = 'codex' | 'vibe';
 
+/** Contrat fonctionnel de SandboxPipelineConfig dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface SandboxPipelineConfig {
   promotion: PromotionPolicy;
 }

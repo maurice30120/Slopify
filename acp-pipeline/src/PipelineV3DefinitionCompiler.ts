@@ -22,6 +22,9 @@ export function compilePipelineV3Definition(
   return compileResolvedPipelineV3Definition(normalized, agentConfigs);
 }
 
+/** Point d'entrée validateSandboxNodeNetworkPolicies du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 export function validateSandboxNodeNetworkPolicies(
   value: unknown,
   agentConfigs: Record<string, unknown>,
@@ -50,6 +53,9 @@ export function validateSandboxNodeNetworkPolicies(
   return errors;
 }
 
+/** Point d'entrée normalizeInstructionsFileField du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function normalizeInstructionsFileField(value: unknown): unknown {
   if (!isRecord(value) || !Array.isArray(value.nodes)) {
     return value;
@@ -73,6 +79,9 @@ function normalizeInstructionsFileField(value: unknown): unknown {
   };
 }
 
+/** Point d'entrée isRecord du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }

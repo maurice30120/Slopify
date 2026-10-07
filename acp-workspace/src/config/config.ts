@@ -24,6 +24,9 @@ const TIMEOUT_KEYS = [
   'promotionUiMs',
 ] as const;
 
+/** Point d'entrée loadAcpConfig du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 export function loadAcpConfig(workspaceCwd: string, configRoot = workspaceCwd): AcpRuntimeConfig {
   const filePath = path.join(configRoot, CONFIG_PATH);
   if (!fs.existsSync(filePath)) {
@@ -53,6 +56,9 @@ export function loadAcpConfig(workspaceCwd: string, configRoot = workspaceCwd): 
   }
 }
 
+/** Point d'entrée parseAcpConfig du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 export function parseAcpConfig(text: string, filePath = CONFIG_PATH): AcpRuntimeConfig {
   let parsed: unknown;
   try {
@@ -90,6 +96,9 @@ export function parseAcpConfig(text: string, filePath = CONFIG_PATH): AcpRuntime
   };
 }
 
+/** Point d'entrée loadAgentCatalog du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 export function loadAgentCatalog(workspaceCwd: string, configRoot = workspaceCwd): AgentCatalog {
   const config = loadAcpConfig(workspaceCwd, configRoot);
   const legacyPath = path.join(configRoot, LEGACY_CONFIG_PATH);
@@ -103,6 +112,9 @@ export function loadAgentCatalog(workspaceCwd: string, configRoot = workspaceCwd
   };
 }
 
+/** Point d'entrée writeAgentConfigs du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 export function writeAgentConfigs(
   agents: Record<string, AgentConfigEntry>,
   workspaceCwd: string,
@@ -113,15 +125,22 @@ export function writeAgentConfigs(
   fs.writeFileSync(filePath, JSON.stringify({ ...envelope, agents }, null, 2) + '\n');
 }
 
+/** Point d'entrée upsertAgentConfig du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 export function upsertAgentConfig(
   agentName: string,
   config: NativeAcpAgentConfig | SandboxAgentConfig,
   workspaceCwd: string,
 ): void {
   const catalog = loadAgentCatalog(workspaceCwd);
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   writeAgentConfigs({ ...catalog.agents, [agentName]: config }, workspaceCwd);
 }
 
+/** Point d'entrée removeAgentConfig du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 export function removeAgentConfig(
   agentName: string,
   workspaceCwd: string,
@@ -129,9 +148,13 @@ export function removeAgentConfig(
   const catalog = loadAgentCatalog(workspaceCwd);
   const agents = { ...catalog.agents };
   delete agents[agentName];
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   writeAgentConfigs(agents, workspaceCwd);
 }
 
+/** Point d'entrée readJsonObject du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function readJsonObject(filePath: string): Record<string, unknown> {
   try {
     const value: unknown = JSON.parse(fs.readFileSync(filePath, 'utf8'));
@@ -139,6 +162,9 @@ function readJsonObject(filePath: string): Record<string, unknown> {
   } catch { return {}; }
 }
 
+/** Point d'entrée emptyConfig du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function emptyConfig(filePath: string, errors: string[]): AcpRuntimeConfig {
   return {
     filePath,
@@ -151,6 +177,9 @@ function emptyConfig(filePath: string, errors: string[]): AcpRuntimeConfig {
   };
 }
 
+/** Point d'entrée parseAgent du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function parseAgent(
   name: string,
   value: unknown,
@@ -215,6 +244,9 @@ function parseAgent(
   };
 }
 
+/** Point d'entrée readSandboxEffort du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function readSandboxEffort(
   value: unknown,
   scope: string,
@@ -227,6 +259,9 @@ function readSandboxEffort(
   return null;
 }
 
+/** Point d'entrée readNonEmptyString du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function readNonEmptyString(value: unknown, scope: string, errors: string[]): string | null {
   if (typeof value !== 'string' || value.trim().length === 0) {
     errors.push(`${scope} must be a non-empty string.`);
@@ -235,6 +270,9 @@ function readNonEmptyString(value: unknown, scope: string, errors: string[]): st
   return value.trim();
 }
 
+/** Point d'entrée parsePipelineConfig du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function parsePipelineConfig(value: unknown, errors: string[]) {
   if (value === undefined) {
     return {
@@ -276,6 +314,9 @@ function parsePipelineConfig(value: unknown, errors: string[]) {
   return { enabled, instructionsMaxBytes, ...(timeouts ? { timeouts } : {}) };
 }
 
+/** Point d'entrée parseTimeoutConfig du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function parseTimeoutConfig(value: unknown, errors: string[]) {
   if (value === undefined) {
     return undefined;
@@ -304,6 +345,9 @@ function parseTimeoutConfig(value: unknown, errors: string[]) {
   return Object.keys(result).length === 0 ? undefined : result;
 }
 
+/** Point d'entrée readStringArray du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function readStringArray(value: unknown, scope: string, errors: string[]): string[] | null {
   if (!Array.isArray(value) || value.some(item => typeof item !== 'string')) {
     errors.push(`${scope} must be an array of strings.`);
@@ -312,6 +356,9 @@ function readStringArray(value: unknown, scope: string, errors: string[]): strin
   return value;
 }
 
+/** Point d'entrée readStringRecord du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function readStringRecord(value: unknown, scope: string, errors: string[]): Record<string, string> | null {
   if (!isRecord(value)) {
     errors.push(`${scope} must be an object of string values.`);
@@ -328,14 +375,23 @@ function readStringRecord(value: unknown, scope: string, errors: string[]): Reco
   return result;
 }
 
+/** Point d'entrée isRecord du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+/** Point d'entrée formatError du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function formatError(error: unknown): string {
   return error instanceof Error && error.message ? error.message : String(error);
 }
 
+/** Point d'entrée legacyConfigMigrationError du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function legacyConfigMigrationError(): string {
   return `${LEGACY_CONFIG_PATH} is no longer supported because the historical runtime and its providers were removed. Migrate manually in ${CONFIG_PATH} with an agent using transport: "sandbox", agent: "codex", and a model, then remove ${LEGACY_CONFIG_PATH}. No legacy configuration was parsed or applied.`;
 }

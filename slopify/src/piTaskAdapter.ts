@@ -4,10 +4,11 @@ import type { TaskAgentAdapter, TaskAgentContext } from './dockerTaskExecutor.js
 import type { TaskBatchDiagnostic } from './taskBatch.js';
 import { agentOutcomeDiagnostics } from './agentOutcome.js';
 
-/** Pi's image needs explicit Mistral configuration and the official delegation example. */
+/** L'image Pi exige la configuration explicite de Mistral et l'exemple officiel de délégation. */
 export function createPiTaskAdapter(): TaskAgentAdapter {
   return {
     agent: 'pi',
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
     async prepare(context) {
       const kitPath = path.join(context.resultDirectory, 'pi-kit');
       await mkdir(kitPath, { recursive: true });
@@ -28,6 +29,7 @@ export function createPiTaskAdapter(): TaskAgentAdapter {
       if (validation.exitCode !== 0) throw new Error(`Pi kit validation failed: ${validation.stderr || validation.stdout}`);
       return { createTarget: kitPath, createMounts: [`${context.skillsStore}:ro`] };
     },
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
     async run(context) {
       const skillsPath = shellQuote(context.skillsStore);
       const readiness = await context.command(['exec', context.sandboxName, 'sh', '-c',
@@ -138,14 +140,23 @@ export function createPiTaskAdapter(): TaskAgentAdapter {
   };
 }
 
+/** Point d'entrée record du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function record(value: unknown): Record<string, unknown> | undefined {
   return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
 }
 
+/** Point d'entrée shellQuote du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function shellQuote(value: string): string {
   return `'${value.replaceAll("'", "'\\''")}'`;
 }
 
+/** Point d'entrée assistantText du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function assistantText(value: unknown): string {
   const message = record(value);
   if (message?.role !== 'assistant' || !Array.isArray(message.content)) return '';
@@ -155,6 +166,9 @@ function assistantText(value: unknown): string {
   }).filter(Boolean).join('\n');
 }
 
+/** Point d'entrée reviewerRole du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function reviewerRole(axis: 'standards' | 'spec', context: TaskAgentContext, officialReview: string): string {
   return `---\nname: ${axis}\ndescription: Independent ${axis} review\ntools: read, grep, find, ls, bash\n---\n` +
     `Perform only the delegated ${axis} review. Read-only inspection; do not edit or commit.\n` +

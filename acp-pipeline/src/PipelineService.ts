@@ -20,6 +20,7 @@ export type {
   PipelineSessionUpdateEvent,
 } from './PipelineEvents';
 
+/** Contrat fonctionnel de PipelineServiceDependencies dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface PipelineServiceDependencies {
   getPipelinePrograms?: () => CompiledPipelineProgram[];
   getPipelineProgramForAgent?: (agentName: string) => CompiledPipelineProgram | null;
@@ -30,10 +31,12 @@ export interface PipelineServiceDependencies {
   artifactPublisher?: PipelineArtifactPublisher;
 }
 
+/** Composant PipelineService qui coordonne une étape observable du cycle de vie du pipeline et en préserve les invariants. */
 export class PipelineService extends EventEmitter {
   private readonly v3Runs = new Map<string, PipelineRuntime>();
   private readonly v3RejectedRuns = new Set<string>();
 
+/** Initialise ce composant pour le cycle de vie du pipeline concerné. */
   constructor(
     private readonly workspaceCwd: () => string,
     private readonly dependencies: PipelineServiceDependencies = {},
@@ -41,10 +44,12 @@ export class PipelineService extends EventEmitter {
     super();
   }
 
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   async createPlan(sessionId: string, userPrompt: string, pipelineAgentName?: string): Promise<string> {
     return stringifyServiceResult(await this.startPipeline(sessionId, userPrompt, pipelineAgentName));
   }
 
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   async startPipeline(sessionId: string, userPrompt: string, pipelineAgentName?: string): Promise<PipelineRuntimeResult> {
     const program = this.readPipelineProgram(pipelineAgentName);
     if (!program) {
@@ -57,10 +62,12 @@ export class PipelineService extends EventEmitter {
     return this.startV3Pipeline(sessionId, program, userPrompt);
   }
 
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   async approvePlan(sessionId: string, approvedPlan: string): Promise<string> {
     return stringifyServiceResult(await this.resumeCurrentPause(sessionId, "approve", approvedPlan.trim()));
   }
 
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   async resumePipeline(sessionId: string, decision: PipelineResumeDecision): Promise<PipelineRuntimeResult> {
     const runtime = this.v3Runs.get(sessionId);
     if (runtime) {
@@ -72,6 +79,7 @@ export class PipelineService extends EventEmitter {
     throw new Error('No pending pipeline pause for this session.');
   }
 
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   async resumeCurrentPause(
     sessionId: string,
     kind: PipelineResumeDecision["kind"],
@@ -84,6 +92,7 @@ export class PipelineService extends EventEmitter {
     return this.resumePipeline(sessionId, { pauseId: pause.id, kind, value });
   }
 
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   async getPendingPause(sessionId: string): Promise<PipelinePauseSnapshot | null> {
     const runtime = this.v3Runs.get(sessionId);
     if (!runtime) {
@@ -93,6 +102,7 @@ export class PipelineService extends EventEmitter {
     return snapshot?.pendingPause ?? null;
   }
 
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   rejectPlan(sessionId: string): void {
     const runtime = this.v3Runs.get(sessionId);
     if (runtime) {
@@ -110,6 +120,7 @@ export class PipelineService extends EventEmitter {
     }
   }
 
+/** Termine cette étape du cycle de vie et libère les ressources qui lui appartiennent. */
   cancel(sessionId: string): void {
     const runtime = this.v3Runs.get(sessionId);
     if (runtime) {
@@ -119,6 +130,7 @@ export class PipelineService extends EventEmitter {
     }
   }
 
+/** Termine cette étape du cycle de vie et libère les ressources qui lui appartiennent. */
   async dispose(): Promise<void> {
     for (const [sessionId, runtime] of this.v3Runs.entries()) {
       await runtime.cancel(sessionId);
@@ -127,6 +139,7 @@ export class PipelineService extends EventEmitter {
     this.removeAllListeners();
   }
 
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   private async startV3Pipeline(
     sessionId: string,
     program: CompiledPipelineProgram,
@@ -163,6 +176,7 @@ export class PipelineService extends EventEmitter {
     );
   }
 
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   private handleV3Result(sessionId: string, result: PipelineRuntimeResult): PipelineRuntimeResult {
     if (result.status === 'paused') {
       this.emitV3Pause(sessionId, result.pause);
@@ -184,13 +198,16 @@ export class PipelineService extends EventEmitter {
     throw new Error(result.error.message);
   }
 
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   private publishV3Artifacts(
     result: Extract<PipelineRuntimeResult, { status: 'paused' | 'completed' }>,
   ): void {
     const publisher = this.dependencies.artifactPublisher ?? publishPipelineArtifacts;
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
     publisher(this.workspaceCwd(), result.snapshot);
   }
 
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   private emitV3Pause(sessionId: string, pause: PipelinePauseSnapshot): void {
     if (pause.type === 'approval') {
       this.emit('plan-ready', {
@@ -229,6 +246,7 @@ export class PipelineService extends EventEmitter {
     });
   }
 
+/** Valide ou résout les données de cette étape du cycle de vie ; les entrées invalides restent signalées au point d'appel. */
   private readPipelineProgram(pipelineAgentName?: string): CompiledPipelineProgram | null {
     if (pipelineAgentName) {
       const program = this.dependencies.getPipelineProgramForAgent?.(pipelineAgentName);
@@ -244,6 +262,9 @@ export class PipelineService extends EventEmitter {
   }
 }
 
+/** Point d'entrée mapRuntimeEventToStatus du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function mapRuntimeEventToStatus(type: string): string {
   switch (type) {
     case 'node_started':
@@ -261,6 +282,9 @@ function mapRuntimeEventToStatus(type: string): string {
   }
 }
 
+/** Point d'entrée mapRuntimeEventToMessage du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function mapRuntimeEventToMessage(type: string, nodeId: string | undefined): string {
   switch (type) {
     case 'node_started':
@@ -280,6 +304,9 @@ function mapRuntimeEventToMessage(type: string, nodeId: string | undefined): str
   }
 }
 
+/** Point d'entrée stringifyArtifactValue du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function stringifyArtifactValue(value: unknown): string {
   if (value === undefined || value === null) {
     return '';
@@ -290,6 +317,9 @@ function stringifyArtifactValue(value: unknown): string {
   return JSON.stringify(value, null, 2);
 }
 
+/** Point d'entrée stringifyServiceResult du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function stringifyServiceResult(result: PipelineRuntimeResult): string {
   if (result.status === 'paused') {
     return result.pause.content;

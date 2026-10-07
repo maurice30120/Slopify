@@ -22,11 +22,15 @@ import type { CliTerminal } from './terminal.js';
 
 type SessionNotification = Parameters<NonNullable<PipelineAgentRunInput['onSessionUpdate']>>[0];
 
+/** Contrat fonctionnel de CliLogger dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface CliLogger {
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   log(message: string): void;
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   error(message: string, error?: unknown): void;
 }
 
+/** Contrat fonctionnel de CliPipelineBackend dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface CliPipelineBackend {
   programs: CompiledPipelineProgram[];
   preflightPipeline?(program: CompiledPipelineProgram, runId: string): Promise<void>;
@@ -34,23 +38,27 @@ export interface CliPipelineBackend {
   clearRunLogs?(): void;
 }
 
+/** Contrat fonctionnel de CliPipelineBackendContext dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface CliPipelineBackendContext {
   terminal: Pick<CliTerminal, 'confirm' | 'select'>;
   logger: CliLogger;
   agentName?: string;
 }
 
+/** Type métier CliPipelineBackendFactory utilisé pour représenter une étape ou un résultat du cycle de vie du pipeline. */
 export type CliPipelineBackendFactory = (
   workspaceCwd: string,
   context: CliPipelineBackendContext,
 ) => CliPipelineBackend;
 
+/** Contrat fonctionnel de CliPipelineListEntry dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface CliPipelineListEntry {
   id: string;
   title: string;
   nodeCount: number;
 }
 
+/** Contrat fonctionnel de CliPipelineHostOptions dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface CliPipelineHostOptions {
   terminal: CliTerminal;
   backendFactory: CliPipelineBackendFactory;
@@ -77,6 +85,7 @@ export class CliPipelineHost {
   private readonly activityByNode = new Map<string, 'agent_message_chunk' | 'agent_thought_chunk'>();
   private readonly runStore: PipelineRunStore;
 
+/** Initialise ce composant pour le cycle de vie du pipeline concerné. */
   constructor(
     private readonly workspaceCwd: string,
     private readonly options: CliPipelineHostOptions,
@@ -118,6 +127,10 @@ export class CliPipelineHost {
     this.createSession = this.createDefaultSessionFactory(runner);
   }
 
+/**
+ * Liste les pipelines compilés disponibles dans le workspace courant.
+ * @returns Une entrée stable par pipeline, sans démarrer de run ni modifier le workspace.
+ */
   listPipelines(): CliPipelineListEntry[] {
     return this.programs.map(program => ({
       id: program.id,
@@ -126,6 +139,13 @@ export class CliPipelineHost {
     }));
   }
 
+/**
+ * Démarre une Tâche d'implémentation de pipeline depuis la CLI et persiste son run.
+ * Les pauses et les sessions restent attachées à l'hôte ; les états terminaux sont nettoyés.
+ * @param pipelineName Identifiant ou titre du pipeline compilé.
+ * @param prompt Demande utilisateur transmise au premier nœud du pipeline.
+ * @returns Le résultat courant : completed, paused, failed ou cancelled.
+ */
   async start(pipelineName: string, prompt: string): Promise<PipelineRuntimeResult> {
     const declaredProgram = this.programs.find(candidate =>
       candidate.id === pipelineName || candidate.title === pipelineName,
@@ -155,6 +175,12 @@ export class CliPipelineHost {
     return result;
   }
 
+/**
+ * Applique une décision à la pause courante d'un run CLI.
+ * @param runId Identifiant du run à reprendre.
+ * @param decision Réponse, approbation, Rejection ou Cancellation de la pause.
+ * @returns Le nouvel état persistant du run.
+ */
   async resume(runId: string, decision: PipelineResumeDecision): Promise<PipelineRuntimeResult> {
     const runtime = await this.requireRuntime(runId);
     const result = await runtime.resume(runId, decision);
@@ -163,6 +189,11 @@ export class CliPipelineHost {
     return result;
   }
 
+/**
+ * Annule un run CLI et libère ses sessions ACP, journaux actifs et références en mémoire.
+ * @param runId Identifiant du run à annuler.
+ * @returns Le résultat Cancellation persisté par le runtime.
+ */
   async cancel(runId: string): Promise<PipelineRuntimeResult> {
     const runtime = await this.requireRuntime(runId);
     const result = await runtime.cancel(runId);
@@ -172,6 +203,7 @@ export class CliPipelineHost {
     return result;
   }
 
+/** Termine cette étape du cycle de vie et libère les ressources qui lui appartiennent. */
   async dispose(): Promise<void> {
     const entries = [...this.runtimes.entries()];
     this.runtimes.clear();
@@ -184,6 +216,7 @@ export class CliPipelineHost {
     }));
   }
 
+/** Termine cette étape du cycle de vie et libère les ressources qui lui appartiennent. */
   private cleanupTerminalResult(result: PipelineRuntimeResult): void {
     if (result.status !== 'paused') {
       this.runtimes.delete(result.runId);
@@ -197,6 +230,7 @@ export class CliPipelineHost {
     }
   }
 
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   async recover(runId: string): Promise<PipelineRuntimeResult> {
     const runtime = await this.requireRuntime(runId);
     const result = await runtime.recover(runId);
@@ -205,6 +239,7 @@ export class CliPipelineHost {
     return result;
   }
 
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   private createRuntime(program: CompiledPipelineProgram, runId: string): PipelineRuntime {
     return new PipelineRuntime({ createSession: this.createSession }, {
       runIdFactory: () => runId,
@@ -234,6 +269,7 @@ export class CliPipelineHost {
     });
   }
 
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   private async requireRuntime(runId: string): Promise<PipelineRuntime> {
     const active = this.runtimes.get(runId);
     if (active) return active;
@@ -250,6 +286,7 @@ export class CliPipelineHost {
     return restored;
   }
 
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   private materializeProgram(program: CompiledPipelineProgram): CompiledPipelineProgram {
     if (this.options.agentName) {
       return bindPipelineAgent(program, this.options.agentName);
@@ -260,6 +297,7 @@ export class CliPipelineHost {
     return program;
   }
 
+/** Valide ou résout les données de cette étape du cycle de vie ; les entrées invalides restent signalées au point d'appel. */
   private findRunLog(_input: unknown): PipelineRunLog | undefined {
     if (this.runLogs.size !== 1) {
       return undefined;
@@ -267,6 +305,7 @@ export class CliPipelineHost {
     return this.runLogs.values().next().value;
   }
 
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   private appendHostLog(event: string, data: unknown): void {
     for (const log of this.runLogs.values()) {
       log.append(event, data);
@@ -276,6 +315,7 @@ export class CliPipelineHost {
     }
   }
 
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   private createDefaultSessionFactory(runner: PipelineAgentRunner): AgentNodeSessionFactory {
     const loggedRunner = (async input => {
       const runLog = this.findRunLog(input);
@@ -335,6 +375,7 @@ export class CliPipelineHost {
     }).asSessionFactory();
   }
 
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   private reportSessionUpdate(runId: string, node: CompiledPipelineNode, notification: SessionNotification): void {
     const update = notification.update;
     const kind = update?.sessionUpdate;
@@ -354,9 +395,11 @@ export class CliPipelineHost {
   }
 }
 
+/** Composant PipelineRunLog qui coordonne une étape observable du cycle de vie du pipeline et en préserve les invariants. */
 class PipelineRunLog {
   private readonly nodeLogFiles = new Map<string, string>();
 
+/** Initialise ce composant pour le cycle de vie du pipeline concerné. */
   private constructor(
     private readonly logsDir: string,
     private readonly filePrefix: string,
@@ -365,6 +408,7 @@ class PipelineRunLog {
     private readonly pipelineId: string,
   ) {}
 
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   static create(workspaceCwd: string, runId: string, pipelineId: string): PipelineRunLog {
     const logsDir = path.join(workspaceCwd, '.acp', 'logs');
     fs.mkdirSync(logsDir, { recursive: true });
@@ -375,12 +419,14 @@ class PipelineRunLog {
     return new PipelineRunLog(logsDir, filePrefix, filePath, runId, pipelineId);
   }
 
+/** Termine cette étape du cycle de vie et libère les ressources qui lui appartiennent. */
   static clear(workspaceCwd: string): void {
     const logsDir = path.join(workspaceCwd, '.acp', 'logs');
     fs.rmSync(logsDir, { recursive: true, force: true });
     fs.mkdirSync(logsDir, { recursive: true });
   }
 
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   append(event: string, data: unknown): void {
     fs.appendFileSync(this.filePath, `${JSON.stringify({
       ts: new Date().toISOString(),
@@ -391,6 +437,7 @@ class PipelineRunLog {
     })}\n`);
   }
 
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   appendNode(node: CompiledPipelineNode, event: string, data: unknown): void {
     const payload = {
       nodeId: node.id,
@@ -407,6 +454,7 @@ class PipelineRunLog {
     })}\n`);
   }
 
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   appendForNode(node: CompiledPipelineNode | undefined, event: string, data: unknown): void {
     if (node) {
       this.appendNode(node, event, data);
@@ -415,6 +463,7 @@ class PipelineRunLog {
     this.append(event, data);
   }
 
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   private nodeLogFile(node: CompiledPipelineNode): string {
     const key = node.id;
     const existing = this.nodeLogFiles.get(key);
@@ -429,6 +478,9 @@ class PipelineRunLog {
   }
 }
 
+/** Point d'entrée sanitizeSessionNotification du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function sanitizeSessionNotification(notification: SessionNotification): unknown {
   const update = notification.update;
   const kind = update?.sessionUpdate;
@@ -452,6 +504,9 @@ function sanitizeSessionNotification(notification: SessionNotification): unknown
   return update;
 }
 
+/** Point d'entrée summarizeRuntimeResult du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function summarizeRuntimeResult(result: PipelineRuntimeResult): unknown {
   if (result.status === 'failed') {
     return {
@@ -488,6 +543,9 @@ function summarizeRuntimeResult(result: PipelineRuntimeResult): unknown {
   };
 }
 
+/** Point d'entrée serializeError du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function serializeError(error: unknown): unknown {
   if (!(error instanceof Error)) {
     return { message: String(error) };
@@ -502,16 +560,25 @@ function serializeError(error: unknown): unknown {
   };
 }
 
+/** Point d'entrée activityKey du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function activityKey(runId: string, nodeId: string): string {
   return `${runId}:${nodeId}`;
 }
 
+/** Point d'entrée formatAgentLabel du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function formatAgentLabel(node: CompiledPipelineNode): string {
   return node.agent && node.agent !== node.id
     ? `${node.id} · ${node.agent}`
     : node.id;
 }
 
+/** Point d'entrée formatError du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function formatError(error: unknown): string {
   if (!(error instanceof Error)) {
     return String(error);
@@ -531,6 +598,9 @@ function formatError(error: unknown): string {
   return details.join('; ');
 }
 
+/** Point d'entrée formatErrorValue du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function formatErrorValue(value: unknown): string {
   if (typeof value === 'string') {
     return value;

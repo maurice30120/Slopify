@@ -13,6 +13,7 @@ import { RunAbortedError } from './runAbortedError.js';
 import { SessionUpdateHandler } from './sessionUpdateHandler.js';
 import type { Logger, RuntimePermissionContext } from '../types.js';
 
+/** Contrat fonctionnel de AcpRunRequest dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface AcpRunRequest<TFinal = undefined> {
   agentName: string;
   sessionCwd: string;
@@ -28,11 +29,13 @@ export interface AcpRunRequest<TFinal = undefined> {
   logger?: Logger;
 }
 
+/** Contrat fonctionnel de AcpRunFinalizationContext dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface AcpRunFinalizationContext {
   connected: ConnectedAcpAgent;
   sessionId: string;
 }
 
+/** Contrat fonctionnel de AcpRunResult dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface AcpRunResult<TFinal = undefined> {
   text: string;
   finalization: TFinal;
@@ -44,6 +47,13 @@ export interface AcpRunResult<TFinal = undefined> {
  * tous les chemins terminaux convergent vers la même libération de connexion.
  */
 export class AcpRunner {
+/**
+ * Exécute un tour ACP entre l'hôte et un agent, puis libère toujours session et processus.
+ * Les chunks de réponse alimentent le texte final ; pensées et diagnostics restent des notifications.
+ * @param request Requête résolue avec prompt, sandbox de session, permissions et délais.
+ * @returns Le texte final et le résultat de finalisation éventuel.
+ * @throws RunAbortedError en cas de Cancellation ; propage les erreurs ACP, d'authentification ou de délai.
+ */
   async run<TFinal = undefined>(request: AcpRunRequest<TFinal>): Promise<AcpRunResult<TFinal>> {
     const sessionUpdateHandler = new SessionUpdateHandler();
     let connected: ConnectedAcpAgent | null = null;
@@ -62,11 +72,13 @@ export class AcpRunner {
       if (request.signal?.aborted) throw new RunAbortedError();
     };
     const onAbort = () => {
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
       void (async () => {
         if (sessionId && connected) {
           try { await connected.connInfo.connection.cancel({ sessionId }); }
           catch (error: unknown) { request.logger?.error('ACP cancel failed', error); }
         }
+/** Termine cette étape du cycle de vie et libère les ressources qui lui appartiennent. */
         dispose();
       })();
     };
@@ -84,6 +96,7 @@ export class AcpRunner {
     sessionUpdateHandler.addListener(listener);
 
     try {
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
       throwIfAborted();
       connected = await (request.connector ?? defaultAcpConnector)({
         agentName: request.agentName,
@@ -95,19 +108,24 @@ export class AcpRunner {
         timeouts: request.timeouts,
         logger: request.logger,
       });
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
       throwIfAborted();
       const session = await this.createSessionWithAuth(request, connected, throwIfAborted);
       sessionId = session.sessionId;
       const response = await withProcessGuard(
         'prompt',
         connected.processExit,
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
         withTimeout(
           'prompt',
+/** Valide ou résout les données de cette étape du cycle de vie ; les entrées invalides restent signalées au point d'appel. */
           resolveTimeouts(request.timeouts).promptMs,
           connected.connInfo.connection.prompt({ sessionId, prompt: request.prompt }),
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
           async () => {
             try { await connected?.connInfo.connection.cancel({ sessionId: sessionId ?? '' }); }
             catch (error: unknown) { request.logger?.error('ACP timeout cancel failed', error); }
+/** Termine cette étape du cycle de vie et libère les ressources qui lui appartiennent. */
             dispose();
           },
         ),
@@ -120,10 +138,12 @@ export class AcpRunner {
     } finally {
       request.signal?.removeEventListener('abort', onAbort);
       sessionUpdateHandler.removeListener(listener);
+/** Termine cette étape du cycle de vie et libère les ressources qui lui appartiennent. */
       dispose();
     }
   }
 
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   private async createSessionWithAuth<T>(
     request: AcpRunRequest<T>,
     connected: ConnectedAcpAgent,
@@ -142,11 +162,13 @@ export class AcpRunner {
       // une nouvelle tentative. Boucler ici masquerait une configuration invalide
       // et pourrait demander indéfiniment les mêmes credentials.
       await auth.runAuthFlow(request.agentName, connected.agentId, connected.connInfo);
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
       throwIfAborted();
       return this.newSession(connected, request.sessionCwd, request.timeouts);
     }
   }
 
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   private newSession(
     connected: ConnectedAcpAgent,
     cwd: string,
@@ -155,8 +177,10 @@ export class AcpRunner {
     return withProcessGuard(
       'newSession',
       connected.processExit,
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
       withTimeout(
         'newSession',
+/** Valide ou résout les données de cette étape du cycle de vie ; les entrées invalides restent signalées au point d'appel. */
         resolveTimeouts(timeouts).newSessionMs,
         connected.connInfo.connection.newSession({ cwd, mcpServers: [] }),
         () => connected.dispose(),
@@ -164,6 +188,7 @@ export class AcpRunner {
     );
   }
 
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   private throwIfCancelled(response: PromptResponse, signal?: AbortSignal): void {
     if (signal?.aborted || response.stopReason === 'cancelled') throw new RunAbortedError();
   }

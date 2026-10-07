@@ -34,6 +34,7 @@ import type {
   AgentNodeSession,
 } from "./PipelineV3Types";
 
+/** Contrat fonctionnel de PipelineRuntimeOptions dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface PipelineRuntimeOptions {
   runIdFactory?: () => string;
   now?: () => Date;
@@ -43,10 +44,11 @@ export interface PipelineRuntimeOptions {
   adapterName?: string;
   adapterCapabilities?: PipelineAdapterPolicyCapabilities;
   resolveNodeSkills?: (node: CompiledPipelineNode) => string[] | Promise<string[]>;
-  /** Agent selected by the host for dynamically expanded execution-plan nodes. */
+  /** Agent choisi par l'hôte pour les nœuds ajoutés dynamiquement au plan d'exécution. */
   agentName?: string;
 }
 
+/** Contrat fonctionnel de PipelineRuntimeEvent dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface PipelineRuntimeEvent {
   runId: string;
   type:
@@ -67,20 +69,28 @@ export interface PipelineRuntimeEvent {
   at: string;
 }
 
+/** Contrat fonctionnel de PipelineRuntimeStartOptions dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface PipelineRuntimeStartOptions {
   inputs?: Record<string, unknown>;
   executionPlan?: ExecutionPlan;
   maxConcurrency?: number;
 }
 
+/** Contrat fonctionnel de PipelineRunStore dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface PipelineRunStore {
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   create(snapshot: PipelineRuntimeSnapshot): Promise<void>;
+/** Valide ou résout les données de cette étape du cycle de vie ; les entrées invalides restent signalées au point d'appel. */
   load(runId: string): Promise<PipelineRuntimeSnapshot | null>;
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   save(snapshot: PipelineRuntimeSnapshot): Promise<void>;
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   appendEvent(runId: string, event: PipelineRuntimeEvent): Promise<void>;
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   listResumable(): Promise<PipelineRuntimeSnapshot[]>;
 }
 
+/** Contrat fonctionnel de ActiveRun dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 interface ActiveRun {
   program: CompiledPipelineProgram;
   snapshot: PipelineRuntimeSnapshot;
@@ -116,6 +126,7 @@ export class PipelineRuntime {
   private readonly resolveNodeSkills?: (node: CompiledPipelineNode) => string[] | Promise<string[]>;
   private readonly agentName?: string;
 
+/** Initialise ce composant pour le cycle de vie du pipeline concerné. */
   constructor(
     private readonly adapter: PipelineRuntimeAdapter,
     options: PipelineRuntimeOptions = {},
@@ -133,6 +144,15 @@ export class PipelineRuntime {
     }
   }
 
+/**
+ * Démarre un run à partir d'un programme compilé et avance jusqu'à une transition observable.
+ * Chaque snapshot est persisté avant son événement ; une pause peut donc être reprise sans perdre
+ * les Agent Checkpoints ni les artefacts déjà produits.
+ * @param program DAG compilé et figé pour ce run.
+ * @param options Variables, plan d'exécution et limite de concurrence du run.
+ * @returns L'état terminal ou la pause qui exige une décision de l'hôte.
+ * @throws Error si les options ou l'Execution Plan sont invalides.
+ */
   async start(
     program: CompiledPipelineProgram,
     options: PipelineRuntimeStartOptions = {},
@@ -182,6 +202,14 @@ export class PipelineRuntime {
     return this.advance(active);
   }
 
+/**
+ * Reprend un run suspendu après une question, une approbation ou une Promotion.
+ * Une Rejection termine le run ; une réponse valide réactive uniquement le nœud concerné.
+ * @param runId Identifiant durable du run suspendu.
+ * @param decision Décision liée exactement à l'identifiant de pause courant.
+ * @returns Le nouvel état du run après persistance et progression du DAG.
+ * @throws Error si le run n'est pas actif ou si la session est irrécupérable.
+ */
   async resume(runId: string, decision: PipelineResumeDecision): Promise<PipelineRuntimeResult> {
     const active = await this.requireActiveRun(runId);
     const pause = active.snapshot.pendingPause;
@@ -258,6 +286,14 @@ export class PipelineRuntime {
     return this.advance(active);
   }
 
+/**
+ * Réinitialise un nœud terminé après un Integration Conflict pour retenter son intégration.
+ * Les artefacts produits par ce nœud sont retirés, tandis que les résultats des autres nœuds restent durables.
+ * @param runId Identifiant du run suspendu.
+ * @param nodeId Nœud agent à retenter.
+ * @param pauseId Identifiant de la pause d'Integration Conflict autorisant la reprise.
+ * @returns Le nouvel état du run après relance du DAG.
+ */
   async retryNode(
     runId: string,
     nodeId: string,
@@ -312,6 +348,12 @@ export class PipelineRuntime {
     return this.advance(active);
   }
 
+/**
+ * Interrompt le run, annule les sessions ACP et persiste Cancellation pour chaque nœud actif.
+ * Aucun nouvel artefact ni Pipeline Change Set n'est promu après cet appel.
+ * @param runId Identifiant du run à annuler.
+ * @returns L'état annulé persistant du run.
+ */
   async cancel(runId: string): Promise<PipelineRuntimeResult> {
     const active = await this.requireActiveRun(runId);
     active.controller.abort();
@@ -330,6 +372,7 @@ export class PipelineRuntime {
     return { status: "cancelled", runId, snapshot: cloneSnapshot(active.snapshot) };
   }
 
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   async recover(runId: string): Promise<PipelineRuntimeResult> {
     const active = await this.requireActiveRun(runId);
     if (active.snapshot.pendingPause) {
@@ -357,6 +400,7 @@ export class PipelineRuntime {
     return this.advance(active);
   }
 
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   protected async suspendRecoveredRun(
     runId: string,
     pause: PipelinePauseSnapshot,
@@ -372,6 +416,7 @@ export class PipelineRuntime {
     return { status: "paused", runId, pause, snapshot: cloneSnapshot(active.snapshot) };
   }
 
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   protected async retryRecoveredRun(runId: string): Promise<PipelineRuntimeResult> {
     const active = await this.requireActiveRun(runId);
     active.controller = new AbortController();
@@ -391,6 +436,7 @@ export class PipelineRuntime {
     return this.advance(active);
   }
 
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   async inspect(runId: string): Promise<PipelineRuntimeSnapshot | null> {
     const active = this.runs.get(runId);
     if (active) {
@@ -399,6 +445,7 @@ export class PipelineRuntime {
     return this.store?.load(runId).then(snapshot => snapshot && cloneSnapshot(snapshot)) ?? null;
   }
 
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   private async advance(active: ActiveRun): Promise<PipelineRuntimeResult> {
     while (active.snapshot.status === "running") {
       const expansionError = await this.expandExecutionPlan(active);
@@ -471,6 +518,7 @@ export class PipelineRuntime {
     return { status: "cancelled", runId: active.snapshot.runId, snapshot: cloneSnapshot(active.snapshot) };
   }
 
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   private startNodeTask(active: ActiveRun, node: CompiledPipelineNode): void {
     if (active.nodeTasks.has(node.id)) {
       return;
@@ -481,12 +529,14 @@ export class PipelineRuntime {
     active.nodeTasks.set(node.id, task);
   }
 
+/** Valide ou résout les données de cette étape du cycle de vie ; les entrées invalides restent signalées au point d'appel. */
   private readyNodes(active: ActiveRun): CompiledPipelineNode[] {
     return active.program.nodes
       .filter(node => active.snapshot.nodeStates[node.id]?.status === "pending")
       .filter(node => node.needs.every(dependency => active.snapshot.nodeStates[dependency]?.status === "completed"));
   }
 
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   private async expandExecutionPlan(active: ActiveRun): Promise<PipelineRuntimeDiagnostic | undefined> {
     const snapshot = active.snapshot.executionPlan;
     if (!snapshot) return undefined;
@@ -521,6 +571,7 @@ export class PipelineRuntime {
     return undefined;
   }
 
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   private async executeNode(active: ActiveRun, node: CompiledPipelineNode): Promise<PipelineRuntimeDiagnostic | { ok: true } | { paused: PipelineRuntimeResult }> {
     const state = active.snapshot.nodeStates[node.id];
     const inputs = resolveInputs(node, active.snapshot.artifacts);
@@ -634,6 +685,7 @@ export class PipelineRuntime {
     return { nodeId: node.id, code: "retry_exhausted", message: `Node "${node.id}" exhausted retries.` };
   }
 
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   private async continueInterview(active: ActiveRun, node: CompiledPipelineNode): Promise<PipelineRuntimeResult> {
     const state = active.snapshot.nodeStates[node.id];
     const inputs = resolveInputs(node, active.snapshot.artifacts);
@@ -649,6 +701,7 @@ export class PipelineRuntime {
     return this.advance(active);
   }
 
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   private async executeInterviewNode(
     active: ActiveRun,
     node: CompiledPipelineNode,
@@ -720,8 +773,8 @@ export class PipelineRuntime {
           inputs,
           signal: active.controller.signal,
           onSandboxRunState: state => this.persistSandboxRunState(active, state),
-          // Each interview send carries new history (or a repair request). A
-          // completed sandbox belongs to the previous send, not this prompt.
+          // Chaque envoi d'entretien porte un nouvel historique (ou une demande de réparation). Une
+          // sandbox terminée appartient à l'envoi précédent, pas à ce prompt.
           resumeSandboxRun: this.resumeSandboxRun(active, node.id, attempt)?.integrationState === "sandbox_created"
             ? this.resumeSandboxRun(active, node.id, attempt)
             : undefined,
@@ -844,6 +897,7 @@ export class PipelineRuntime {
     return { nodeId: node.id, code: "retry_exhausted", message: `Node "${node.id}" exhausted retries.` };
   }
 
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   private async pauseInterview(active: ActiveRun, node: CompiledPipelineNode, question: string, recommendation?: string): Promise<{ paused: PipelineRuntimeResult }> {
     const state = active.snapshot.nodeStates[node.id];
     const turn = active.snapshot.activeInterview?.turns.filter(entry => entry.role === "agent").length ?? state.attempts;
@@ -867,6 +921,7 @@ export class PipelineRuntime {
     return { paused: { status: "paused", runId: active.snapshot.runId, pause, snapshot: cloneSnapshot(active.snapshot) } };
   }
 
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   private async pause(active: ActiveRun, node: CompiledPipelineNode): Promise<PipelineRuntimeResult> {
     const state = active.snapshot.nodeStates[node.id];
     const inputs = resolveInputs(node, active.snapshot.artifacts);
@@ -894,6 +949,7 @@ export class PipelineRuntime {
     return { status: "paused", runId: active.snapshot.runId, pause, snapshot: cloneSnapshot(active.snapshot) };
   }
 
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   private async complete(active: ActiveRun): Promise<PipelineRuntimeResult> {
     const terminalArtifacts = active.program.terminalNodeIds
       .map(nodeId => active.program.nodesById.get(nodeId))
@@ -915,6 +971,7 @@ export class PipelineRuntime {
     };
   }
 
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   private async fail(active: ActiveRun, diagnostic: PipelineRuntimeDiagnostic): Promise<PipelineRuntimeResult> {
     active.snapshot.status = "failed";
     active.snapshot.diagnostics.push(diagnostic);
@@ -931,10 +988,12 @@ export class PipelineRuntime {
     return { status: "failed", runId: active.snapshot.runId, error: diagnostic, snapshot: cloneSnapshot(active.snapshot) };
   }
 
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   private isComplete(active: ActiveRun): boolean {
     return active.program.nodes.every(node => active.snapshot.nodeStates[node.id]?.status === "completed");
   }
 
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   private async requireActiveRun(runId: string): Promise<ActiveRun> {
     const active = this.runs.get(runId);
     if (!active) {
@@ -966,12 +1025,13 @@ export class PipelineRuntime {
     return active;
   }
 
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   private captureExecutionPlan(
     active: ActiveRun,
     artifact: PipelineArtifact,
   ): PipelineRuntimeDiagnostic | undefined {
-    // Markdown keeps the human adapter contract; only the structured JSON
-    // artifact is authoritative enough to freeze into an Execution Plan.
+    // Markdown conserve le contrat de l'adaptateur humain ; seul le JSON structuré
+    // de l'artefact fait autorité pour figer un Execution Plan.
     if (!artifact.type.startsWith("acp.ticket-graph/") || artifact.format !== "json") return undefined;
     if (artifact.type !== "acp.ticket-graph/v1") {
       return {
@@ -1003,6 +1063,7 @@ export class PipelineRuntime {
     return undefined;
   }
 
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   private acceptArtifact(active: ActiveRun, artifact: PipelineArtifact): PipelineRuntimeDiagnostic | undefined {
     const planError = this.captureExecutionPlan(active, artifact);
     if (planError) return planError;
@@ -1010,10 +1071,12 @@ export class PipelineRuntime {
     return undefined;
   }
 
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   private async persist(snapshot: PipelineRuntimeSnapshot): Promise<void> {
     await this.store?.save(cloneSnapshot(snapshot));
   }
 
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   private async persistSandboxRunState(
     active: ActiveRun,
     state: NonNullable<PipelineRuntimeSnapshot["sandboxRuns"]>[string],
@@ -1029,6 +1092,7 @@ export class PipelineRuntime {
     await this.persist(active.snapshot);
   }
 
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   private resumeSandboxRun(
     active: ActiveRun,
     nodeId: string,
@@ -1039,6 +1103,7 @@ export class PipelineRuntime {
     );
   }
 
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   private recordInterviewHistory(active: ActiveRun, interview: NonNullable<PipelineRuntimeSnapshot["activeInterview"]>): void {
     // L'historique est aussi publié comme artefact structuré : une reprise peut
     // reconstruire l'entretien sans dépendre des chunks de diagnostic éphémères.
@@ -1056,6 +1121,7 @@ export class PipelineRuntime {
     };
   }
 
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   private async openAttemptSession(active: ActiveRun, node: CompiledPipelineNode): Promise<AgentNodeSession> {
     const session = await this.adapter.createSession({ runId: active.snapshot.runId, node, signal: active.controller.signal });
     await assertSessionBoundary(active.snapshot.runId, node.id, session);
@@ -1064,6 +1130,7 @@ export class PipelineRuntime {
     return session;
   }
 
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   private async openInterviewSession(active: ActiveRun, node: CompiledPipelineNode): Promise<AgentNodeSession> {
     const existing = active.sessions.get(node.id);
     if (existing) {
@@ -1076,6 +1143,7 @@ export class PipelineRuntime {
     return session;
   }
 
+/** Termine cette étape du cycle de vie et libère les ressources qui lui appartiennent. */
   private async closeInterviewSession(active: ActiveRun, nodeId: string): Promise<void> {
     const session = active.sessions.get(nodeId);
     if (!session) {
@@ -1085,6 +1153,7 @@ export class PipelineRuntime {
     await this.closeSessionForRun(active, session);
   }
 
+/** Termine cette étape du cycle de vie et libère les ressources qui lui appartiennent. */
   private async cancelActiveSessions(active: ActiveRun): Promise<void> {
     await Promise.all([...active.sessions.values()].map(async session => {
       this.unsubscribeSessionActivity(active, session);
@@ -1095,11 +1164,13 @@ export class PipelineRuntime {
     active.sessions.clear();
   }
 
+/** Termine cette étape du cycle de vie et libère les ressources qui lui appartiennent. */
   private async closeActiveSessions(active: ActiveRun): Promise<void> {
     await Promise.all([...active.sessions.values()].map(session => this.closeSessionForRun(active, session)));
     active.sessions.clear();
   }
 
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   private subscribeSessionActivity(active: ActiveRun, session: AgentNodeSession): void {
     if (!session.onActivity || active.activityUnsubscribers.has(session)) {
       return;
@@ -1117,11 +1188,13 @@ export class PipelineRuntime {
     active.activityUnsubscribers.set(session, unsubscribe);
   }
 
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   private unsubscribeSessionActivity(active: ActiveRun, session: AgentNodeSession): void {
     active.activityUnsubscribers.get(session)?.();
     active.activityUnsubscribers.delete(session);
   }
 
+/** Termine cette étape du cycle de vie et libère les ressources qui lui appartiennent. */
   private async closeSessionForRun(active: ActiveRun, session: AgentNodeSession): Promise<void> {
     // Plusieurs chemins terminaux convergent ici (succès, retry, échec et
     // annulation). La fermeture doit rester idempotente pour ne pas envoyer deux
@@ -1139,6 +1212,7 @@ export class PipelineRuntime {
     await session.close();
   }
 
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   private async emitRuntimeEvent(event: PipelineRuntimeEvent): Promise<void> {
     await this.onEvent?.(event);
     if (event.type === "agent_activity") {
@@ -1147,14 +1221,18 @@ export class PipelineRuntime {
     await this.store?.appendEvent(event.runId, event);
   }
 
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   private isoNow(): string {
     return this.now().toISOString();
   }
 }
 
+/** Point d'entrée dependencyCheckpoints du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function dependencyCheckpoints(active: ActiveRun, node: CompiledPipelineNode) {
-  // Approval nodes forward artifacts but own no checkpoint. Traverse them to
-  // the nearest writing agents so approved files cross the sandbox boundary.
+  // Les nœuds d'approbation transmettent les artefacts sans posséder de checkpoint. Parcourir
+  // jusqu'aux agents écrivants les plus proches pour que les fichiers approuvés franchissent la frontière sandbox.
   const dependencyIds = new Set<string>();
   const visited = new Set<string>();
   const visit = (id: string) => {
@@ -1189,6 +1267,9 @@ function dependencyCheckpoints(active: ActiveRun, node: CompiledPipelineNode) {
   return checkpoints;
 }
 
+/** Point d'entrée requiredCheckpointDiagnostic du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function requiredCheckpointDiagnostic(
   active: ActiveRun,
   node: CompiledPipelineNode,
@@ -1209,6 +1290,9 @@ function requiredCheckpointDiagnostic(
   };
 }
 
+/** Point d'entrée executionPlanNodes du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function executionPlanNodes(plan: ExecutionPlan, selectedAgent?: string, delivery?: CompiledPipelineNode, baseCommit?: string): CompiledPipelineNode[] {
   const inputs = delivery?.output ? [{ name: "approvedDelivery", from: `${delivery.id}.${delivery.output.name}`, type: delivery.output.type, format: delivery.output.format }] : [];
   const context = `User request:\n{{userPrompt}}\nApproved delivery (read the referenced specification and ticket files before making changes):\n{{inputs.approvedDelivery}}`;
@@ -1239,6 +1323,9 @@ function executionPlanNodes(plan: ExecutionPlan, selectedAgent?: string, deliver
   }];
 }
 
+/** Point d'entrée resolveInputs du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function resolveInputs(node: CompiledPipelineNode, artifacts: Record<string, PipelineArtifact>): Record<string, PipelineArtifact> {
   const result: Record<string, PipelineArtifact> = {};
   for (const input of node.inputs) {
@@ -1248,6 +1335,9 @@ function resolveInputs(node: CompiledPipelineNode, artifacts: Record<string, Pip
   return result;
 }
 
+/** Point d'entrée renderRuntimeTemplate du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 export function renderRuntimeTemplate(
   template: string,
   inputVariables: Record<string, unknown>,
@@ -1274,6 +1364,9 @@ export function renderRuntimeTemplate(
   });
 }
 
+/** Point d'entrée assertArtifact du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function assertArtifact(node: CompiledPipelineNode, result: PipelineNodeExecutionResult): PipelineArtifact {
   if (!("artifact" in result)) {
     throw new Error("Expected successful node result.");
@@ -1293,17 +1386,25 @@ function assertArtifact(node: CompiledPipelineNode, result: PipelineNodeExecutio
   return { ...result.artifact, producerNodeId: node.id };
 }
 
+/** Point d'entrée artifactKey du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function artifactKey(nodeId: string, artifactName: string): string {
   return `${nodeId}.${artifactName}`;
 }
 
+/** Point d'entrée isInterviewTransportLoss du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function isInterviewTransportLoss(result: PipelineNodeExecutionFailure): boolean {
   return result.retryable === true && result.code === "transport_lost";
 }
 
+/** Composant InvalidAgentNodeSessionError qui coordonne une étape observable du cycle de vie du pipeline et en préserve les invariants. */
 class InvalidAgentNodeSessionError extends Error {
   readonly code = "invalid_agent_node_session";
 
+/** Initialise ce composant pour le cycle de vie du pipeline concerné. */
   constructor(message: string) {
     super(message);
     this.name = "InvalidAgentNodeSessionError";
@@ -1320,6 +1421,9 @@ async function assertSessionBoundary(runId: string, nodeId: string, session: Age
   );
 }
 
+/** Point d'entrée sessionBoundaryDiagnostic du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function sessionBoundaryDiagnostic(
   active: ActiveRun,
   node: CompiledPipelineNode,
@@ -1335,14 +1439,23 @@ function sessionBoundaryDiagnostic(
   };
 }
 
+/** Point d'entrée cloneSnapshot du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function cloneSnapshot(snapshot: PipelineRuntimeSnapshot): PipelineRuntimeSnapshot {
   return cloneJson(snapshot);
 }
 
+/** Point d'entrée cloneJson du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function cloneJson<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
 }
 
+/** Point d'entrée cloneInputVariables du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function cloneInputVariables(inputs: Record<string, unknown> | undefined): Record<string, unknown> | undefined {
   if (!inputs) {
     return undefined;
@@ -1350,6 +1463,9 @@ function cloneInputVariables(inputs: Record<string, unknown> | undefined): Recor
   return JSON.parse(JSON.stringify(inputs)) as Record<string, unknown>;
 }
 
+/** Point d'entrée stringifyTemplateValue du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function stringifyTemplateValue(value: unknown): string {
   if (value === undefined || value === null) {
     return "";
@@ -1363,6 +1479,9 @@ function stringifyTemplateValue(value: unknown): string {
   return JSON.stringify(value) ?? "";
 }
 
+/** Point d'entrée sleep du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function sleep(ms: number): Promise<void> {
   return ms > 0 ? new Promise(resolve => setTimeout(resolve, ms)) : Promise.resolve();
 }
