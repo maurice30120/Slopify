@@ -20,6 +20,11 @@ suivre ou reprendre un run en cours.
 3. Lire [pipeline-choice.md](references/pipeline-choice.md) et appliquer ses
    prérequis.
 4. Choisir le niveau le plus léger qui couvre clairement la demande.
+5. Si le niveau retenu est `implement-ticket`, vérifier qu’un ticket approuvé
+   existe : un fichier `<workspace>/.scratch/<effort>/issues/NN-<slug>.md`.
+   Sinon, exécuter d’abord la skill `to-tickets` pour découper la spécification
+   en tickets, puis lancer `implement-ticket` sur un ticket créé ; ne jamais
+   lancer `implement-ticket` avec une spécification seule.
 
 Un niveau explicitement demandé par l’utilisateur est prioritaire. Vérifier
 qu’il existe dans la sortie de `list --json`, l’utiliser tel quel et ne jamais
