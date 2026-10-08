@@ -1,3 +1,5 @@
+> Document historique de conception. Le parcours CLI actuel est documenté dans [README.md](README.md) et utilise uniquement `slopify tasks`.
+
 # Roadmap Slopify
 
 > Dernière mise à jour : 24 juillet 2026

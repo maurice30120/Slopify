@@ -1,0 +1,236 @@
+{
+  "startedAt": "2026-10-02T12:24:55.768Z",
+  "fixture": "/var/folders/yd/6910m5zs4v7d7308h_8ypmy80000gp/T/slopify-vibe-audit-bCDmxZ",
+  "commands": [
+    {
+      "label": "environment",
+      "args": [
+        "node",
+        "--version"
+      ],
+      "cwd": "/Users/dhuyet/Documents/POC/Slopify",
+      "exitCode": 0,
+      "signal": null,
+      "durationMs": 18
+    },
+    {
+      "label": "sbx-version",
+      "args": [
+        "sbx",
+        "version"
+      ],
+      "cwd": "/Users/dhuyet/Documents/POC/Slopify",
+      "exitCode": 0,
+      "signal": null,
+      "durationMs": 37
+    },
+    {
+      "label": "sandboxes-before",
+      "args": [
+        "sbx",
+        "ls",
+        "--json"
+      ],
+      "cwd": "/Users/dhuyet/Documents/POC/Slopify",
+      "exitCode": 0,
+      "signal": null,
+      "durationMs": 520
+    },
+    {
+      "label": "network-policy",
+      "args": [
+        "sbx",
+        "policy",
+        "ls",
+        "--json"
+      ],
+      "cwd": "/Users/dhuyet/Documents/POC/Slopify",
+      "exitCode": 0,
+      "signal": null,
+      "durationMs": 432
+    },
+    {
+      "label": "init",
+      "args": [
+        "git",
+        "init",
+        "--initial-branch=main"
+      ],
+      "cwd": "/var/folders/yd/6910m5zs4v7d7308h_8ypmy80000gp/T/slopify-vibe-audit-bCDmxZ",
+      "exitCode": 0,
+      "signal": null,
+      "durationMs": 37
+    },
+    {
+      "label": "identity-name",
+      "args": [
+        "git",
+        "config",
+        "user.name",
+        "Slopify Audit"
+      ],
+      "cwd": "/var/folders/yd/6910m5zs4v7d7308h_8ypmy80000gp/T/slopify-vibe-audit-bCDmxZ",
+      "exitCode": 0,
+      "signal": null,
+      "durationMs": 17
+    },
+    {
+      "label": "identity-email",
+      "args": [
+        "git",
+        "config",
+        "user.email",
+        "slopify-audit@localhost"
+      ],
+      "cwd": "/var/folders/yd/6910m5zs4v7d7308h_8ypmy80000gp/T/slopify-vibe-audit-bCDmxZ",
+      "exitCode": 0,
+      "signal": null,
+      "durationMs": 17
+    },
+    {
+      "label": "add",
+      "args": [
+        "git",
+        "add",
+        "."
+      ],
+      "cwd": "/var/folders/yd/6910m5zs4v7d7308h_8ypmy80000gp/T/slopify-vibe-audit-bCDmxZ",
+      "exitCode": 0,
+      "signal": null,
+      "durationMs": 23
+    },
+    {
+      "label": "commit",
+      "args": [
+        "git",
+        "commit",
+        "-m",
+        "Initialize isolated Vibe audit fixture"
+      ],
+      "cwd": "/var/folders/yd/6910m5zs4v7d7308h_8ypmy80000gp/T/slopify-vibe-audit-bCDmxZ",
+      "exitCode": 0,
+      "signal": null,
+      "durationMs": 30
+    },
+    {
+      "label": "base-head",
+      "args": [
+        "git",
+        "rev-parse",
+        "HEAD"
+      ],
+      "cwd": "/var/folders/yd/6910m5zs4v7d7308h_8ypmy80000gp/T/slopify-vibe-audit-bCDmxZ",
+      "exitCode": 0,
+      "signal": null,
+      "durationMs": 13
+    },
+    {
+      "label": "fixture-list",
+      "args": [
+        "node",
+        "/Users/dhuyet/Documents/POC/Slopify/slopify/dist/src/cli.js",
+        "list",
+        "--json",
+        "--cwd",
+        "/var/folders/yd/6910m5zs4v7d7308h_8ypmy80000gp/T/slopify-vibe-audit-bCDmxZ"
+      ],
+      "cwd": "/Users/dhuyet/Documents/POC/Slopify",
+      "exitCode": 0,
+      "signal": null,
+      "durationMs": 87
+    },
+    {
+      "label": "pipeline",
+      "args": [
+        "node",
+        "/Users/dhuyet/Documents/POC/Slopify/slopify/dist/src/cli.js",
+        "run",
+        "simple",
+        "Create only audit-marker.txt containing exactly slopify audit ok followed by one newline. Verify its exact contents using the terminal. Do not change any other file. Do not commit or launch other pipelines or agents. Return the verification command and its result.",
+        "--agent",
+        "Vibe Sandbox",
+        "--cwd",
+        "/var/folders/yd/6910m5zs4v7d7308h_8ypmy80000gp/T/slopify-vibe-audit-bCDmxZ",
+        "--json",
+        "--verbose"
+      ],
+      "cwd": "/Users/dhuyet/Documents/POC/Slopify",
+      "exitCode": 2,
+      "signal": null,
+      "durationMs": 2704
+    },
+    {
+      "label": "final-head",
+      "args": [
+        "git",
+        "rev-parse",
+        "HEAD"
+      ],
+      "cwd": "/var/folders/yd/6910m5zs4v7d7308h_8ypmy80000gp/T/slopify-vibe-audit-bCDmxZ",
+      "exitCode": 0,
+      "signal": null,
+      "durationMs": 22
+    },
+    {
+      "label": "final-status",
+      "args": [
+        "git",
+        "status",
+        "--porcelain=v1"
+      ],
+      "cwd": "/var/folders/yd/6910m5zs4v7d7308h_8ypmy80000gp/T/slopify-vibe-audit-bCDmxZ",
+      "exitCode": 0,
+      "signal": null,
+      "durationMs": 18
+    },
+    {
+      "label": "changed-files",
+      "args": [
+        "git",
+        "diff",
+        "--name-only",
+        "bd29051a044bb9750f34032c65a1f14cd3663810",
+        "HEAD"
+      ],
+      "cwd": "/var/folders/yd/6910m5zs4v7d7308h_8ypmy80000gp/T/slopify-vibe-audit-bCDmxZ",
+      "exitCode": 0,
+      "signal": null,
+      "durationMs": 17
+    },
+    {
+      "label": "final-diff",
+      "args": [
+        "git",
+        "diff",
+        "bd29051a044bb9750f34032c65a1f14cd3663810",
+        "HEAD"
+      ],
+      "cwd": "/var/folders/yd/6910m5zs4v7d7308h_8ypmy80000gp/T/slopify-vibe-audit-bCDmxZ",
+      "exitCode": 0,
+      "signal": null,
+      "durationMs": 15
+    },
+    {
+      "label": "sandboxes-after",
+      "args": [
+        "sbx",
+        "ls",
+        "--json"
+      ],
+      "cwd": "/Users/dhuyet/Documents/POC/Slopify",
+      "exitCode": 0,
+      "signal": null,
+      "durationMs": 339
+    }
+  ],
+  "baseCommit": "bd29051a044bb9750f34032c65a1f14cd3663810",
+  "pipelineExitCode": 2,
+  "finalCommit": "bd29051a044bb9750f34032c65a1f14cd3663810",
+  "markerExists": false,
+  "markerCorrect": false,
+  "finishedAt": "2026-10-02T12:25:00.123Z",
+  "cleanupVerified": true,
+  "onlyMarkerChanged": false,
+  "cleanHost": true,
+  "success": false
+}

@@ -15,10 +15,10 @@ if (action !== 'promote' && action !== 'reject') {
 }
 
 const repo = mkdtempSync(join(tmpdir(), 'slopify-sbx-smoke-'));
-const marker = 'codex-smoke-marker.txt';
+const marker = 'vibe-smoke-marker.txt';
 const scriptDirectory = dirname(fileURLToPath(import.meta.url));
 const cli = resolve(scriptDirectory, '../../slopify/dist/src/cli.js');
-const model = process.env.SLOPIFY_SBX_SMOKE_MODEL ?? 'gpt-5.4';
+const model = process.env.SLOPIFY_SBX_SMOKE_MODEL ?? 'mistral-medium-latest';
 
 function run(command, args, options = {}) {
   const result = spawnSync(command, args, {
@@ -58,6 +58,7 @@ let before;
 let primaryError;
 try {
   run('git', ['init', '--initial-branch=main']);
+  run('git', ['config', 'core.autocrlf', 'false']);
   run('git', ['config', 'user.name', 'Slopify Smoke']);
   run('git', ['config', 'user.email', 'slopify-smoke@localhost']);
   writeFileSync(join(repo, 'README.md'), '# Docker Sandbox smoke fixture\n');
@@ -70,21 +71,20 @@ try {
   mkdirSync(join(repo, '.acp', 'pipelines'), { recursive: true });
   writeFileSync(join(repo, '.acp', 'acp-agents.json'), JSON.stringify({
     agents: {
-      'Codex Sandbox': { transport: 'sandbox', agent: 'codex', model },
+      'Vibe Sandbox': { transport: 'sandbox', agent: 'vibe', model },
     },
     pipeline: { enabled: true },
   }, null, 2));
   writeFileSync(join(repo, '.acp', 'pipelines', 'smoke.yaml'), `
 version: 3
 id: docker-sandbox-smoke
-title: Docker Sandbox Codex smoke
+title: Docker Sandbox Vibe smoke
 promotion: ${action === 'promote' ? 'auto-apply' : 'auto-reject'}
 nodes:
   - id: implement
-    agent: Codex Sandbox
     prompt: >-
       Create exactly one file named ${marker} containing exactly
-      docker sandbox codex smoke followed by one newline. Do not modify any
+      docker sandbox vibe smoke followed by one newline. Do not modify any
       other file and do not commit.
     policy:
       filesystem: workspace-write
@@ -103,6 +103,8 @@ nodes:
     'run',
     'docker-sandbox-smoke',
     'Run the Docker Sandbox smoke path.',
+    '--agent',
+    'Vibe Sandbox',
     '--cwd', repo,
     '--json',
   ], { capture: true, acceptedStatuses: action === 'promote' ? [0] : [2] });
@@ -112,7 +114,7 @@ nodes:
   }
 
   if (action === 'promote') {
-    if (readFileSync(join(repo, marker), 'utf8') !== 'docker sandbox codex smoke\n') {
+    if (readFileSync(join(repo, marker), 'utf8') !== 'docker sandbox vibe smoke\n') {
       throw new Error('Slopify Promotion did not apply the expected marker content.');
     }
     if (run('git', ['rev-parse', 'HEAD'], { capture: true }).stdout === pipelineBase) {

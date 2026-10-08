@@ -6,15 +6,22 @@ import type {
   SubprocessResult,
 } from './runtime.js';
 
+/** Constante SLOPIFY_GIT_NAME qui fixe un contrat partagé du pipeline. */
 export const SLOPIFY_GIT_NAME = 'Slopify';
+/** Constante SLOPIFY_GIT_EMAIL qui fixe un contrat partagé du pipeline. */
 export const SLOPIFY_GIT_EMAIL = 'slopify@localhost';
 
+/** Constante PROMOTION_POLICIES qui fixe un contrat partagé du pipeline. */
 export const PROMOTION_POLICIES = ['discard', 'ask', 'auto-apply', 'auto-reject'] as const;
 
+/** Type métier PromotionPolicy utilisé pour représenter une étape ou un résultat du cycle de vie du pipeline. */
 export type PromotionPolicy = typeof PROMOTION_POLICIES[number];
+/** Type métier PromotionDecision utilisé pour représenter une étape ou un résultat du cycle de vie du pipeline. */
 export type PromotionDecision = 'apply' | 'reject' | 'cancel';
+/** Type métier PromotionStatus utilisé pour représenter une étape ou un résultat du cycle de vie du pipeline. */
 export type PromotionStatus = 'applied' | 'no_changes' | 'rejected' | 'cancelled';
 
+/** Contrat fonctionnel de AgentCheckpoint dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface AgentCheckpoint {
   runId: string;
   nodeId: string;
@@ -26,6 +33,7 @@ export interface AgentCheckpoint {
   ref: string;
 }
 
+/** Contrat fonctionnel de AgentCheckpointPreview dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface AgentCheckpointPreview {
   baseCommit: string;
   checkpointCommit: string;
@@ -34,12 +42,14 @@ export interface AgentCheckpointPreview {
   diff: string;
 }
 
+/** Contrat fonctionnel de AgentCheckpointResult dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface AgentCheckpointResult {
   checkpointStatus: 'checkpointed' | 'no_changes';
   checkpoint: AgentCheckpoint;
   preview: AgentCheckpointPreview;
 }
 
+/** Contrat fonctionnel de IntegrationConflict dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface IntegrationConflict {
   runId: string;
   baseCommit: string;
@@ -49,9 +59,11 @@ export interface IntegrationConflict {
   files: string[];
 }
 
+/** Composant IntegrationConflictError qui coordonne une étape observable du cycle de vie du pipeline et en préserve les invariants. */
 export class IntegrationConflictError extends Error {
   readonly code = 'integration_conflict';
 
+/** Initialise ce composant pour le cycle de vie du pipeline concerné. */
   constructor(readonly conflict: IntegrationConflict) {
     const checkpoints = conflict.checkpoints
       .map(checkpoint => `${checkpoint.nodeId}#${checkpoint.attempt}`)
@@ -65,6 +77,7 @@ export class IntegrationConflictError extends Error {
   }
 }
 
+/** Contrat fonctionnel de CreateAgentCheckpointInput dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface CreateAgentCheckpointInput {
   workspaceCwd: string;
   sandboxName: string;
@@ -75,6 +88,7 @@ export interface CreateAgentCheckpointInput {
   signal?: AbortSignal;
 }
 
+/** Contrat fonctionnel de PipelineChangeSet dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface PipelineChangeSet {
   runId: string;
   baseCommit: string;
@@ -83,6 +97,7 @@ export interface PipelineChangeSet {
   integratedNodeIds: string[];
 }
 
+/** Contrat fonctionnel de PipelineChangeSetPreview dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface PipelineChangeSetPreview {
   baseCommit: string;
   changeSetCommit: string;
@@ -91,11 +106,13 @@ export interface PipelineChangeSetPreview {
   diff: string;
 }
 
+/** Contrat fonctionnel de PipelineChangeSetResult dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface PipelineChangeSetResult {
   changeSet: PipelineChangeSet;
   preview: PipelineChangeSetPreview;
 }
 
+/** Contrat fonctionnel de IntegrateAgentCheckpointsInput dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface IntegrateAgentCheckpointsInput {
   workspaceCwd: string;
   runId: string;
@@ -103,15 +120,18 @@ export interface IntegrateAgentCheckpointsInput {
   signal?: AbortSignal;
 }
 
+/** Contrat fonctionnel de PromotionRequest dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface PromotionRequest {
   changeSet: PipelineChangeSet;
   preview: PipelineChangeSetPreview;
 }
 
+/** Type métier PromotionDecider utilisé pour représenter une étape ou un résultat du cycle de vie du pipeline. */
 export type PromotionDecider = (
   request: PromotionRequest,
 ) => PromotionDecision | Promise<PromotionDecision>;
 
+/** Contrat fonctionnel de PromotePipelineChangeSetInput dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface PromotePipelineChangeSetInput extends PromotionRequest {
   workspaceCwd: string;
   policy: PromotionPolicy;
@@ -119,6 +139,7 @@ export interface PromotePipelineChangeSetInput extends PromotionRequest {
   signal?: AbortSignal;
 }
 
+/** Contrat fonctionnel de PromotionResult dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface PromotionResult extends PromotionRequest {
   status: PromotionStatus;
 }
@@ -133,8 +154,16 @@ export interface PromotionResult extends PromotionRequest {
  * Voir `docs/adr/0002-promote-one-multi-agent-change-set.md`.
  */
 export class GitPromotion {
+/** Initialise ce composant pour le cycle de vie du pipeline concerné. */
   constructor(private readonly execute: SubprocessExecutor) {}
 
+/**
+ * Supprime les refs privées des Agent Checkpoints devenus obsolètes après intégration.
+ * Le workspace hôte et ses branches publiques ne sont jamais touchés.
+ * @param workspaceCwd Workspace dont les refs privées doivent être nettoyées.
+ * @param checkpoints Checkpoints dont les refs peuvent être supprimées.
+ * @throws Error si Git ne peut pas supprimer une ref.
+ */
   async deleteAgentCheckpoints(
     workspaceCwd: string,
     checkpoints: readonly AgentCheckpointResult[],
@@ -149,6 +178,13 @@ export class GitPromotion {
     }
   }
 
+/**
+ * Fige les changements d'un Sandbox Run en Agent Checkpoint durable et inspectable.
+ * Le checkpoint est publié sur une ref privée ; il ne modifie pas le workspace hôte.
+ * @param input Identité du run, de la Tâche d'implémentation et de la sandbox à figer.
+ * @returns Le checkpoint et son aperçu de fichiers et de diff.
+ * @throws Error si le commit, la ref ou la lecture du checkpoint échoue.
+ */
   async createAgentCheckpoint(input: CreateAgentCheckpointInput): Promise<AgentCheckpointResult> {
     const sandboxGit = (args: string[]): SubprocessRequest => ({
       command: 'sbx',
@@ -176,7 +212,9 @@ export class GitPromotion {
     const ref = `refs/slopify/checkpoints/${input.sandboxName}`;
     await this.requireSuccess({
       command: 'git',
-      args: ['fetch', '--no-tags', remote, `HEAD:${ref}`],
+      // Un nouveau tour d'entretien peut remplacer le checkpoint frère sur cette
+      // ref privée. Le forçage reste limité à cette ref interne, jamais à une branche hôte.
+      args: ['fetch', '--no-tags', remote, `+HEAD:${ref}`],
       cwd: input.workspaceCwd,
       stdin: 'ignore',
       signal: input.signal,
@@ -234,6 +272,13 @@ export class GitPromotion {
     };
   }
 
+/**
+ * Rejoue les Agent Checkpoints sur leur base commune pour construire un Pipeline Change Set.
+ * Un Integration Conflict suspend l'intégration avec les checkpoints et fichiers concernés.
+ * @param input Checkpoints d'un même run partageant la même base de pipeline.
+ * @returns Le Pipeline Change Set privé et son aperçu intégrable.
+ * @throws Error si les checkpoints sont vides, incohérents ou non fusionnables.
+ */
   async integrateAgentCheckpoints(input: IntegrateAgentCheckpointsInput): Promise<PipelineChangeSetResult> {
     if (input.checkpoints.length === 0) {
       throw new Error('Cannot integrate an empty Agent Checkpoint collection.');
@@ -400,6 +445,13 @@ export class GitPromotion {
     };
   }
 
+/**
+ * Applique la politique de Promotion au Pipeline Change Set déjà intégré.
+ * Seule cette étape peut avancer le workspace hôte ; `ask` délègue la décision à l'appelant.
+ * @param input Change Set, aperçu, politique et décideur éventuel de Promotion.
+ * @returns Le statut observable : Promotion, Rejection, Cancellation ou absence de changements.
+ * @throws Error si la base Git ou la propreté du workspace ne sont plus valides.
+ */
   async promotePipelineChangeSet(input: PromotePipelineChangeSetInput): Promise<PromotionResult> {
     const request: PromotionRequest = {
       changeSet: input.changeSet,
@@ -490,6 +542,7 @@ export class GitPromotion {
     return { ...request, status: 'applied' };
   }
 
+/** Valide ou résout les données de cette étape du cycle de vie ; les entrées invalides restent signalées au point d'appel. */
   private async resolveDecision(
     input: PromotePipelineChangeSetInput,
     request: PromotionRequest,
@@ -518,6 +571,7 @@ export class GitPromotion {
     }
   }
 
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   private async requireSuccess(request: SubprocessRequest, action: string): Promise<SubprocessResult> {
     const result = await this.execute(request);
     if (result.exitCode !== 0) {
@@ -528,6 +582,9 @@ export class GitPromotion {
   }
 }
 
+/** Point d'entrée integrationConflictFiles du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function integrationConflictFiles(result: SubprocessResult): string[] {
   const files = new Set<string>();
   const output = `${result.stdout}\n${result.stderr}`;
@@ -545,6 +602,9 @@ function integrationConflictFiles(result: SubprocessResult): string[] {
   return [...files].sort();
 }
 
+/** Point d'entrée pipelineChangeSetRef du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function pipelineChangeSetRef(runId: string): string {
   const normalized = runId.toLowerCase().replace(/[^a-z0-9._-]+/gu, '-').replace(/^-+|-+$/gu, '') || 'run';
   const hash = createHash('sha256').update(runId).digest('hex').slice(0, 10);

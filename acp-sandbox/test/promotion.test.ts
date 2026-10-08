@@ -3,16 +3,18 @@ import test from 'node:test';
 
 import {
   GitPromotion,
-  PROMOTION_POLICIES,
   type AgentCheckpointResult,
-  type PipelineChangeSet,
   type PipelineChangeSetPreview,
   type PromotionDecision,
-  type PromotionPolicy,
   type SubprocessExecutor,
   type SubprocessRequest,
   type SubprocessResult,
 } from '../src/index.js';
+import {
+  PROMOTION_POLICIES,
+  type PipelineChangeSet,
+  type PromotionPolicy,
+} from '../src/gitPromotion.js';
 
 function checkpoint(nodeId: string, attempt = 1, changed = true): AgentCheckpointResult {
   return {

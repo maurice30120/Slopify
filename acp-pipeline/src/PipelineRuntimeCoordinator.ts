@@ -22,18 +22,21 @@ import type {
   PipelineRuntimeSnapshot,
 } from "./PipelineV3Types";
 
+/** Contrat fonctionnel de PipelineChangeSetFinalizingAdapter dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 interface PipelineChangeSetFinalizingAdapter extends PipelineRuntimeAdapter {
   finalizePipelineChangeSet?(
     input: PipelineChangeSetFinalizationInput,
   ): Promise<PipelineChangeSetFinalizationResult | undefined>;
 }
 
+/** Contrat fonctionnel de PipelineChangeSetFinalizingSessionFactory dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 interface PipelineChangeSetFinalizingSessionFactory {
   finalizePipelineChangeSet?(
     input: PipelineChangeSetFinalizationInput,
   ): Promise<PipelineChangeSetFinalizationResult | undefined>;
 }
 
+/** Type métier CoordinatedPipelineRuntimeResult utilisé pour représenter une étape ou un résultat du cycle de vie du pipeline. */
 export type CoordinatedPipelineRuntimeResult = PipelineRuntimeResult & {
   promotion?: PipelineChangeSetFinalizationResult["promotion"];
   changeSet?: PipelineChangeSetFinalizationResult;
@@ -55,6 +58,7 @@ export class PipelineRuntime extends CorePipelineRuntime {
   private readonly finalizer?: PipelineChangeSetFinalizingAdapter["finalizePipelineChangeSet"];
   private readonly completionBuffer: PipelineCompletionBuffer;
 
+/** Initialise ce composant pour le cycle de vie du pipeline concerné. */
   constructor(
     adapter: PipelineRuntimeAdapter,
     options: PipelineRuntimeOptions = {},
@@ -74,6 +78,7 @@ export class PipelineRuntime extends CorePipelineRuntime {
     }
   }
 
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   override async start(
     program: CompiledPipelineProgram,
     options: PipelineRuntimeStartOptions = {},
@@ -90,6 +95,7 @@ export class PipelineRuntime extends CorePipelineRuntime {
     }
   }
 
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   override async resume(
     runId: string,
     decision: PipelineResumeDecision,
@@ -140,6 +146,7 @@ export class PipelineRuntime extends CorePipelineRuntime {
     return this.finalizeTerminalResult(result, program);
   }
 
+/** Termine cette étape du cycle de vie et libère les ressources qui lui appartiennent. */
   override async cancel(runId: string): Promise<PipelineRuntimeResult> {
     try {
       const result = await super.cancel(runId);
@@ -150,6 +157,7 @@ export class PipelineRuntime extends CorePipelineRuntime {
     }
   }
 
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   override async recover(runId: string): Promise<PipelineRuntimeResult> {
     const before = await this.inspect(runId);
     const program = before
@@ -159,6 +167,7 @@ export class PipelineRuntime extends CorePipelineRuntime {
     return this.runRecoveryAttempt(runId, program, () => super.recover(runId));
   }
 
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   private async runRecoveryAttempt(
     runId: string,
     program: CompiledPipelineProgram | undefined,
@@ -183,11 +192,13 @@ export class PipelineRuntime extends CorePipelineRuntime {
     }
   }
 
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   private async suspendIntegrationConflict(error: PipelineIntegrationConflictError): Promise<PipelineRuntimeResult> {
     const pause = integrationConflictPause(error);
     return this.suspendRecoveredRun(error.conflict.runId, pause, snapshot => annotateIntegrationConflict(snapshot, error));
   }
 
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   private async finalizeTerminalResult(
     initialResult: PipelineRuntimeResult,
     program: CompiledPipelineProgram,
@@ -268,6 +279,7 @@ export class PipelineRuntime extends CorePipelineRuntime {
         snapshot.status = "paused";
         snapshot.pendingPause = pause;
         snapshot.updatedAt = new Date().toISOString();
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
         annotateIntegrationConflict(snapshot, error);
         await this.completionBuffer.pause(result.runId, snapshot, pause);
         return {
@@ -296,11 +308,15 @@ export class PipelineRuntime extends CorePipelineRuntime {
     }
   }
 
+/** Termine cette étape du cycle de vie et libère les ressources qui lui appartiennent. */
   private cleanupRun(runId: string): void {
     this.programsByRunId.delete(runId);
   }
 }
 
+/** Point d'entrée annotateIntegrationConflict du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function annotateIntegrationConflict(
   snapshot: PipelineRuntimeSnapshot,
   error: PipelineIntegrationConflictError,
@@ -318,18 +334,21 @@ function annotateIntegrationConflict(
 
 type CompletionDeliveryPhase = "buffered" | "snapshot_persisted" | "event_persisted" | "event_emitted";
 
+/** Contrat fonctionnel de BufferedCompletion dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 interface BufferedCompletion {
   snapshot?: PipelineRuntimeSnapshot;
   event?: PipelineRuntimeEvent;
   phase: CompletionDeliveryPhase;
 }
 
+/** Composant PipelineCompletionBuffer qui coordonne une étape observable du cycle de vie du pipeline et en préserve les invariants. */
 class PipelineCompletionBuffer {
   private readonly completions = new Map<string, BufferedCompletion>();
   private readonly backingStore: PipelineRunStore;
   private readonly fallbackStore?: InMemoryPipelineRunStore;
   readonly store: PipelineRunStore;
 
+/** Initialise ce composant pour le cycle de vie du pipeline concerné. */
   constructor(
     targetStore: PipelineRunStore | undefined,
     private readonly targetOnEvent: PipelineRuntimeOptions["onEvent"],
@@ -357,6 +376,7 @@ class PipelineCompletionBuffer {
     };
   }
 
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   async captureEvent(event: PipelineRuntimeEvent): Promise<void> {
     if (event.type === "completed") {
       this.completion(event.runId).event = { ...event };
@@ -365,16 +385,19 @@ class PipelineCompletionBuffer {
     await this.targetOnEvent?.(event);
   }
 
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   bufferCompletion(snapshot: PipelineRuntimeSnapshot): void {
     const completion = this.completion(snapshot.runId);
     completion.snapshot = structuredClone(snapshot);
     completion.event = { runId: snapshot.runId, type: "completed", at: snapshot.updatedAt };
   }
 
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   updateCompletionSnapshot(snapshot: PipelineRuntimeSnapshot): void {
     this.completion(snapshot.runId).snapshot = structuredClone(snapshot);
   }
 
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   async persistFinalizingSnapshot(snapshot: PipelineRuntimeSnapshot): Promise<void> {
     const durable = structuredClone(snapshot);
     durable.status = "running";
@@ -382,6 +405,7 @@ class PipelineCompletionBuffer {
     this.updateCompletionSnapshot(snapshot);
   }
 
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   async flush(runId: string): Promise<void> {
     const completion = this.completions.get(runId);
     if (!completion) {
@@ -403,6 +427,7 @@ class PipelineCompletionBuffer {
     await this.releaseEphemeralRun(runId);
   }
 
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   async fail(
     runId: string,
     snapshot: PipelineRuntimeSnapshot,
@@ -418,6 +443,7 @@ class PipelineCompletionBuffer {
     await this.persistAndEmitTransition(runId, snapshot, event);
   }
 
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   async pause(
     runId: string,
     snapshot: PipelineRuntimeSnapshot,
@@ -433,6 +459,7 @@ class PipelineCompletionBuffer {
     await this.persistAndEmitTransition(runId, snapshot, event);
   }
 
+/** Termine cette étape du cycle de vie et libère les ressources qui lui appartiennent. */
   async cancel(
     runId: string,
     snapshot: PipelineRuntimeSnapshot,
@@ -447,6 +474,7 @@ class PipelineCompletionBuffer {
     await this.persistAndEmitTransition(runId, snapshot, event);
   }
 
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   private async persistAndEmitTransition(
     runId: string,
     snapshot: PipelineRuntimeSnapshot,
@@ -461,6 +489,7 @@ class PipelineCompletionBuffer {
     }
   }
 
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   private completion(runId: string): BufferedCompletion {
     const existing = this.completions.get(runId);
     if (existing) {
@@ -471,11 +500,15 @@ class PipelineCompletionBuffer {
     return created;
   }
 
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   async releaseEphemeralRun(runId: string): Promise<void> {
     await this.fallbackStore?.delete(runId);
   }
 }
 
+/** Point d'entrée integrationConflictPause du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function integrationConflictPause(error: PipelineIntegrationConflictError): NonNullable<PipelineRuntimeSnapshot["pendingPause"]> {
   const conflict = error.conflict;
   const checkpointLines = conflict.checkpoints
@@ -510,6 +543,9 @@ function integrationConflictPause(error: PipelineIntegrationConflictError): NonN
   };
 }
 
+/** Point d'entrée sandboxResumeDivergencePause du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function sandboxResumeDivergencePause(
   error: PipelineSandboxResumeDivergenceError,
 ): NonNullable<PipelineRuntimeSnapshot["pendingPause"]> {
@@ -531,6 +567,9 @@ function sandboxResumeDivergencePause(
   };
 }
 
+/** Point d'entrée selectedSandboxRuns du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function selectedSandboxRuns(
   snapshot: PipelineRuntimeSnapshot,
   program: CompiledPipelineProgram,

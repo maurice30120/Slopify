@@ -1,0 +1,113 @@
+npm notice run slopify@0.1.0 test
+npm notice run npm run build && node --test "dist/test/**/*.test.js"
+npm notice run slopify@0.1.0 build
+npm notice run npm --prefix .. run build -w @acp-client/workspace && npm --prefix .. exec -- tsc -p tsconfig.json --incremental false
+npm notice run @acp-client/workspace@0.0.0 build
+npm notice run tsc -p tsconfig.json --incremental false
+npm notice run slopify-workspace@0.1.0 npx
+npm notice run 'tsc' -p tsconfig.json --incremental false
+✔ parses the run contract with an explicit agent (1.65175ms)
+✔ resolves cwd portably (0.078084ms)
+✔ requires an agent for run and resume (0.225416ms)
+✔ requires a pipeline and prompt (0.056458ms)
+✔ parses list json and verbose options without accepting run-only flags (0.076417ms)
+✔ keeps prompt-looking options after the positional delimiter (0.070708ms)
+✔ requires a value for --cwd (0.04875ms)
+✔ --help returns help command (0.041125ms)
+✔ -h returns help command (0.045375ms)
+✔ empty argv returns help command (0.088917ms)
+✔ unknown command throws error with help text (0.064334ms)
+✔ unknown option throws error (0.119875ms)
+✔ run requires both pipeline name and prompt (0.053625ms)
+✔ list with all valid options (0.039458ms)
+✔ run with all valid options (0.04575ms)
+✔ run with -y short option (0.062292ms)
+✔ parses crash recovery by persisted run id (0.044ms)
+✔ parses --keep-sandboxes independently from --yes (0.03525ms)
+✔ positional delimiter stops option parsing (0.030125ms)
+✔ shows referenced spec and tickets but approves the compact handoff (14.727875ms)
+✔ fails before approval when a required workspace handoff has no files (11.704375ms)
+✔ runs an injected backend and forwards agent metadata (16.494334ms)
+✔ binds the selected CLI agent to agentless pipeline nodes (5.534542ms)
+✔ resumes a persisted pipeline pause after the CLI host is reconstructed (9.484667ms)
+✔ surfaces an Integration Conflict and retries its node through the CLI host (11.463708ms)
+✔ passes workspace services to the backend factory (0.579042ms)
+✔ preflights a workspace-writing pipeline before creating run artifacts (0.597166ms)
+✔ requires a runner from the host or backend (0.441542ms)
+✔ logs agent failures with RPC details (7.700333ms)
+✔ clears run logs through the backend hook (8.249916ms)
+✔ rejects resume and cancel for unknown runs (0.747083ms)
+✖ loads the simple, moyen, and full pipeline levels from the workspace catalog (11.701208ms)
+✔ keeps the existing specialized pipelines available (4.42675ms)
+✔ answers a v3 question then approves the next pause (7.7185ms)
+✔ recovers a persisted running pipeline instead of starting a new one (9.125583ms)
+✔ translates /done into complete-interview for v3 questions (5.819167ms)
+✔ --yes auto-approves approvals but never promotions (3.920083ms)
+✔ json mode prints the normalized final result without pause prompts (6.487917ms)
+✔ plain mode pretty prints object artifacts (3.765833ms)
+✔ reports failed and cancelled final results on stderr (7.584542ms)
+✔ reports a rejected Pipeline Change Set distinctly from cancellation (3.311584ms)
+✔ reports failed final results with node and attempt context when available (3.893584ms)
+✔ keeps asking until a question receives a non-empty answer (3.649333ms)
+✔ formatPipelineList with non-empty list in text mode produces stable format (0.094709ms)
+✔ formatPipelineList with non-empty list in JSON mode produces valid JSON (0.0635ms)
+✔ formatPipelineList with empty list in text mode shows clear message (0.03325ms)
+✔ formatPipelineList with empty list in JSON mode returns empty array (0.025292ms)
+✔ formatPipelineList with single pipeline in text mode (0.033125ms)
+✔ creates the standalone CLI backend without loading an editor plugin (4.286292ms)
+✔ rejects a CLI-selected agent that is not configured in the workspace (1.746708ms)
+✔ rejects invalid workspace agent configuration before running a pipeline (1.055583ms)
+✔ formats every retained sandbox command as copyable CLI output (0.103875ms)
+✔ formats the complete Pipeline Change Set preview for the Promotion decision (0.088083ms)
+✔ dispatches one implement-ticket run per ticket before review (27.272584ms)
+✔ fails before child execution when a Ticket Graph node has no Markdown adapter (20.49725ms)
+✔ cancels pending questions when stdin closes (1.979125ms)
+✔ ask returns user input with whitespace trimmed (0.323916ms)
+✔ confirm with y returns true (0.153791ms)
+✔ confirm with n returns false (0.122792ms)
+✔ confirm with yes returns true (0.152834ms)
+✔ confirm with oui returns true (0.108541ms)
+✔ confirm with o returns true (0.090333ms)
+✔ confirm with empty string returns false (0.1805ms)
+✔ confirm with message displays full message (0.155292ms)
+✔ write outputs to stdout with newline (0.146583ms)
+✔ writeError outputs to stderr with newline (0.094542ms)
+ℹ tests 66
+ℹ suites 0
+ℹ pass 65
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 196.062083
+
+✖ failing tests:
+
+test at dist/test/pipelineLevels.test.js:5:1
+✖ loads the simple, moyen, and full pipeline levels from the workspace catalog (11.701208ms)
+  AssertionError [ERR_ASSERTION]: sequential delivery requires an authoritative Ticket Graph
+  + actual - expected
+  
+  + 'acp.workspace-files/v1'
+  - 'acp.ticket-graph/v1'
+         ^
+  
+      at TestContext.<anonymous> (file:///Users/dhuyet/Documents/POC/Slopify/slopify/dist/test/pipelineLevels.test.js:45:16)
+      at Test.runInAsyncScope (node:async_hooks:227:14)
+      at Test.run (node:internal/test_runner/test:1325:25)
+      at Test.start (node:internal/test_runner/test:1191:17)
+      at startSubtestAfterBootstrap (node:internal/test_runner/harness:385:17) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: 'acp.workspace-files/v1',
+    expected: 'acp.ticket-graph/v1',
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+npm error Lifecycle script `test` failed with error:
+npm error code 1
+npm error path /Users/dhuyet/Documents/POC/Slopify/slopify
+npm error workspace slopify@0.1.0
+npm error location /Users/dhuyet/Documents/POC/Slopify/slopify
+npm error command failed
+npm error command sh -c npm run build && node --test "dist/test/**/*.test.js"

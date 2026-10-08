@@ -57,38 +57,48 @@ import type {
   WorkspaceRuntimeOptions,
 } from '../types.js';
 
+/** Contrat fonctionnel de WorkspaceRuntime dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface WorkspaceRuntime {
   readonly programs: readonly CompiledPipelineProgram[];
   readonly runAgent: PipelineAgentRunner;
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   preflightPipeline(program: CompiledPipelineProgram, runId: string): Promise<void>;
+/** Termine cette étape du cycle de vie et libère les ressources qui lui appartiennent. */
   clearRunLogs(): void;
 }
 
+/** Contrat fonctionnel de WorkspaceConnectorOverrides dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface WorkspaceConnectorOverrides {
   native?: AcpConnector;
 }
 
+/** Contrat fonctionnel de CreateWorkspaceRuntimeOptions dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface CreateWorkspaceRuntimeOptions extends WorkspaceRuntimeOptions {
   connectorOverrides?: WorkspaceConnectorOverrides;
   /** Point d'injection interne et de test pour une configuration déjà chargée. */
   resolvedCatalog?: AgentCatalog;
   /** Point d'injection interne et de test pour exercer Docker Sandbox sans microVM. */
   sandboxExecutor?: SubprocessExecutor;
-  /** Preserve every Docker Sandbox created by this runtime. */
+  /** Conserve chaque Docker Sandbox créé par ce runtime pour le diagnostic du run. */
   keepSandboxes?: boolean;
-  /** Report a retained sandbox after its diagnostics have been exported. */
+  /** Signale une sandbox conservée après l'export de ses diagnostics. */
   onSandboxRetained?: (sandbox: RetainedSandbox) => void | Promise<void>;
 }
 
 /**
- * Maintient la frontière entre découverte du workspace, adaptation Pipeline V3
- * et sélection du connecteur. Le pipeline reste ainsi indépendant de la CLI
- * Docker et des détails propres aux runtimes d'agents.
- *
- * Voir `docs/adr/0003-keep-acp-as-the-sandbox-runtime-boundary.md`.
+ * Compose le runtime du workspace, le catalogue d'agents et la frontière Docker Sandbox.
+ * Les nœuds d'écriture produisent des Agent Checkpoints ; la Promotion du Pipeline Change Set
+ * reste déléguée à la politique du pipeline et à l'hôte.
+ * @param options Configuration du workspace, hôte, agent et connecteurs de test.
+ * @returns Une façade de runtime utilisable par la CLI ou un hôte d'intégration.
+ * @throws Error si le catalogue d'agents ou les politiques du workspace sont invalides.
  */
 export function createWorkspaceRuntime(options: CreateWorkspaceRuntimeOptions): WorkspaceRuntime {
   const catalog = options.resolvedCatalog ?? loadValidCatalog(options.workspaceCwd);
+  if (options.agentName) {
+/** Valide ou résout les données de cette étape du cycle de vie ; les entrées invalides restent signalées au point d'appel. */
+    resolveAgent(catalog, options.agentName);
+  }
   const programs = getPipelinePrograms(options.workspaceCwd, options.host.logger);
   const runner = new AcpRunner();
   const sandboxRuntime = new DockerSandboxRuntime(options.sandboxExecutor, {
@@ -119,6 +129,7 @@ export function createWorkspaceRuntime(options: CreateWorkspaceRuntimeOptions): 
           runId: input.runId ?? 'run',
           nodeId: input.nodeId ?? input.agentName,
           attempt: input.attempt ?? 1,
+          agent: config.agent,
           model: config.model,
           effort: config.effort,
           timeoutMs: resolveTimeouts(catalog.config.pipeline.timeouts).promptMs,
@@ -175,7 +186,10 @@ export function createWorkspaceRuntime(options: CreateWorkspaceRuntimeOptions): 
         checkpoints.set(nodeId, attempts);
         checkpointsByRunId.set(runId, checkpoints);
       }
-      return { text: acpResult.text, promotion: result.status };
+      return {
+        text: acpResult.text,
+        promotion: result.checkpointStatus === 'no_changes' ? ('no_changes' as const) : undefined,
+      };
     }
     const result = await runner.run<PipelinePromotionStatus | undefined>({
       agentName: input.agentName,
@@ -209,27 +223,34 @@ export function createWorkspaceRuntime(options: CreateWorkspaceRuntimeOptions): 
     runAgent,
     preflightPipeline: async (program, runId) => {
       const plannedSandboxNames = program.nodes.flatMap(node => {
-        if (
-          node.kind !== 'agent'
-          || !node.agent
-          || mapPolicyToLegacySideEffects(node.policy) !== 'workspace'
-          || resolveAgent(catalog, node.agent).transport !== 'sandbox'
-        ) return [];
+        if (node.kind !== 'agent') return [];
+        if (!node.agent) {
+          throw new Error(`Pipeline node "${node.id}" has no selected ACP agent.`);
+        }
+        const config = resolveAgent(catalog, node.agent);
+        if (config.transport === 'sandbox' && node.policy.network === 'enabled') {
+          throw new Error(`node "${node.id}" network policy is not supported for Docker Sandbox Runs; configure the global policy with "sbx policy".`);
+        }
+        if (mapPolicyToLegacySideEffects(node.policy) !== 'workspace' || config.transport !== 'sandbox') {
+          return [];
+        }
         return [stableSandboxName(runId, node.id, 1)];
       });
       if (plannedSandboxNames.length > 0) {
-        await sandboxRuntime.preflightWorkspace(
-          options.workspaceCwd,
-          true,
-          undefined,
+        await sandboxRuntime.preflightWorkspace({
+          cwd: options.workspaceCwd,
+          workspaceEffects: true,
           plannedSandboxNames,
-        );
+        });
       }
     },
     clearRunLogs: () => fs.rmSync(path.join(options.workspaceCwd, '.acp', 'logs', 'sandboxes'), { recursive: true, force: true }),
   };
 }
 
+/** Point d'entrée toAgentCheckpointResult du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function toAgentCheckpointResult(dependency: NonNullable<PipelineAgentRunInput['dependencyCheckpoints']>[number]): AgentCheckpointResult {
   return {
     checkpointStatus: dependency.checkpoint.status,
@@ -247,6 +268,7 @@ function toAgentCheckpointResult(dependency: NonNullable<PipelineAgentRunInput['
   };
 }
 
+/** Contrat fonctionnel de FinalizePipelineChangeSetOptions dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 interface FinalizePipelineChangeSetOptions {
   input: PipelineChangeSetFinalizationInput;
   checkpointsByRunId: Map<string, Map<string, Map<number, AgentCheckpointResult>>>;
@@ -360,13 +382,16 @@ async function finalizePipelineChangeSet(
     if (error instanceof IntegrationConflictError) {
       throw toPipelineIntegrationConflict(error.conflict, error.conflict.incomingCheckpoint.nodeId);
     }
-    // Drop only volatile state. Durable refs and snapshot checkpoints remain
-    // available for deterministic recovery after a process restart.
+    // Seul l'état volatil est supprimé. Les refs durables et les checkpoints du snapshot restent
+    // disponibles pour une reprise déterministe après un redémarrage du processus.
     if (input.snapshot) options.checkpointsByRunId.delete(input.runId);
     throw error;
   }
 }
 
+/** Point d'entrée toPipelineIntegrationConflict du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function toPipelineIntegrationConflict(
   conflict: IntegrationConflict,
   retryNodeId: string,
@@ -384,6 +409,9 @@ function toPipelineIntegrationConflict(
   });
 }
 
+/** Point d'entrée createSandboxExtensionHandler du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function createSandboxExtensionHandler(
   runtime: DockerSandboxRuntime,
   promotion: GitPromotion,
@@ -468,10 +496,16 @@ async function callSandboxExtension<TRequest, TResponse>(
   throw error;
 }
 
+/** Point d'entrée toExtensionRecord du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function toExtensionRecord(value: object): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
+/** Point d'entrée toPipelineSandboxRunSnapshot du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function toPipelineSandboxRunSnapshot(state: SandboxRunState): PipelineSandboxRunSnapshot {
   return {
     sandboxName: state.sandboxName,
@@ -496,6 +530,9 @@ function toPipelineSandboxRunSnapshot(state: SandboxRunState): PipelineSandboxRu
   };
 }
 
+/** Point d'entrée toSandboxRunState du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function toSandboxRunState(state: PipelineSandboxRunSnapshot): SandboxRunState {
   return {
     sandboxName: state.sandboxName,
@@ -527,6 +564,9 @@ function toSandboxRunState(state: PipelineSandboxRunSnapshot): SandboxRunState {
   };
 }
 
+/** Point d'entrée checkpointsFromSnapshot du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function checkpointsFromSnapshot(
   snapshot: PipelineRuntimeSnapshot | undefined,
   runId: string,
@@ -580,6 +620,9 @@ async function decidePipelinePromotion(
   return 'cancel';
 }
 
+/** Point d'entrée loadValidCatalog du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function loadValidCatalog(workspaceCwd: string): AgentCatalog {
   const catalog = loadAgentCatalog(workspaceCwd);
   if (catalog.errors.length > 0) {
@@ -588,6 +631,9 @@ function loadValidCatalog(workspaceCwd: string): AgentCatalog {
   return catalog;
 }
 
+/** Point d'entrée resolveAgent du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function resolveAgent(catalog: AgentCatalog, agentName: string): AgentConfigEntry {
   const config = catalog.agents[agentName];
   if (!config) {
@@ -611,6 +657,9 @@ async function selectSandboxNetworkPolicy(
   return choices.find(choice => choice === selected);
 }
 
+/** Point d'entrée composePrompt du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function composePrompt(input: PipelineAgentRunInput, logger: WorkspaceRuntimeHost['logger']) {
   const renderSkills = (skillNames: readonly string[]): string => {
     if (skillNames.length === 0) return '';

@@ -22,12 +22,14 @@ import { SessionUpdateHandler } from './sessionUpdateHandler.js';
 import { TerminalHandler } from './terminalHandler.js';
 import type { Logger, RuntimePermissionContext } from '../types.js';
 
+/** Contrat fonctionnel de ConnectionInfo dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface ConnectionInfo {
   connection: ClientSideConnection;
   client: AcpClient;
   initResponse: InitializeResponse;
 }
 
+/** Contrat fonctionnel de ConnectionManagerOptions dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface ConnectionManagerOptions {
   logger?: Logger;
   getPermissionContext: () => RuntimePermissionContext | undefined;
@@ -35,14 +37,17 @@ export interface ConnectionManagerOptions {
   timeouts?: PartialAcpOperationTimeouts;
 }
 
+/** Composant ConnectionManager qui coordonne une étape observable du cycle de vie du pipeline et en préserve les invariants. */
 export class ConnectionManager {
   private readonly connections = new Map<string, ConnectionInfo>();
 
+/** Initialise ce composant pour le cycle de vie du pipeline concerné. */
   constructor(
     private readonly sessionUpdateHandler: SessionUpdateHandler,
     private readonly options: ConnectionManagerOptions,
   ) {}
 
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   async connect(
     agentId: string,
     process: ChildProcess,
@@ -78,8 +83,10 @@ export class ConnectionManager {
     const initResponse = await withProcessGuard(
       'initialize',
       processExit,
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
       withTimeout(
         'initialize',
+/** Valide ou résout les données de cette étape du cycle de vie ; les entrées invalides restent signalées au point d'appel. */
         resolveTimeouts(this.options.timeouts).initializeMs,
         connection.initialize({
           protocolVersion: PROTOCOL_VERSION,
@@ -111,10 +118,7 @@ export class ConnectionManager {
     return info;
   }
 
-  removeConnection(agentId: string): void {
-    this.connections.delete(agentId);
-  }
-
+/** Termine cette étape du cycle de vie et libère les ressources qui lui appartiennent. */
   dispose(): void {
     for (const info of this.connections.values()) {
       info.client.dispose();

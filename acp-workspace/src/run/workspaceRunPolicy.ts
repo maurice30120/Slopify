@@ -2,43 +2,56 @@ import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { tmpdir } from 'node:os';
+import { GitPromotion, createNodeSubprocessExecutor, type AgentCheckpointResult } from '@acp-client/sandbox';
 
 import type {
   PipelineArtifact,
   PipelinePauseSnapshot,
   PipelineResumeDecision,
   PipelineRuntimeResult,
+  PipelineRuntimeSnapshot,
   TicketGraphArtifact,
 } from '@acp-client/pipeline';
 import { validateMultiAgentArtifact } from '@acp-client/pipeline';
 
+/** Constante SEQUENTIAL_DELIVERY_ARTIFACT_TYPE qui fixe un contrat partagé du pipeline. */
 export const SEQUENTIAL_DELIVERY_ARTIFACT_TYPE = 'acp.sequential-delivery/v1';
 
 const SCRATCH_REFERENCE = /`((?:\.\/)?\.scratch\/[^`\r\n]+)`/g;
 
+/** Contrat fonctionnel de WorkspaceState dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 interface WorkspaceState {
   trackedPatch: string;
   trackedPaths: string[];
   untrackedFiles: Record<string, string>;
 }
 
+/** Contrat fonctionnel de WorkspaceRunPolicyOptions dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface WorkspaceRunPolicyOptions {
   workspaceCwd: string;
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   start(pipelineName: string, prompt: string): Promise<PipelineRuntimeResult>;
   onDeliveryProgress?(message: string): void;
 }
 
+/** Contrat fonctionnel de PreparedWorkspacePause dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface PreparedWorkspacePause {
   content: string;
   error?: { code: 'invalid_workspace_handoff' | 'preimplementation_workspace_change'; message: string };
 }
 
+/** Contrat fonctionnel de WorkspaceRunPolicy dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface WorkspaceRunPolicy {
-  preparePause(pause: PipelinePauseSnapshot): PreparedWorkspacePause;
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
+  preparePause(pause: PipelinePauseSnapshot, inspectionCwd?: string): PreparedWorkspacePause;
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   complete(result: PipelineRuntimeResult, userPrompt: string): Promise<PipelineRuntimeResult>;
 }
 
+/** Composant WorkspaceRunPolicyError qui coordonne une étape observable du cycle de vie du pipeline et en préserve les invariants. */
 export class WorkspaceRunPolicyError extends Error {
+/** Initialise ce composant pour le cycle de vie du pipeline concerné. */
   constructor(
     readonly code: 'invalid_sequential_delivery' | 'sequential_delivery_failed',
     message: string,
@@ -48,6 +61,7 @@ export class WorkspaceRunPolicyError extends Error {
   }
 }
 
+/** Contrat fonctionnel de WorkspaceArtifact dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface WorkspaceArtifact {
   name: string;
   type: string;
@@ -56,6 +70,7 @@ export interface WorkspaceArtifact {
   producerNodeId: string;
 }
 
+/** Contrat fonctionnel de WorkspaceRunInteraction dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface WorkspaceRunInteraction {
   id: string;
   nodeId: string;
@@ -65,12 +80,14 @@ export interface WorkspaceRunInteraction {
   format: 'text' | 'markdown' | 'json' | 'proposed-plan';
 }
 
+/** Type métier HostInteraction utilisé pour représenter une étape ou un résultat du cycle de vie du pipeline. */
 export type HostInteraction =
   | { interactionId: string; kind: 'answer'; value: string }
   | { interactionId: string; kind: 'complete-interview' }
   | { interactionId: string; kind: 'approve' }
   | { interactionId: string; kind: 'reject' };
 
+/** Type métier WorkspaceRunOutcome utilisé pour représenter une étape ou un résultat du cycle de vie du pipeline. */
 export type WorkspaceRunOutcome =
   | { status: 'completed'; runId: string; artifact?: WorkspaceArtifact }
   | { status: 'interaction-required'; runId: string; interaction: WorkspaceRunInteraction }
@@ -78,26 +95,42 @@ export type WorkspaceRunOutcome =
   | { status: 'rejected'; runId: string }
   | { status: 'cancelled'; runId: string };
 
+/** Contrat fonctionnel de WorkspaceRun dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface WorkspaceRun {
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   start(pipelineName: string, prompt: string): Promise<WorkspaceRunOutcome>;
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   recover(runId: string): Promise<WorkspaceRunOutcome>;
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   respond(runId: string, interaction: HostInteraction): Promise<WorkspaceRunOutcome>;
+/** Termine cette étape du cycle de vie et libère les ressources qui lui appartiennent. */
   cancel(runId: string): Promise<void>;
 }
 
+/** Contrat fonctionnel de WorkspaceRunBackend dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface WorkspaceRunBackend {
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   start(pipelineName: string, prompt: string): Promise<PipelineRuntimeResult>;
   recover?(runId: string): Promise<PipelineRuntimeResult>;
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   resume(runId: string, decision: PipelineResumeDecision): Promise<PipelineRuntimeResult>;
   cancel?(runId: string): Promise<PipelineRuntimeResult>;
 }
 
+/** Contrat fonctionnel de CreateWorkspaceRunOptions dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface CreateWorkspaceRunOptions extends WorkspaceRunPolicyOptions {
   recover?: WorkspaceRunBackend['recover'];
   resume: WorkspaceRunBackend['resume'];
   cancel?: WorkspaceRunBackend['cancel'];
 }
 
+/**
+ * Adapte les transitions du runtime en interactions utilisables par l'hôte du workspace.
+ * Une pause expose une question, une approbation ou une Promotion ; une Rejection et une Cancellation
+ * sont rendues terminales sans appliquer de changement au workspace hôte.
+ * @param options Backend de runtime, politique de livraison et callbacks de progression.
+ * @returns La façade start/recover/respond/cancel du Workspace Run.
+ */
 export function createWorkspaceRun(options: CreateWorkspaceRunOptions): WorkspaceRun {
   const prompts = new Map<string, string>();
   const approvalValues = new Map<string, string>();
@@ -106,7 +139,15 @@ export function createWorkspaceRun(options: CreateWorkspaceRunOptions): Workspac
     try {
       const delivered = await policy.complete(result, prompt);
       if (delivered.status === 'paused') {
-        const prepared = policy.preparePause(delivered.pause);
+        const preview = delivered.pause.handoff
+          ? await createCheckpointInspection(options.workspaceCwd, delivered.snapshot, delivered.pause.workspaceGuard)
+          : undefined;
+        let prepared: PreparedWorkspacePause;
+        try {
+          prepared = policy.preparePause(delivered.pause, preview?.cwd);
+        } finally {
+          await preview?.dispose();
+        }
         if (prepared.error) {
           prompts.delete(result.runId);
           approvalValues.delete(result.runId);
@@ -158,11 +199,13 @@ export function createWorkspaceRun(options: CreateWorkspaceRunOptions): Workspac
     }
   };
   return {
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
     async start(pipelineName, prompt) {
       const result = await options.start(pipelineName, prompt);
       prompts.set(result.runId, prompt);
       return settle(result, prompt);
     },
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
     async recover(runId) {
       if (!options.recover) throw new Error('This Workspace ACP host does not support crash recovery.');
       const result = await options.recover(runId);
@@ -172,6 +215,7 @@ export function createWorkspaceRun(options: CreateWorkspaceRunOptions): Workspac
       prompts.set(result.runId, prompt);
       return settle(result, prompt);
     },
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
     async respond(runId, interaction) {
       const prompt = prompts.get(runId);
       if (prompt === undefined) throw new Error(`Unknown active Workspace ACP run "${runId}".`);
@@ -184,6 +228,7 @@ export function createWorkspaceRun(options: CreateWorkspaceRunOptions): Workspac
       });
       return settle(result, prompt);
     },
+/** Termine cette étape du cycle de vie et libère les ressources qui lui appartiennent. */
     async cancel(runId) {
       prompts.delete(runId);
       approvalValues.delete(runId);
@@ -192,13 +237,20 @@ export function createWorkspaceRun(options: CreateWorkspaceRunOptions): Workspac
   };
 }
 
+/**
+ * Définit les contrôles fonctionnels appliqués aux pauses et à la livraison séquentielle.
+ * Vérifie les handoffs sous .scratch et le garde-fou documentation-only avant toute Promotion.
+ * @param options Workspace et callbacks nécessaires à l'inspection et à la livraison.
+ * @returns Une politique qui prépare les pauses et finalise les artefacts de livraison.
+ */
 export function createWorkspaceRunPolicy(options: WorkspaceRunPolicyOptions): WorkspaceRunPolicy {
   const baseline = captureWorkspaceState(options.workspaceCwd);
   return {
-    preparePause(pause) {
-      const content = expandWorkspaceMarkdownReferences(options.workspaceCwd, pause.content);
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
+    preparePause(pause, inspectionCwd = options.workspaceCwd) {
+      const content = expandWorkspaceMarkdownReferences(inspectionCwd, pause.content);
       if (pause.handoff) {
-        const handoffError = validateWorkspaceHandoff(options.workspaceCwd, pause.content, pause.handoff);
+        const handoffError = validateWorkspaceHandoff(inspectionCwd, pause.content, pause.handoff);
         if (handoffError) {
           return { content, error: { code: 'invalid_workspace_handoff', message: handoffError } };
         }
@@ -211,6 +263,7 @@ export function createWorkspaceRunPolicy(options: WorkspaceRunPolicyOptions): Wo
       }
       return { content };
     },
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
     async complete(result, userPrompt) {
       if (result.status !== 'completed' || result.artifact?.type !== SEQUENTIAL_DELIVERY_ARTIFACT_TYPE) {
         return result;
@@ -253,6 +306,52 @@ export function createWorkspaceRunPolicy(options: WorkspaceRunPolicyOptions): Wo
   };
 }
 
+/** Inspecte la livraison isolée intégrée ; l'approbation ne doit pas modifier l'hôte. */
+async function createCheckpointInspection(
+  workspaceCwd: string,
+  snapshot: PipelineRuntimeSnapshot,
+  guard: PipelinePauseSnapshot['workspaceGuard'],
+): Promise<{ cwd: string; dispose(): Promise<void> } | undefined> {
+  const selected = new Map<string, AgentCheckpointResult>();
+  for (const state of Object.values(snapshot.sandboxRuns ?? {})) {
+    if (!state.checkpoint) continue;
+    const previous = selected.get(state.nodeId);
+    if (previous && previous.checkpoint.attempt > state.attempt) continue;
+    selected.set(state.nodeId, {
+      checkpointStatus: state.checkpoint.status,
+      checkpoint: { runId: state.runId, nodeId: state.nodeId, attempt: state.attempt,
+        sandboxName: state.sandboxName, baseCommit: state.baseCommit, commit: state.checkpoint.commit,
+        remote: state.checkpoint.remote, ref: state.checkpoint.ref },
+      preview: state.checkpoint.preview,
+    });
+  }
+  if (!selected.size) return undefined;
+  const execute = createNodeSubprocessExecutor();
+  const composed = await new GitPromotion(execute).integrateAgentCheckpoints({
+    workspaceCwd, runId: snapshot.runId, checkpoints: [...selected.values()],
+  });
+  if (guard === 'documentation-only') {
+    const invalid = composed.preview.files.filter(file => !isWorkspaceGuardAllowedPath(file));
+    if (invalid.length) throw new Error(`Documentation-only checkpoints changed implementation files: ${invalid.join(', ')}`);
+  }
+  const directory = fs.mkdtempSync(path.join(tmpdir(), 'slopify-inspection-'));
+  const cwd = path.join(directory, 'workspace');
+  const dispose = async () => {
+    const result = await execute({ command: 'git', args: ['worktree', 'remove', '--force', cwd], cwd: workspaceCwd, stdin: 'ignore' });
+    if (result.exitCode !== 0) throw new Error(`Unable to remove delivery inspection worktree: ${result.stderr}`);
+    fs.rmSync(directory, { recursive: true, force: true });
+  };
+  const added = await execute({ command: 'git', args: ['worktree', 'add', '--detach', cwd, composed.changeSet.commit], cwd: workspaceCwd, stdin: 'ignore' });
+  if (added.exitCode !== 0) {
+    fs.rmSync(directory, { recursive: true, force: true });
+    throw new Error(`Unable to inspect isolated delivery: ${added.stderr}`);
+  }
+  return { cwd, dispose };
+}
+
+/** Point d'entrée validateWorkspaceHandoff du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function validateWorkspaceHandoff(
   workspaceCwd: string,
   content: string,
@@ -286,6 +385,9 @@ function validateWorkspaceHandoff(
   return handoff.layout === 'delivery' ? validateDeliveryLayout(references) : undefined;
 }
 
+/** Point d'entrée validateDeliveryLayout du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function validateDeliveryLayout(references: string[]): string | undefined {
   const normalized = [...new Set(references.map(normalizeReference))];
   const roots = new Set(normalized.map(featureRoot).filter((value): value is string => Boolean(value)));
@@ -299,6 +401,9 @@ function validateDeliveryLayout(references: string[]): string | undefined {
   return undefined;
 }
 
+/** Point d'entrée expandWorkspaceMarkdownReferences du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function expandWorkspaceMarkdownReferences(workspaceCwd: string, content: string): string {
   const files = collectReferencedMarkdownFiles(workspaceCwd, content);
   if (files.length === 0) return content;
@@ -307,6 +412,9 @@ function expandWorkspaceMarkdownReferences(workspaceCwd: string, content: string
   )].join('\n\n');
 }
 
+/** Point d'entrée prepareSequentialDelivery du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function prepareSequentialDelivery(workspaceCwd: string, result: Extract<PipelineRuntimeResult, { status: 'completed' }>) {
   const artifact = result.artifact;
   if (!artifact) throw new Error('Sequential delivery result must contain a handoff artifact.');
@@ -335,6 +443,9 @@ function prepareSequentialDelivery(workspaceCwd: string, result: Extract<Pipelin
   return { specificationPath, issuesDirectory, tickets };
 }
 
+/** Point d'entrée orderTicketsByDependencies du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function orderTicketsByDependencies(tickets: TicketGraphArtifact['tickets']): TicketGraphArtifact['tickets'] {
   const remaining = [...tickets];
   const completed = new Set<string>();
@@ -351,6 +462,9 @@ function orderTicketsByDependencies(tickets: TicketGraphArtifact['tickets']): Ti
   return ordered;
 }
 
+/** Point d'entrée readTicketGraph du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function readTicketGraph(result: Extract<PipelineRuntimeResult, { status: 'completed' }>): TicketGraphArtifact {
   const artifact = Object.values(result.snapshot.artifacts).reverse()
     .find(candidate => candidate.type === 'acp.ticket-graph/v1');
@@ -362,6 +476,9 @@ function readTicketGraph(result: Extract<PipelineRuntimeResult, { status: 'compl
   return validation.value;
 }
 
+/** Point d'entrée indexTicketMarkdown du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function indexTicketMarkdown(issuesAbsolute: string, issuesDirectory: string): Map<string, string> {
   const indexed = new Map<string, string>();
   for (const entry of fs.readdirSync(issuesAbsolute, { withFileTypes: true })) {
@@ -375,10 +492,16 @@ function indexTicketMarkdown(issuesAbsolute: string, issuesDirectory: string): M
   return indexed;
 }
 
+/** Point d'entrée collectScratchReferences du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function collectScratchReferences(content: string): string[] {
   return [...content.matchAll(SCRATCH_REFERENCE)].map(match => match[1]);
 }
 
+/** Point d'entrée collectReferencedMarkdownFiles du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function collectReferencedMarkdownFiles(workspaceCwd: string, content: string): string[] {
   const scratchRoot = path.resolve(workspaceCwd, '.scratch');
   const files = new Set<string>();
@@ -396,14 +519,23 @@ function collectReferencedMarkdownFiles(workspaceCwd: string, content: string): 
   return [...files].sort();
 }
 
+/** Point d'entrée normalizeReference du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function normalizeReference(reference: string): string {
   return reference.replaceAll('\\', '/').replace(/^\.\//, '').replace(/\/$/, '');
 }
 
+/** Point d'entrée featureRoot du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function featureRoot(reference: string): string | undefined {
   return /^(\.scratch\/[^/]+)\/.+$/.exec(reference)?.[1];
 }
 
+/** Point d'entrée resolveScratchPath du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function resolveScratchPath(workspaceCwd: string, workspacePath: string): string {
   const target = path.resolve(workspaceCwd, workspacePath);
   if (!isChildPath(path.resolve(workspaceCwd, '.scratch'), target)) throw new Error(`Sequential delivery path escapes .scratch: ${workspacePath}`);
@@ -411,15 +543,24 @@ function resolveScratchPath(workspaceCwd: string, workspacePath: string): string
   return target;
 }
 
+/** Point d'entrée isChildPath du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function isChildPath(parent: string, candidate: string): boolean {
   const relative = path.relative(parent, candidate);
   return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
 }
 
+/** Point d'entrée toWorkspacePath du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function toWorkspacePath(workspaceCwd: string, file: string): string {
   return path.relative(workspaceCwd, file).split(path.sep).join('/');
 }
 
+/** Point d'entrée captureWorkspaceState du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function captureWorkspaceState(workspaceCwd: string): WorkspaceState | undefined {
   try {
     if (runGit(workspaceCwd, ['rev-parse', '--is-inside-work-tree']).trim() !== 'true') return undefined;
@@ -438,6 +579,9 @@ function captureWorkspaceState(workspaceCwd: string): WorkspaceState | undefined
   } catch { return undefined; }
 }
 
+/** Point d'entrée validateWorkspaceState du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function validateWorkspaceState(before: WorkspaceState | undefined, after: WorkspaceState | undefined): string | undefined {
   if (!before || !after || (before.trackedPatch === after.trackedPatch && JSON.stringify(before.untrackedFiles) === JSON.stringify(after.untrackedFiles))) return undefined;
   const untracked = new Set([...Object.keys(before.untrackedFiles), ...Object.keys(after.untrackedFiles)]);
@@ -446,16 +590,28 @@ function validateWorkspaceState(before: WorkspaceState | undefined, after: Works
   return `Documentation-only nodes changed workspace files outside .scratch, CONTEXT.md, or docs/architecture/adr/${paths.length ? `: ${paths.join(', ')}` : ''}`;
 }
 
+/** Point d'entrée runGit du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function runGit(cwd: string, args: string[]): string {
   return execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
 }
 
+/** Point d'entrée splitLines du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function splitLines(value: string): string[] { return value.split(/\r?\n/).map(line => line.trim()).filter(Boolean); }
+/** Point d'entrée isWorkspaceGuardAllowedPath du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function isWorkspaceGuardAllowedPath(file: string): boolean {
   return file === 'CONTEXT.md' || file === '.scratch' || file.startsWith('.scratch/')
     || file === '.acp/runs-v3' || file.startsWith('.acp/runs-v3/')
     || file === 'docs/architecture/adr' || file.startsWith('docs/architecture/adr/');
 }
+/** Point d'entrée fingerprintPath du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function fingerprintPath(file: string): string {
   const stat = fs.lstatSync(file);
   if (stat.isSymbolicLink()) return createHash('sha256').update(`link:${fs.readlinkSync(file)}`).digest('hex');

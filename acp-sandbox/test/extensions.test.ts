@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import { SandboxAcpExtensionHandler } from '../src/index.js';
 import {
   SANDBOX_EXTENSION_METHODS,
-  SandboxAcpExtensionHandler,
   type SandboxExtensionMethod,
-} from '../src/index.js';
+} from '../src/extensions.js';
 
 test('routes every public sandbox ACP extension to an active handler', async () => {
   const calls: SandboxExtensionMethod[] = [];

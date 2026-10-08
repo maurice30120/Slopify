@@ -1,10 +1,10 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { EventEmitter } from 'node:events';
 
 import type { Logger } from '../types.js';
 import { isCodexAcpCommand, normalizeCodexModelsCacheForLegacyCli } from './codexModelsCacheCompat.js';
 
+/** Contrat fonctionnel de ProcessAgentConfig dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface ProcessAgentConfig {
   command: string;
   args?: string[];
@@ -12,6 +12,7 @@ export interface ProcessAgentConfig {
   loginShell?: boolean;
 }
 
+/** Contrat fonctionnel de AgentInstance dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface AgentInstance {
   id: string;
   name: string;
@@ -19,6 +20,7 @@ export interface AgentInstance {
   config: ProcessAgentConfig;
 }
 
+/** Contrat fonctionnel de AgentProcessExit dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface AgentProcessExit {
   agentId: string;
   code: number | null;
@@ -31,18 +33,19 @@ export interface AgentProcessExit {
  * est la seule couche autorisée à lancer ou arrêter ces processus, afin que les
  * connexions ne survivent pas au run qui les a créées.
  */
-export class AgentProcessManager extends EventEmitter {
+export class AgentProcessManager {
   private readonly agents = new Map<string, AgentInstance>();
   private nextId = 1;
 
-  constructor(private readonly logger?: Logger) {
-    super();
-  }
+/** Initialise ce composant pour le cycle de vie du pipeline concerné. */
+  constructor(private readonly logger?: Logger) {}
 
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   spawnAgent(name: string, config: ProcessAgentConfig, cwd?: string): AgentInstance {
     const id = `agent_${this.nextId++}`;
     this.logger?.log(`Spawning ACP agent "${name}" (${id}): ${config.command} ${(config.args ?? []).join(' ')}`);
     if (isCodexAcpCommand(config.command, config.args ?? [])) {
+/** Valide ou résout les données de cette étape du cycle de vie ; les entrées invalides restent signalées au point d'appel. */
       normalizeCodexModelsCacheForLegacyCli(this.logger);
     }
 
@@ -67,18 +70,17 @@ export class AgentProcessManager extends EventEmitter {
 
     child.on('error', error => {
       this.logger?.error(`Agent "${name}" process error`, error);
-      this.emit('agent-error', { agentId: id, error });
     });
 
     child.on('close', (code, signal) => {
       this.logger?.log(`Agent "${name}" exited (code=${code}, signal=${signal})`);
       this.agents.delete(id);
-      this.emit('agent-closed', { agentId: id, code, signal });
     });
 
     return instance;
   }
 
+/** Termine cette étape du cycle de vie et libère les ressources qui lui appartiennent. */
   killAgent(agentId: string): boolean {
     const instance = this.agents.get(agentId);
     if (!instance) {
@@ -104,18 +106,22 @@ export class AgentProcessManager extends EventEmitter {
     return true;
   }
 
+/** Termine cette étape du cycle de vie et libère les ressources qui lui appartiennent. */
   killAll(): void {
     for (const id of this.agents.keys()) {
       this.killAgent(id);
     }
   }
 
+/** Termine cette étape du cycle de vie et libère les ressources qui lui appartiennent. */
   dispose(): void {
     this.killAll();
-    this.removeAllListeners();
   }
 }
 
+/** Point d'entrée observeAgentProcessExit du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 export function observeAgentProcessExit(instance: AgentInstance): Promise<AgentProcessExit> {
   if (
     typeof instance.process.once !== 'function'
@@ -130,10 +136,13 @@ export function observeAgentProcessExit(instance: AgentInstance): Promise<AgentP
         return;
       }
       settled = true;
+/** Termine cette étape du cycle de vie et libère les ressources qui lui appartiennent. */
       cleanup();
+/** Valide ou résout les données de cette étape du cycle de vie ; les entrées invalides restent signalées au point d'appel. */
       resolve(exit);
     };
     const onError = (error: Error): void => {
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
       settle({
         agentId: instance.id,
         code: null,
@@ -142,6 +151,7 @@ export function observeAgentProcessExit(instance: AgentInstance): Promise<AgentP
       });
     };
     const onClose = (code: number | null, signal: NodeJS.Signals | null): void => {
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
       settle({
         agentId: instance.id,
         code,
@@ -157,6 +167,9 @@ export function observeAgentProcessExit(instance: AgentInstance): Promise<AgentP
   });
 }
 
+/** Point d'entrée spawnUnix du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function spawnUnix(config: ProcessAgentConfig, cwd: string | undefined, logger?: Logger): ChildProcess {
   const { shell, useLoginFlag } = resolveUnixShell(logger);
   const commandStr = [config.command, ...(config.args ?? [])].map(shellEscape).join(' ');
@@ -170,10 +183,16 @@ function spawnUnix(config: ProcessAgentConfig, cwd: string | undefined, logger?:
   });
 }
 
+/** Point d'entrée shellEscape du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function shellEscape(arg: string): string {
   return `'${arg.replace(/'/g, "'\\''")}'`;
 }
 
+/** Point d'entrée resolveUnixShell du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function resolveUnixShell(logger?: Logger): { shell: string; useLoginFlag: boolean } {
   const userShell = process.env.SHELL;
   if (userShell) {

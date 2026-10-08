@@ -1,0 +1,15 @@
+{"type":"thread.started","thread_id":"01a0fc8f-40ca-78f0-9a2d-cf747546acbe"}
+{"type":"item.completed","item":{"id":"item_0","type":"error","message":"Model metadata for `mistral-medium-latest` not found. Defaulting to fallback metadata; this can degrade performance and cause issues."}}
+{"type":"turn.started"}
+{"type":"error","message":"{\"detail\":\"The 'mistral-medium-latest' model is not supported when using Codex with a ChatGPT account.\"}"}
+{"type":"turn.failed","error":{"message":"{\"detail\":\"The 'mistral-medium-latest' model is not supported when using Codex with a ChatGPT account.\"}"}}
+{
+  "status": "failed",
+  "runId": "26745401-79bb-43e2-8391-b6b04944a63a",
+  "error": {
+    "nodeId": "implementation",
+    "attempt": 1,
+    "code": "agent_failed",
+    "message": "Unable to run Codex non-interactively: Reading additional input from stdin..."
+  }
+}
