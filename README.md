@@ -1,10 +1,31 @@
 # Slopify V2
 
 Slopify reçoit une spec et un lot JSON préparés à l’extérieur, puis exécute les
-tâches avec Pi ou Codex dans des sandboxes Docker distincts. Les cinq premières
+tâches avec Pi ou Codex dans des sandboxes Docker distincts. Les dix premières
 tâches prêtes dans l’ordre du JSON forment une vague. Toutes partent du même commit
 intégré ; la vague suivante attend leur fin et l’intégration des réussites dans
 l’ordre du JSON. Un échec bloque seulement ses descendants, sans relance automatique.
+
+## Fonctionnement en images
+
+Les trois planches ci-dessous décrivent le fonctionnement observé dans le code.
+Une vague peut exécuter jusqu’à **10 tâches prêtes en parallèle**, chacune avec
+son agent principal et sa sandbox. Les sous-agents de revue ne sont pas comptés
+dans ce plafond.
+
+### 1. Utilisateur, agent hôte, CLI et sous-agents
+
+![Articulation entre utilisateur, agent hôte Pi ou Codex, CLI Slopify, agents de tâche et sous-agents de revue](docs/images/slopify/01-roles-et-delegation.png)
+
+### 2. Du lot au résultat intégré
+
+![Validation et contexte figé, exécution par vagues de dix tâches maximum, checkpoints et intégration Git dans l’ordre du lot](docs/images/slopify/02-cycle-et-vagues.png)
+
+### 3. Suivi, reprises et conflits
+
+![Commandes de suivi et de reprise, résolution des conflits, preuves conservées et limites des contrôles automatiques](docs/images/slopify/03-suivi-reprises-conflits.png)
+
+Voir les [sources du code et les précisions de lecture](docs/images/slopify/README.md).
 
 ## Installation et utilisation
 
