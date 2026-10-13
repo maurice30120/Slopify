@@ -415,6 +415,23 @@ test('rejects an occupied planned sandbox name before creation', async () => {
   assert.equal(fake.calls.some(call => call.args[0] === 'create' && !call.args.includes('--help')), false);
 });
 
+test('parses the sandbox list despite an upgrade notice printed after the JSON', async () => {
+  const scenario = sandboxScenario();
+  const sandboxName = stableSandboxName('run', 'node', 1);
+  const notice = '\n\n╭──────────────────────────────────────────╮\n│ To upgrade     brew upgrade docker/tap/sbx │\n╰──────────────────────────────────────────╯\n';
+  const fake = fakeExecutor(request => request.args.join(' ') === 'ls --json'
+    ? result(JSON.stringify([{ id: 'foreign-id', name: sandboxName }]) + notice)
+    : scenario.respond(request));
+
+  await assert.rejects(
+    new DockerSandboxRuntime(fake.execute).runAgent({
+      workspaceCwd: '/repo', runId: 'run', nodeId: 'node', attempt: 1,
+      prompt: 'x', model: 'gpt', workspaceEffects: true,
+    }),
+    /name collision.*cannot be reused without matching persisted state/i,
+  );
+});
+
 test('initializes each Docker global network preset from the exact CLI choices without per-sandbox rules', async t => {
   const cases: Array<[DockerSandboxNetworkPolicyChoice, DockerSandboxNetworkPolicyPreset]> = [
     ['Open', 'allow-all'],

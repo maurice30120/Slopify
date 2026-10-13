@@ -738,13 +738,35 @@ interface ListedSandbox {
   id?: string;
 }
 
+/** Extrait le premier document JSON d'une sortie sbx ; des notices (mise à jour Homebrew) peuvent suivre le JSON sur stdout. */
+function firstJsonDocument(output: string): string {
+  const start = output.search(/[{[]/);
+  if (start < 0) return output;
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let index = start; index < output.length; index += 1) {
+    const character = output[index];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (character === '\\') escaped = true;
+      else if (character === '"') inString = false;
+      continue;
+    }
+    if (character === '"') inString = true;
+    else if (character === '{' || character === '[') depth += 1;
+    else if ((character === '}' || character === ']') && (depth -= 1) === 0) return output.slice(start, index + 1);
+  }
+  return output;
+}
+
 /** Point d'entrée parseSandboxList du cycle de vie du pipeline.
  * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
  */
 function parseSandboxList(output: string): ListedSandbox[] {
   let parsed: unknown;
   try {
-    parsed = JSON.parse(output);
+    parsed = JSON.parse(firstJsonDocument(output));
   } catch (error: unknown) {
     throw new Error(`Unable to parse sbx ls --json while resuming a pipeline: ${formatUnknownError(error)}`);
   }
