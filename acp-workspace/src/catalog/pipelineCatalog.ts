@@ -14,6 +14,9 @@ import type { Logger, AgentConfigEntry } from "../types.js";
 
 const PIPELINE_DIR = path.join(".acp", "pipelines");
 
+/** Point d'entrée getPipelinePrograms du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 export function getPipelinePrograms(
 	workspaceCwd: string,
 	logger?: Logger,
@@ -37,18 +40,25 @@ export function getPipelinePrograms(
 	}).programs;
 }
 
+/** Point d'entrée getPipelineProgramForAgent du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 export function getPipelineProgramForAgent(
 	workspaceCwd: string,
 	agentName: string,
 	logger?: Logger,
 ): CompiledPipelineProgram | null {
 	return (
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
 		getPipelinePrograms(workspaceCwd, logger).find(
 			(program) => program.id === agentName || program.title === agentName,
 		) ?? null
 	);
 }
 
+/** Point d'entrée loadWorkspacePipelinePrograms du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 export function loadWorkspacePipelinePrograms(
 	workspaceCwd: string,
 	agentConfigs: Record<string, AgentConfigEntry>,
@@ -63,6 +73,7 @@ export function loadWorkspacePipelinePrograms(
 	});
 }
 
+/** Contrat fonctionnel de PipelineProgramsFromRootOptions dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface PipelineProgramsFromRootOptions {
 	workspaceCwd: string;
 	configRoot: string;
@@ -71,6 +82,9 @@ export interface PipelineProgramsFromRootOptions {
 	logger?: Logger;
 }
 
+/** Point d'entrée loadPipelineProgramsFromRoot du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 export function loadPipelineProgramsFromRoot(
 	options: PipelineProgramsFromRootOptions,
 ): PipelineV3CatalogResult {
@@ -130,6 +144,9 @@ export function loadPipelineProgramsFromRoot(
 	return combined;
 }
 
+/** Point d'entrée parseYamlDocument du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function parseYamlDocument(text: string): unknown {
 	return yaml.load(text);
 }

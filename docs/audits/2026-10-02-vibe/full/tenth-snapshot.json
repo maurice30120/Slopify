@@ -1,0 +1,153 @@
+{
+  "runId": "4cbcc923-6b09-4bce-8be0-1268aeaab0fb",
+  "pipelineId": "full",
+  "status": "failed",
+  "inputVariables": {
+    "userPrompt": "Corriger les diagnostics Docker Sandbox dans acp-sandbox/src/runtime.ts : assertSuccess utilise result.stderr.trim() || result.stdout.trim(), masquant stdout si stderr existe. Error doit contenir [stderr] message puis [stdout] message, séparés par newline, flux trimés non vides seulement. Préserver préfixe Unable to <action>: et fallback exit code N si deux flux vides, succès inchangé. Pas de duplication/troncature/déduplication. Ajouter cinq tests via DockerSandboxRuntime/fakeExecutor dans acp-sandbox/test/runtime.test.ts : deux flux, chaque flux seul, aucun, succès. Interfaces publiques et schéma diagnostics inchangés. Parcourir grill, spec, tickets, implémentation et revue. Au grill poser immédiatement une question de confirmation du format; le pilote répond. Faits vérifiés, lectures ciblées maximum 100 lignes, éviter audits/transcriptions. Un seul ticket vertical correction+tests. Validation npm test. Documentation : écrire fichiers puis retourner directement le handoff. Implémentation et revue : lire spec et ticket approuvés, respecter le contrat JSON demandé."
+  },
+  "nodeStates": {
+    "plan": {
+      "status": "completed",
+      "attempts": 1,
+      "startedAt": "2026-10-02T14:15:06.471Z",
+      "completedAt": "2026-10-02T14:16:07.854Z"
+    },
+    "plan_approval": {
+      "status": "completed",
+      "attempts": 1,
+      "startedAt": "2026-10-02T14:16:07.856Z",
+      "completedAt": "2026-10-02T14:16:38.164Z"
+    },
+    "spec": {
+      "status": "failed",
+      "attempts": 1,
+      "startedAt": "2026-10-02T14:16:38.166Z",
+      "completedAt": "2026-10-02T14:16:47.286Z"
+    },
+    "tasks": {
+      "status": "cancelled",
+      "attempts": 0
+    },
+    "delivery_approval": {
+      "status": "cancelled",
+      "attempts": 0
+    }
+  },
+  "artifacts": {
+    "plan.acpNodeHistory": {
+      "name": "acpNodeHistory",
+      "type": "acp.node-history/v1",
+      "format": "json",
+      "value": {
+        "nodeId": "plan",
+        "protocol": "proposed-plan",
+        "originalPrompt": "User request:\nCorriger les diagnostics Docker Sandbox dans acp-sandbox/src/runtime.ts : assertSuccess utilise result.stderr.trim() || result.stdout.trim(), masquant stdout si stderr existe. Error doit contenir [stderr] message puis [stdout] message, séparés par newline, flux trimés non vides seulement. Préserver préfixe Unable to <action>: et fallback exit code N si deux flux vides, succès inchangé. Pas de duplication/troncature/déduplication. Ajouter cinq tests via DockerSandboxRuntime/fakeExecutor dans acp-sandbox/test/runtime.test.ts : deux flux, chaque flux seul, aucun, succès. Interfaces publiques et schéma diagnostics inchangés. Parcourir grill, spec, tickets, implémentation et revue. Au grill poser immédiatement une question de confirmation du format; le pilote répond. Faits vérifiés, lectures ciblées maximum 100 lignes, éviter audits/transcriptions. Un seul ticket vertical correction+tests. Validation npm test. Documentation : écrire fichiers puis retourner directement le handoff. Implémentation et revue : lire spec et ticket approuvés, respecter le contrat JSON demandé.\n",
+        "state": "question",
+        "completionRequested": false,
+        "turns": [
+          {
+            "role": "agent",
+            "content": "<proposed_plan>\n<interview_state>question</interview_state>\n<clarification_question>Confirmez-vous que le format de sortie d'erreur doit être exactement : `[stderr] <message_trimé>\\n[stdout] <message_trimé>` avec uniquement les flux non vides, séparés par un saut de ligne, et en conservant le préfixe `Unable to <action>: ` devant ce bloc ?</clarification_question>\n</proposed_plan>"
+          },
+          {
+            "role": "user",
+            "content": "Oui, format exact [stderr] message puis [stdout] message, newline, flux trimés non vides seulement, préfixe Unable to <action>: . Fallback exit code N si vides. Aucun détail dupliqué. Les cinq tests publics fakeExecutor, succès inchangé, un ticket vertical, npm test. Pas de changement glossary ou ADR. Ces décisions suffisent, produis ready."
+          }
+        ],
+        "repairAttemptsUsed": 0,
+        "finalOutputRequestsUsed": 0,
+        "structuredOutputs": [
+          {
+            "state": "ready",
+            "content": "<proposed_plan>\n<interview_state>ready</interview_state>\n\n## Approved decisions\n\n- Format d'erreur exact : `[stderr] <message_trimé>\\n[stdout] <message_trimé>` avec uniquement les flux non vides, séparés par newline\n- Conserver le préfixe `Unable to <action>: ` devant le bloc d'erreur\n- Fallback : exit code N si les deux flux (stderr et stdout) sont vides\n- Succès inchangé (comportement existant préservé)\n- Cinq tests publics via `DockerSandboxRuntime/fakeExecutor` : deux flux, stderr seul, stdout seul, aucun flux, succès\n- Un seul ticket vertical pour la correction + tests\n- Validation : `npm test`\n- Pas de changement sur les interfaces publiques ou le schéma diagnostics\n- Pas de duplication, tronquage, ou déduplication des messages\n- Pas de modification de glossary ou ADR\n</proposed_plan>"
+          }
+        ]
+      },
+      "producerNodeId": "plan"
+    },
+    "plan.plan": {
+      "name": "plan",
+      "type": "acp.grill-decision/v1",
+      "format": "markdown",
+      "value": "<proposed_plan>\n<interview_state>ready</interview_state>\n\n## Approved decisions\n\n- Format d'erreur exact : `[stderr] <message_trimé>\\n[stdout] <message_trimé>` avec uniquement les flux non vides, séparés par newline\n- Conserver le préfixe `Unable to <action>: ` devant le bloc d'erreur\n- Fallback : exit code N si les deux flux (stderr et stdout) sont vides\n- Succès inchangé (comportement existant préservé)\n- Cinq tests publics via `DockerSandboxRuntime/fakeExecutor` : deux flux, stderr seul, stdout seul, aucun flux, succès\n- Un seul ticket vertical pour la correction + tests\n- Validation : `npm test`\n- Pas de changement sur les interfaces publiques ou le schéma diagnostics\n- Pas de duplication, tronquage, ou déduplication des messages\n- Pas de modification de glossary ou ADR\n</proposed_plan>",
+      "producerNodeId": "plan"
+    },
+    "plan_approval.approved": {
+      "name": "approved",
+      "type": "acp.grill-decision/v1",
+      "format": "markdown",
+      "value": "<proposed_plan>\n<interview_state>ready</interview_state>\n\n## Approved decisions\n\n- Format d'erreur exact : `[stderr] <message_trimé>\\n[stdout] <message_trimé>` avec uniquement les flux non vides, séparés par newline\n- Conserver le préfixe `Unable to <action>: ` devant le bloc d'erreur\n- Fallback : exit code N si les deux flux (stderr et stdout) sont vides\n- Succès inchangé (comportement existant préservé)\n- Cinq tests publics via `DockerSandboxRuntime/fakeExecutor` : deux flux, stderr seul, stdout seul, aucun flux, succès\n- Un seul ticket vertical pour la correction + tests\n- Validation : `npm test`\n- Pas de changement sur les interfaces publiques ou le schéma diagnostics\n- Pas de duplication, tronquage, ou déduplication des messages\n- Pas de modification de glossary ou ADR\n</proposed_plan>",
+      "producerNodeId": "plan_approval"
+    }
+  },
+  "diagnostics": [
+    {
+      "nodeId": "spec",
+      "attempt": 1,
+      "code": "agent_failed",
+      "message": "Unable to bundle dependency checkpoints: fatal: Refusing to create empty bundle."
+    },
+    {
+      "nodeId": "spec",
+      "attempt": 1,
+      "code": "agent_failed",
+      "message": "Unable to bundle dependency checkpoints: fatal: Refusing to create empty bundle."
+    }
+  ],
+  "createdAt": "2026-10-02T14:15:06.468Z",
+  "updatedAt": "2026-10-02T14:16:47.287Z",
+  "sandboxRuns": {
+    "slopify-4cbcc923-6b09-4bce-8be0-1268aeaab0fb-plan-4278b551": {
+      "sandboxName": "slopify-4cbcc923-6b09-4bce-8be0-1268aeaab0fb-plan-4278b551",
+      "sandboxId": "519551eb-b28b-471f-b3e3-4329b35e40ce",
+      "runId": "4cbcc923-6b09-4bce-8be0-1268aeaab0fb",
+      "nodeId": "plan",
+      "attempt": 1,
+      "baseCommit": "5cf0656c87a6d692fd787555a7aa9805db5094ad",
+      "integrationState": "checkpointed",
+      "resourceState": "removed",
+      "diagnosticsPath": "/Users/dhuyet/Documents/POC/Slopify/.acp/logs/sandboxes/slopify-4cbcc923-6b09-4bce-8be0-1268aeaab0fb-plan-4278b551.json",
+      "output": "[\n  {\n    \"id\": \"cd76113d-0e68-4414-afe7-2f7d2395005b\",\n    \"sessionId\": \"b19c6051-8f0c-e8d7-2ea2-12473d39615d\",\n    \"turnId\": \"94306316-2a90-4a32-bcc2-da2549460394\",\n    \"createdAt\": 1790950561718,\n    \"updatedAt\": 1790950561718,\n    \"generationStatus\": \"completed\",\n    \"relatedEntryId\": null,\n    \"type\": \"message\",\n    \"role\": \"user\",\n    \"content\": [\n      {\n        \"type\": \"text\",\n        \"text\": \"<skills>\\n<skill name=\\\"domain-modeling\\\">\\n---\\r\\nname: domain-modeling\\r\\ndescription: Build and sharpen a project's domain model. Use when the user wants to pin down domain terminology or a ubiquitous language, record an architectural decision, or when another skill needs to maintain the domain model.\\r\\n---\\r\\n\\r\\n# Domain Modeling\\r\\n\\r\\nActively build and sharpen the project's domain model as you design. This is the *active* discipline — challenging terms, inventing edge-case scenarios, and writing the glossary and decisions down the moment they crystallise. (Merely *reading* `CONTEXT.md` for vocabulary is not this skill — that's a one-line habit any skill can do. This skill is for when you're changing the model, not just consuming it.)\\r\\n\\r\\n## File structure\\r\\n\\r\\nMost repos have a single context:\\r\\n\\r\\n```\\r\\n/\\r\\n├── CONTEXT.md\\r\\n├── docs/\\r\\n│   └── adr/\\r\\n│       ├── 0001-event-sourced-orders.md\\r\\n│       └── 0002-postgres-for-write-model.md\\r\\n└── src/\\r\\n```\\r\\n\\r\\nIf a `CONTEXT-MAP.md` exists at the root, the repo has multiple contexts. The map points to where each one lives:\\r\\n\\r\\n```\\r\\n/\\r\\n├── CONTEXT-MAP.md\\r\\n├── docs/\\r\\n│   └── adr/                          ← system-wide decisions\\r\\n├── src/\\r\\n│   ├── ordering/\\r\\n│   │   ├── CONTEXT.md\\r\\n│   │   └── docs/adr/                 ← context-specific decisions\\r\\n│   └── billing/\\r\\n│       ├── CONTEXT.md\\r\\n│       └── docs/adr/\\r\\n```\\r\\n\\r\\nCreate files lazily — only when you have something to write. If no `CONTEXT.md` exists, create one when the first term is resolved. If no `docs/adr/` exists, create it when the first ADR is needed.\\r\\n\\r\\n## During the session\\r\\n\\r\\n### Challenge against the glossary\\r\\n\\r\\nWhen the user uses a term that conflicts with the existing language in `CONTEXT.md`, call it out immediately. \\\"Your glossary defines 'cancellation' as X, but you seem to mean Y — which is it?\\\"\\r\\n\\r\\n### Sharpen fuzzy language\\r\\n\\r\\nWhen the user uses vague or overloaded terms, propose a precise canonical term. \\\"You're saying 'account' — do you mean the Customer or the User? Those are different things.\\\"\\r\\n\\r\\n### Discuss concrete scenarios\\r\\n\\r\\nWhen domain relationships are being discussed, stress-test them with specific scenarios. Invent scenarios that probe edge cases and force the user to be precise about the boundaries between concepts.\\r\\n\\r\\n### Cross-reference with code\\r\\n\\r\\nWhen the user states how something works, check whether the code agrees. If you find a contradiction, surface it: \\\"Your code cancels entire Orders, but you just said partial cancellation is possible — which is right?\\\"\\r\\n\\r\\n### Update CONTEXT.md inline\\r\\n\\r\\nWhen a term is resolved, update `CONTEXT.md` right there. Don't batch these up — capture them as they happen. Use the format in [CONTEXT-FORMAT.md](./CONTEXT-FORMAT.md).\\r\\n\\r\\n`CONTEXT.md` should be totally devoid of implementation details. Do not treat `CONTEXT.md` as a spec, a scratch pad, or a repository for implementation decisions. It is a glossary and nothing else.\\r\\n\\r\\n### Offer ADRs sparingly\\r\\n\\r\\nOnly offer to create an ADR when all three are true:\\r\\n\\r\\n1. **Hard to reverse** — the cost of changing your mind later is meaningful\\r\\n2. **Surprising without context** — a future reader will wonder \\\"why did they do it this way?\\\"\\r\\n3. **The result of a real trade-off** — there were genuine alternatives and you picked one for specific reasons\\r\\n\\r\\nIf any of the three is missing, skip the ADR. Use the format in [ADR-FORMAT.md](./ADR-FORMAT.md).\\n</skill>\\n\\n<skill name=\\\"grill-with-docs\\\">\\n---\\r\\nname: grill-with-docs\\r\\ndescription: A relentless interview to sharpen a plan or design, which also creates docs (ADR's and glossary) as we go.\\r\\ndisable-model-invocation: true\\r\\n---\\r\\n\\r\\nRun a `/grilling` session, using the `/domain-modeling` skill.\\n</skill>\\n\\n<skill name=\\\"grilling\\\">\\n---\\r\\nname: grilling\\r\\ndescription: Grill the user relentlessly about a plan, decision, or idea. Use when the user wants to stress-test their thinking, or uses any 'grill' trigger phrases.\\r\\n---\\r\\n\\r\\nInterview me relentlessly about every aspect of this until we reach a shared understanding. Walk down each branch of the decision tree, resolving dependencies between decisions one-by-one. For each question, provide your recommended answer.\\r\\n\\r\\nAsk the questions one at a time, waiting for feedback on each question before continuing. Asking multiple questions at once is bewildering.\\r\\n\\r\\nIf a *fact* can be found by exploring the environment (filesystem, tools, etc.), look it up rather than asking me. The *decisions*, though, are mine — put each one to me and wait for my answer.\\r\\n\\r\\nDo not act on it until I confirm we have reached a shared understanding.\\n</skill>\\n</skills>\\n\\n<instructions>\\nYou are the planning interviewer for an ACP implementation pipeline.\\r\\n\\r\\nUse `grill-with-docs` as the workflow, `grilling` as the interview protocol,\\r\\nand `domain-modeling` for glossary and ADR updates. Ask exactly one material\\r\\nquestion at a time and wait for the user's answer. When the user asks you to use\\r\\nreasonable defaults, resolve non-material choices yourself instead of asking\\r\\nmore questions.\\r\\n\\r\\nThis node is decision-only. It must never implement the requested change, create\\r\\nthe requested product/code files, or create a `.scratch/.../plan.md` file. The\\r\\napproved decisions remain in the pipeline artifact and are synthesized into the\\r\\nspecification by the next node.\\r\\n\\r\\nDo not ask the user for a feature slug or scratch directory. The specification\\r\\nnode will select one stable local tracker directory from the approved feature\\r\\ncontext, and downstream nodes will derive their paths from the resulting\\r\\n`spec.md` reference.\\r\\n\\r\\nEvery response must contain exactly one `<proposed_plan>...</proposed_plan>`\\r\\nblock and no text outside that block.\\r\\n\\r\\nWhile clarification remains, return exactly:\\r\\n\\r\\n```xml\\r\\n<proposed_plan>\\r\\n<interview_state>question</interview_state>\\r\\n<clarification_question>One material question</clarification_question>\\r\\n</proposed_plan>\\r\\n```\\r\\n\\r\\nWhen all material decisions are resolved, return the complete approved decision\\r\\nsummary directly inside the block:\\r\\n\\r\\n```xml\\r\\n<proposed_plan>\\r\\n<interview_state>ready</interview_state>\\r\\n\\r\\n## Approved decisions\\r\\n\\r\\n- Decision and rationale\\r\\n- Testing seam\\r\\n- Explicit out-of-scope item\\r\\n</proposed_plan>\\r\\n```\\r\\n\\r\\nBefore returning `ready`:\\r\\n\\r\\n- include every decision needed by `to-spec`;\\r\\n- include the agreed testing seam and relevant constraints;\\r\\n- update `CONTEXT.md` and ADRs only when required by `domain-modeling`;\\r\\n- do not write any file under `.scratch/`;\\r\\n- do not write any implementation file;\\r\\n- never emit tool-call syntax or an empty ready block.\\r\\n\\r\\nThe approved decision artifact is authoritative until `to-spec` publishes the\\r\\nspecification.\\n</instructions>\\n\\n<task>\\nUser request:\\nCorriger les diagnostics Docker Sandbox dans acp-sandbox/src/runtime.ts : assertSuccess utilise result.stderr.trim() || result.stdout.trim(), masquant stdout si stderr existe. Error doit contenir [stderr] message puis [stdout] message, séparés par newline, flux trimés non vides seulement. Préserver préfixe Unable to <action>: et fallback exit code N si deux flux vides, succès inchangé. Pas de duplication/troncature/déduplication. Ajouter cinq tests via DockerSandboxRuntime/fakeExecutor dans acp-sandbox/test/runtime.test.ts : deux flux, chaque flux seul, aucun, succès. Interfaces publiques et schéma diagnostics inchangés. Parcourir grill, spec, tickets, implémentation et revue. Au grill poser immédiatement une question de confirmation du format; le pilote répond. Faits vérifiés, lectures ciblées maximum 100 lignes, éviter audits/transcriptions. Un seul ticket vertical correction+tests. Validation npm test. Documentation : écrire fichiers puis retourner directement le handoff. Implémentation et revue : lire spec et ticket approuvés, respecter le contrat JSON demandé.\\n\\n\\nInterview history:\\nAgent:\\n<proposed_plan>\\n<interview_state>question</interview_state>\\n<clarification_question>Confirmez-vous que le format de sortie d'erreur doit être exactement : `[stderr] <message_trimé>\\\\n[stdout] <message_trimé>` avec uniquement les flux non vides, séparés par un saut de ligne, et en conservant le préfixe `Unable to <action>: ` devant ce bloc ?</clarification_question>\\n</proposed_plan>\\n\\nUser:\\nOui, format exact [stderr] message puis [stdout] message, newline, flux trimés non vides seulement, préfixe Unable to <action>: . Fallback exit code N si vides. Aucun détail dupliqué. Les cinq tests publics fakeExecutor, succès inchangé, un ticket vertical, npm test. Pas de changement glossary ou ADR. Ces décisions suffisent, produis ready.\\n\\nContinue the interview or produce the ready plan if all decisions are resolved.\\n</task>\"\n      }\n    ],\n    \"source\": \"turn_start\",\n    \"userDisplayContent\": null\n  },\n  {\n    \"id\": \"33374212-5fb7-4f0d-8046-b31c20b18a49\",\n    \"sessionId\": \"b19c6051-8f0c-e8d7-2ea2-12473d39615d\",\n    \"turnId\": \"94306316-2a90-4a32-bcc2-da2549460394\",\n    \"createdAt\": 1790950563329,\n    \"updatedAt\": 1790950564514,\n    \"generationStatus\": \"completed\",\n    \"relatedEntryId\": null,\n    \"type\": \"message\",\n    \"role\": \"assistant\",\n    \"content\": [\n      {\n        \"type\": \"text\",\n        \"text\": \"```xml\\n<proposed_plan>\\n<interview_state>ready</interview_state>\\n\\n## Approved decisions\\n\\n- Format d'erreur exact : `[stderr] <message_trimé>\\\\n[stdout] <message_trimé>` avec uniquement les flux non vides, séparés par newline\\n- Conserver le préfixe `Unable to <action>: ` devant le bloc d'erreur\\n- Fallback : exit code N si les deux flux (stderr et stdout) sont vides\\n- Succès inchangé (comportement existant préservé)\\n- Cinq tests publics via `DockerSandboxRuntime/fakeExecutor` : deux flux, stderr seul, stdout seul, aucun flux, succès\\n- Un seul ticket vertical pour la correction + tests\\n- Validation : `npm test`\\n- Pas de changement sur les interfaces publiques ou le schéma diagnostics\\n- Pas de duplication, tronquage, ou déduplication des messages\\n- Pas de modification de glossary ou ADR\\n</proposed_plan>\\n```\"\n      }\n    ],\n    \"source\": null,\n    \"userDisplayContent\": null\n  }\n]\n",
+      "checkpoint": {
+        "status": "no_changes",
+        "commit": "48a22a1a7a8ffac7a6c414e267508e8911b51269",
+        "remote": "sandbox-slopify-4cbcc923-6b09-4bce-8be0-1268aeaab0fb-plan-4278b551",
+        "ref": "refs/slopify/checkpoints/slopify-4cbcc923-6b09-4bce-8be0-1268aeaab0fb-plan-4278b551",
+        "preview": {
+          "baseCommit": "5cf0656c87a6d692fd787555a7aa9805db5094ad",
+          "checkpointCommit": "48a22a1a7a8ffac7a6c414e267508e8911b51269",
+          "fileCount": 0,
+          "files": [],
+          "diff": ""
+        }
+      }
+    }
+  },
+  "nodeInterviewHistories": {
+    "plan": {
+      "nodeId": "plan",
+      "protocol": "proposed-plan",
+      "originalPrompt": "User request:\nCorriger les diagnostics Docker Sandbox dans acp-sandbox/src/runtime.ts : assertSuccess utilise result.stderr.trim() || result.stdout.trim(), masquant stdout si stderr existe. Error doit contenir [stderr] message puis [stdout] message, séparés par newline, flux trimés non vides seulement. Préserver préfixe Unable to <action>: et fallback exit code N si deux flux vides, succès inchangé. Pas de duplication/troncature/déduplication. Ajouter cinq tests via DockerSandboxRuntime/fakeExecutor dans acp-sandbox/test/runtime.test.ts : deux flux, chaque flux seul, aucun, succès. Interfaces publiques et schéma diagnostics inchangés. Parcourir grill, spec, tickets, implémentation et revue. Au grill poser immédiatement une question de confirmation du format; le pilote répond. Faits vérifiés, lectures ciblées maximum 100 lignes, éviter audits/transcriptions. Un seul ticket vertical correction+tests. Validation npm test. Documentation : écrire fichiers puis retourner directement le handoff. Implémentation et revue : lire spec et ticket approuvés, respecter le contrat JSON demandé.\n",
+      "state": "question",
+      "completionRequested": false,
+      "turns": [
+        {
+          "role": "agent",
+          "content": "<proposed_plan>\n<interview_state>question</interview_state>\n<clarification_question>Confirmez-vous que le format de sortie d'erreur doit être exactement : `[stderr] <message_trimé>\\n[stdout] <message_trimé>` avec uniquement les flux non vides, séparés par un saut de ligne, et en conservant le préfixe `Unable to <action>: ` devant ce bloc ?</clarification_question>\n</proposed_plan>"
+        },
+        {
+          "role": "user",
+          "content": "Oui, format exact [stderr] message puis [stdout] message, newline, flux trimés non vides seulement, préfixe Unable to <action>: . Fallback exit code N si vides. Aucun détail dupliqué. Les cinq tests publics fakeExecutor, succès inchangé, un ticket vertical, npm test. Pas de changement glossary ou ADR. Ces décisions suffisent, produis ready."
+        }
+      ],
+      "repairAttemptsUsed": 0,
+      "finalOutputRequestsUsed": 0,
+      "structuredOutputs": [
+        {
+          "state": "ready",
+          "content": "<proposed_plan>\n<interview_state>ready</interview_state>\n\n## Approved decisions\n\n- Format d'erreur exact : `[stderr] <message_trimé>\\n[stdout] <message_trimé>` avec uniquement les flux non vides, séparés par newline\n- Conserver le préfixe `Unable to <action>: ` devant le bloc d'erreur\n- Fallback : exit code N si les deux flux (stderr et stdout) sont vides\n- Succès inchangé (comportement existant préservé)\n- Cinq tests publics via `DockerSandboxRuntime/fakeExecutor` : deux flux, stderr seul, stdout seul, aucun flux, succès\n- Un seul ticket vertical pour la correction + tests\n- Validation : `npm test`\n- Pas de changement sur les interfaces publiques ou le schéma diagnostics\n- Pas de duplication, tronquage, ou déduplication des messages\n- Pas de modification de glossary ou ADR\n</proposed_plan>"
+        }
+      ]
+    }
+  }
+}

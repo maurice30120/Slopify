@@ -31,6 +31,7 @@ function command(overrides: Partial<CliRunCommand> = {}): CliRunCommand {
     kind: 'run',
     pipelineName: 'grill',
     prompt: 'build it',
+    agent: 'Codex CLI',
     cwd: '/repo',
     json: false,
     verbose: false,
@@ -115,6 +116,7 @@ test('recovers a persisted running pipeline instead of starting a new one', asyn
   };
   const resumeCommand: CliResumeCommand = {
     kind: 'resume', runId: 'run-42', cwd: '/repo', json: false, verbose: false, yes: false,
+    agent: 'Codex CLI',
   };
 
   const result = await runPipelineInteractive(host, terminal, resumeCommand);

@@ -59,6 +59,22 @@ function program(): CompiledPipelineProgram {
   return result.program;
 }
 
+function agentlessProgram(): CompiledPipelineProgram {
+  const result = compilePipelineV3Definition({
+    version: 3,
+    id: 'agentless-flow',
+    title: 'Agentless Flow',
+    nodes: [{
+      id: 'work',
+      prompt: 'Work {{userPrompt}}',
+      output: { name: 'result', type: 'text', format: 'text' },
+    }],
+  });
+  assert.deepEqual(result.errors, []);
+  assert.ok(result.program);
+  return result.program;
+}
+
 function backend(runner?: PipelineAgentRunner, clearRunLogs?: () => void): CliPipelineBackendFactory {
   const pipeline = program();
   return () => ({ programs: [pipeline], runAgent: runner, clearRunLogs });
@@ -89,6 +105,26 @@ test('runs an injected backend and forwards agent metadata', async () => {
   });
   assert.equal(completed.status, 'completed');
   assert.equal(completed.status === 'completed' ? completed.artifact?.value : '', 'Use PipelineRuntime');
+});
+
+test('binds the selected CLI agent to agentless pipeline nodes', async () => {
+  const calls: PipelineAgentRunInput[] = [];
+  const host = new CliPipelineHost(workspace(), {
+    terminal: new FakeTerminal(),
+    agentName: 'Selected Agent',
+    backendFactory: () => ({
+      programs: [agentlessProgram()],
+      runAgent: async input => {
+        calls.push(input);
+        return { text: 'done' };
+      },
+    }),
+  });
+
+  const result = await host.start('agentless-flow', 'run it');
+
+  assert.equal(result.status, 'completed');
+  assert.equal(calls[0]?.agentName, 'Selected Agent');
 });
 
 test('resumes a persisted pipeline pause after the CLI host is reconstructed', async () => {
@@ -177,18 +213,22 @@ test('passes workspace services to the backend factory', () => {
   const terminal = new FakeTerminal();
   let actualCwd = '';
   let actualTerminal: Pick<CliTerminal, 'confirm' | 'select'> | undefined;
+  let actualAgent: string | undefined;
   const host = new CliPipelineHost(cwd, {
     terminal,
+    agentName: 'Selected Agent',
     verbose: true,
     backendFactory: (workspaceCwd, context) => {
       actualCwd = workspaceCwd;
       actualTerminal = context.terminal;
+      actualAgent = context.agentName;
       context.logger.log('backend ready');
       return { programs: [program()], runAgent: async () => ({ text: '' }) };
     },
   });
   assert.equal(actualCwd, cwd);
   assert.equal(actualTerminal, terminal);
+  assert.equal(actualAgent, 'Selected Agent');
   assert.ok(terminal.errors.includes('[slopify] backend ready'));
   assert.equal(host.listPipelines()[0]?.id, 'question-flow');
 });

@@ -24,12 +24,12 @@
     "@acp-client/pipeline": "file:../acp-pipeline",
     "@acp-client/runtime": "file:../acp-runtime",
     "@acp-client/sandbox": "file:../acp-sandbox",
-    "js-yaml": "^4.1.1"
+    "js-yaml": "^5.4.2"
   },
   "devDependencies": {
     "@types/js-yaml": "^4.0.9",
-    "@types/node": "^24.0.0",
-    "typescript": "^5.9.0"
+    "@types/node": "^24.13.6",
+    "typescript": "^7.0.2"
   },
   "engines": {
     "node": ">=22.19.0"

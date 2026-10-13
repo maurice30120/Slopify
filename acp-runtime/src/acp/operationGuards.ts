@@ -1,5 +1,6 @@
 import type { AgentProcessExit } from "./agentProcess.js";
 
+/** Composant PipelineTimeoutError qui coordonne une étape observable du cycle de vie du pipeline et en préserve les invariants. */
 export class PipelineTimeoutError extends Error {
 	constructor(
 		readonly phase: string,
@@ -10,6 +11,7 @@ export class PipelineTimeoutError extends Error {
 	}
 }
 
+/** Composant AgentProcessDiedError qui coordonne une étape observable du cycle de vie du pipeline et en préserve les invariants. */
 export class AgentProcessDiedError extends Error {
 	constructor(
 		readonly phase: string,
@@ -20,6 +22,7 @@ export class AgentProcessDiedError extends Error {
 	}
 }
 
+/** Contrat fonctionnel de AcpOperationTimeouts dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface AcpOperationTimeouts {
 	initializeMs: number;
 	newSessionMs: number;
@@ -30,8 +33,10 @@ export interface AcpOperationTimeouts {
 	promotionUiMs: number;
 }
 
+/** Type métier PartialAcpOperationTimeouts utilisé pour représenter une étape ou un résultat du cycle de vie du pipeline. */
 export type PartialAcpOperationTimeouts = Partial<AcpOperationTimeouts>;
 
+/** Constante DEFAULT_ACP_OPERATION_TIMEOUTS qui fixe un contrat partagé du pipeline. */
 export const DEFAULT_ACP_OPERATION_TIMEOUTS: AcpOperationTimeouts = {
 	initializeMs: 30_000,
 	newSessionMs: 30_000,
@@ -42,6 +47,9 @@ export const DEFAULT_ACP_OPERATION_TIMEOUTS: AcpOperationTimeouts = {
 	promotionUiMs: 600_000,
 };
 
+/** Point d'entrée resolveTimeouts du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 export function resolveTimeouts(
 	overrides: PartialAcpOperationTimeouts | undefined,
 ): AcpOperationTimeouts {
@@ -64,6 +72,7 @@ export async function withTimeout<T>(
 	let timer: ReturnType<typeof setTimeout> | undefined;
 	const timeoutPromise = new Promise<never>((_resolve, reject) => {
 		timer = setTimeout(() => {
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
 			reject(new PipelineTimeoutError(phase, timeoutMs));
 			void Promise.resolve(onTimeout?.()).catch(() => undefined);
 		}, timeoutMs);
@@ -73,6 +82,7 @@ export async function withTimeout<T>(
 		return await Promise.race([promise, timeoutPromise]);
 	} finally {
 		if (timer) {
+/** Termine cette étape du cycle de vie et libère les ressources qui lui appartiennent. */
 			clearTimeout(timer);
 		}
 	}
@@ -95,6 +105,9 @@ export async function withProcessGuard<T>(
 	]);
 }
 
+/** Point d'entrée formatProcessExit du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function formatProcessExit(phase: string, exit: AgentProcessExit): string {
 	if (exit.error) {
 		return `ACP agent process failed during "${phase}": ${exit.error.message}`;

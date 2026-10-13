@@ -1,0 +1,249 @@
+{
+  "startedAt": "2026-10-02T12:36:14.157Z",
+  "fixture": "/var/folders/yd/6910m5zs4v7d7308h_8ypmy80000gp/T/slopify-vibe-audit-6Whc2I",
+  "commands": [
+    {
+      "label": "environment",
+      "args": [
+        "node",
+        "--version"
+      ],
+      "cwd": "/Users/dhuyet/Documents/POC/Slopify",
+      "exitCode": 0,
+      "signal": null,
+      "durationMs": 21
+    },
+    {
+      "label": "sbx-version",
+      "args": [
+        "sbx",
+        "version"
+      ],
+      "cwd": "/Users/dhuyet/Documents/POC/Slopify",
+      "exitCode": 0,
+      "signal": null,
+      "durationMs": 36
+    },
+    {
+      "label": "sandboxes-before",
+      "args": [
+        "sbx",
+        "ls",
+        "--json"
+      ],
+      "cwd": "/Users/dhuyet/Documents/POC/Slopify",
+      "exitCode": 0,
+      "signal": null,
+      "durationMs": 375
+    },
+    {
+      "label": "network-policy",
+      "args": [
+        "sbx",
+        "policy",
+        "ls",
+        "--json"
+      ],
+      "cwd": "/Users/dhuyet/Documents/POC/Slopify",
+      "exitCode": 0,
+      "signal": null,
+      "durationMs": 422
+    },
+    {
+      "label": "init",
+      "args": [
+        "git",
+        "init",
+        "--initial-branch=main"
+      ],
+      "cwd": "/var/folders/yd/6910m5zs4v7d7308h_8ypmy80000gp/T/slopify-vibe-audit-6Whc2I",
+      "exitCode": 0,
+      "signal": null,
+      "durationMs": 42
+    },
+    {
+      "label": "line-endings",
+      "args": [
+        "git",
+        "config",
+        "core.autocrlf",
+        "false"
+      ],
+      "cwd": "/var/folders/yd/6910m5zs4v7d7308h_8ypmy80000gp/T/slopify-vibe-audit-6Whc2I",
+      "exitCode": 0,
+      "signal": null,
+      "durationMs": 16
+    },
+    {
+      "label": "identity-name",
+      "args": [
+        "git",
+        "config",
+        "user.name",
+        "Slopify Audit"
+      ],
+      "cwd": "/var/folders/yd/6910m5zs4v7d7308h_8ypmy80000gp/T/slopify-vibe-audit-6Whc2I",
+      "exitCode": 0,
+      "signal": null,
+      "durationMs": 16
+    },
+    {
+      "label": "identity-email",
+      "args": [
+        "git",
+        "config",
+        "user.email",
+        "slopify-audit@localhost"
+      ],
+      "cwd": "/var/folders/yd/6910m5zs4v7d7308h_8ypmy80000gp/T/slopify-vibe-audit-6Whc2I",
+      "exitCode": 0,
+      "signal": null,
+      "durationMs": 25
+    },
+    {
+      "label": "add",
+      "args": [
+        "git",
+        "add",
+        "."
+      ],
+      "cwd": "/var/folders/yd/6910m5zs4v7d7308h_8ypmy80000gp/T/slopify-vibe-audit-6Whc2I",
+      "exitCode": 0,
+      "signal": null,
+      "durationMs": 17
+    },
+    {
+      "label": "commit",
+      "args": [
+        "git",
+        "commit",
+        "-m",
+        "Initialize isolated Vibe audit fixture"
+      ],
+      "cwd": "/var/folders/yd/6910m5zs4v7d7308h_8ypmy80000gp/T/slopify-vibe-audit-6Whc2I",
+      "exitCode": 0,
+      "signal": null,
+      "durationMs": 30
+    },
+    {
+      "label": "base-head",
+      "args": [
+        "git",
+        "rev-parse",
+        "HEAD"
+      ],
+      "cwd": "/var/folders/yd/6910m5zs4v7d7308h_8ypmy80000gp/T/slopify-vibe-audit-6Whc2I",
+      "exitCode": 0,
+      "signal": null,
+      "durationMs": 14
+    },
+    {
+      "label": "fixture-list",
+      "args": [
+        "node",
+        "/Users/dhuyet/Documents/POC/Slopify/slopify/dist/src/cli.js",
+        "list",
+        "--json",
+        "--cwd",
+        "/var/folders/yd/6910m5zs4v7d7308h_8ypmy80000gp/T/slopify-vibe-audit-6Whc2I"
+      ],
+      "cwd": "/Users/dhuyet/Documents/POC/Slopify",
+      "exitCode": 0,
+      "signal": null,
+      "durationMs": 105
+    },
+    {
+      "label": "pipeline",
+      "args": [
+        "node",
+        "/Users/dhuyet/Documents/POC/Slopify/slopify/dist/src/cli.js",
+        "run",
+        "simple",
+        "Create only audit-marker.txt containing exactly slopify audit ok followed by one newline. Verify its exact contents using the terminal. Do not change any other file. Do not commit or launch other pipelines or agents. Return the verification command and its result.",
+        "--agent",
+        "Vibe Sandbox",
+        "--cwd",
+        "/var/folders/yd/6910m5zs4v7d7308h_8ypmy80000gp/T/slopify-vibe-audit-6Whc2I",
+        "--json",
+        "--verbose"
+      ],
+      "cwd": "/Users/dhuyet/Documents/POC/Slopify",
+      "exitCode": 0,
+      "signal": null,
+      "durationMs": 16621
+    },
+    {
+      "label": "final-head",
+      "args": [
+        "git",
+        "rev-parse",
+        "HEAD"
+      ],
+      "cwd": "/var/folders/yd/6910m5zs4v7d7308h_8ypmy80000gp/T/slopify-vibe-audit-6Whc2I",
+      "exitCode": 0,
+      "signal": null,
+      "durationMs": 15
+    },
+    {
+      "label": "final-status",
+      "args": [
+        "git",
+        "status",
+        "--porcelain=v1"
+      ],
+      "cwd": "/var/folders/yd/6910m5zs4v7d7308h_8ypmy80000gp/T/slopify-vibe-audit-6Whc2I",
+      "exitCode": 0,
+      "signal": null,
+      "durationMs": 17
+    },
+    {
+      "label": "changed-files",
+      "args": [
+        "git",
+        "diff",
+        "--name-only",
+        "46eb777d2a9548678f8470382fba92a9c4bca5fa",
+        "HEAD"
+      ],
+      "cwd": "/var/folders/yd/6910m5zs4v7d7308h_8ypmy80000gp/T/slopify-vibe-audit-6Whc2I",
+      "exitCode": 0,
+      "signal": null,
+      "durationMs": 16
+    },
+    {
+      "label": "final-diff",
+      "args": [
+        "git",
+        "diff",
+        "46eb777d2a9548678f8470382fba92a9c4bca5fa",
+        "HEAD"
+      ],
+      "cwd": "/var/folders/yd/6910m5zs4v7d7308h_8ypmy80000gp/T/slopify-vibe-audit-6Whc2I",
+      "exitCode": 0,
+      "signal": null,
+      "durationMs": 16
+    },
+    {
+      "label": "sandboxes-after",
+      "args": [
+        "sbx",
+        "ls",
+        "--json"
+      ],
+      "cwd": "/Users/dhuyet/Documents/POC/Slopify",
+      "exitCode": 0,
+      "signal": null,
+      "durationMs": 324
+    }
+  ],
+  "baseCommit": "46eb777d2a9548678f8470382fba92a9c4bca5fa",
+  "pipelineExitCode": 0,
+  "finalCommit": "039c9bc276ad8ff722765d2abc4e05a8fb6ebdee",
+  "markerExists": true,
+  "markerCorrect": true,
+  "finishedAt": "2026-10-02T12:36:32.296Z",
+  "cleanupVerified": true,
+  "onlyMarkerChanged": true,
+  "cleanHost": true,
+  "success": true
+}

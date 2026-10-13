@@ -1,10 +1,15 @@
 import type { PipelinePolicyReference } from "./PipelineV3Types";
 
+/** Type métier NormalizedFilesystemPolicy utilisé pour représenter une étape ou un résultat du cycle de vie du pipeline. */
 export type NormalizedFilesystemPolicy = "read-only" | "workspace-write";
+/** Type métier NormalizedTerminalPolicy utilisé pour représenter une étape ou un résultat du cycle de vie du pipeline. */
 export type NormalizedTerminalPolicy = "none" | "read-only" | "workspace-write";
+/** Type métier NormalizedNetworkPolicy utilisé pour représenter une étape ou un résultat du cycle de vie du pipeline. */
 export type NormalizedNetworkPolicy = "disabled" | "enabled";
+/** Type métier NormalizedPromotionPolicy utilisé pour représenter une étape ou un résultat du cycle de vie du pipeline. */
 export type NormalizedPromotionPolicy = "discard" | "ask" | "auto-apply" | "auto-reject";
 
+/** Contrat fonctionnel de NormalizedPipelinePolicy dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface NormalizedPipelinePolicy {
   filesystem: NormalizedFilesystemPolicy;
   terminal: NormalizedTerminalPolicy;
@@ -12,6 +17,7 @@ export interface NormalizedPipelinePolicy {
   promotion: NormalizedPromotionPolicy;
 }
 
+/** Contrat fonctionnel de PipelineAdapterPolicyCapabilities dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface PipelineAdapterPolicyCapabilities {
   filesystem: readonly NormalizedFilesystemPolicy[];
   terminal: readonly NormalizedTerminalPolicy[];
@@ -19,12 +25,14 @@ export interface PipelineAdapterPolicyCapabilities {
   promotion: readonly NormalizedPromotionPolicy[] | "pipeline";
 }
 
+/** Contrat fonctionnel de PipelinePolicyDenial dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface PipelinePolicyDenial {
   code: "unsupported_policy" | "policy_denied";
   field?: keyof NormalizedPipelinePolicy;
   message: string;
 }
 
+/** Type métier PipelineToolPermissionKind utilisé pour représenter une étape ou un résultat du cycle de vie du pipeline. */
 export type PipelineToolPermissionKind =
   | "read"
   | "search"
@@ -35,6 +43,7 @@ export type PipelineToolPermissionKind =
   | "execute"
   | string;
 
+/** Constante READ_ONLY_PIPELINE_POLICY qui fixe un contrat partagé du pipeline. */
 export const READ_ONLY_PIPELINE_POLICY: NormalizedPipelinePolicy = Object.freeze({
   filesystem: "read-only",
   terminal: "none",
@@ -42,6 +51,7 @@ export const READ_ONLY_PIPELINE_POLICY: NormalizedPipelinePolicy = Object.freeze
   promotion: "discard",
 });
 
+/** Constante WORKSPACE_WRITE_PIPELINE_POLICY qui fixe un contrat partagé du pipeline. */
 export const WORKSPACE_WRITE_PIPELINE_POLICY: NormalizedPipelinePolicy = Object.freeze({
   filesystem: "workspace-write",
   terminal: "workspace-write",
@@ -49,6 +59,7 @@ export const WORKSPACE_WRITE_PIPELINE_POLICY: NormalizedPipelinePolicy = Object.
   promotion: "ask",
 });
 
+/** Constante NATIVE_ACP_BASELINE_CAPABILITIES qui fixe un contrat partagé du pipeline. */
 export const NATIVE_ACP_BASELINE_CAPABILITIES: PipelineAdapterPolicyCapabilities = Object.freeze({
   filesystem: ["read-only", "workspace-write"] as const,
   terminal: ["none", "read-only", "workspace-write"] as const,
@@ -56,14 +67,18 @@ export const NATIVE_ACP_BASELINE_CAPABILITIES: PipelineAdapterPolicyCapabilities
   promotion: ["discard"] as const,
 });
 
+/** Constante SANDBOX_BASELINE_CAPABILITIES qui fixe un contrat partagé du pipeline. */
 export const SANDBOX_BASELINE_CAPABILITIES: PipelineAdapterPolicyCapabilities = Object.freeze({
   filesystem: ["read-only", "workspace-write"] as const,
   terminal: ["none", "read-only", "workspace-write"] as const,
-  // Docker Sandbox network policy is global and is not a node-level guarantee.
+  // La politique réseau Docker Sandbox est globale et ne constitue pas une garantie au niveau du nœud.
   network: "inherited",
   promotion: "pipeline",
 });
 
+/** Point d'entrée normalizePipelinePolicy du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 export function normalizePipelinePolicy(policy: PipelinePolicyReference | undefined): NormalizedPipelinePolicy {
   return Object.freeze({
     filesystem: policy?.filesystem ?? READ_ONLY_PIPELINE_POLICY.filesystem,
@@ -73,6 +88,9 @@ export function normalizePipelinePolicy(policy: PipelinePolicyReference | undefi
   });
 }
 
+/** Point d'entrée validateAdapterSupportsPolicy du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 export function validateAdapterSupportsPolicy(
   adapterName: string,
   capabilities: PipelineAdapterPolicyCapabilities,
@@ -97,6 +115,9 @@ export function validateAdapterSupportsPolicy(
   return denials;
 }
 
+/** Point d'entrée evaluateToolPermissionForPolicy du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 export function evaluateToolPermissionForPolicy(
   policy: NormalizedPipelinePolicy,
   kind: PipelineToolPermissionKind | null | undefined,
@@ -139,16 +160,25 @@ export function evaluateToolPermissionForPolicy(
   }
 }
 
+/** Point d'entrée mapPolicyToLegacySideEffects du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 export function mapPolicyToLegacySideEffects(policy: NormalizedPipelinePolicy): "none" | "workspace" {
   return canMutateWorkspace(policy)
     ? "workspace"
     : "none";
 }
 
+/** Point d'entrée canMutateWorkspace du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 export function canMutateWorkspace(policy: NormalizedPipelinePolicy): boolean {
   return policy.filesystem === "workspace-write" || policy.terminal === "workspace-write";
 }
 
+/** Point d'entrée mapPolicyToLegacyPermissions du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 export function mapPolicyToLegacyPermissions(_policy: NormalizedPipelinePolicy): "ask" | "allowAll" {
   // Le vocabulaire legacy ne peut pas exprimer les quatre axes de la politique.
   // Conserver `ask` évite qu'une conversion approximative élargisse les droits.

@@ -1,0 +1,111 @@
+npm notice run @acp-client/sandbox@0.0.0 test
+npm notice run npm run build && node --test "dist/test/**/*.test.js"
+npm notice run @acp-client/sandbox@0.0.0 build
+npm notice run tsc -p tsconfig.json --incremental false
+✔ Vibe bridge publishes only the last assistant message and preserves raw diagnostics (0.616334ms)
+✔ Codex bridge preserves plain text output (0.086459ms)
+✔ Vibe bridge reports malformed output rather than publishing the transcript (3.99375ms)
+✔ routes every public sandbox ACP extension to an active handler (0.690875ms)
+✔ rejects unknown or inactive sandbox extension methods explicitly (0.256833ms)
+✔ exposes the four pipeline Promotion policies (0.7885ms)
+✔ integrates Agent Checkpoints in the supplied deterministic order without mutating the host workspace (0.740333ms)
+✔ reports an Integration Conflict without publishing or mutating the host workspace (0.734875ms)
+✔ an empty checkpoint remains attributed but does not create an integration commit (0.091666ms)
+✔ ask presents one global preview and explicit approval applies one atomic fast-forward (0.226625ms)
+✔ auto-apply promotes the complete change set without prompting (0.092042ms)
+▶ discard, auto-reject, user rejection and cancellation never mutate the host workspace
+  ✔ discard (0.078333ms)
+  ✔ auto-reject (0.070667ms)
+  ✔ user rejection (0.119ms)
+  ✔ cancellation (0.148416ms)
+✔ discard, auto-reject, user rejection and cancellation never mutate the host workspace (0.701083ms)
+✔ no_changes skips the global Promotion decision entirely (0.073041ms)
+✔ a divergent Git base blocks Promotion before any workspace mutation (0.286ms)
+✔ replaying an already completed Promotion is idempotent (0.094375ms)
+✔ late workspace changes block Promotion before any workspace mutation (0.09125ms)
+✔ exports only the neutral ACP sandbox extension methods (0.633958ms)
+✔ creates and previews an attributed Agent Checkpoint without mutating the host workspace (2.35875ms)
+✔ replaces an internal checkpoint when a new interview prompt starts from the same base (0.517708ms)
+✖ launches Mistral Vibe programmatically inside a Vibe sandbox (0.780208ms)
+✔ prepares a descendant from multiple parent checkpoints without mutating the host worktree (16.310958ms)
+✔ reports a real Integration Conflict before launching the descendant agent (1.47975ms)
+✔ creates an empty technical checkpoint and returns no_changes when its preview is empty (0.234875ms)
+✔ stops after a checkpoint failure and never fetches or previews implicitly (0.171375ms)
+✔ stops after a checkpoint fetch failure and never produces an implicit preview or Promotion (0.1575ms)
+✔ rejects a dirty workspace before creating a sandbox with corrective guidance (0.107125ms)
+✔ ignores Slopify run state created before the clean-workspace preflight (0.173ms)
+✔ does not apply the clean-workspace check to a read-only pipeline node (0.160833ms)
+✔ requires sbx 0.35.0 and required clone/list capabilities (0.098667ms)
+✔ accepts the installed sbx version output format (0.046583ms)
+✔ rejects an occupied planned sandbox name before creation (0.174416ms)
+▶ initializes each Docker global network preset from the exact CLI choices without per-sandbox rules
+  ✔ Open (0.233458ms)
+  ✔ Balanced (0.106125ms)
+  ✔ Locked Down (0.093834ms)
+✔ initializes each Docker global network preset from the exact CLI choices without per-sandbox rules (0.6065ms)
+✔ reuses an initialized global network policy without prompting again (0.069667ms)
+✔ cancelling one preflight does not abort global policy initialization shared with another run (0.160125ms)
+✔ cancelling the last preflight aborts its global policy subprocess (0.151959ms)
+✔ fails before sandbox creation when global network policy initialization fails (0.124875ms)
+✔ fails with corrective guidance when policy initialization needs a non-interactive choice (0.073125ms)
+✔ cleans the sandbox when Codex fails (0.119209ms)
+✔ an already absent sandbox does not turn successful cleanup into a pipeline failure (4.054083ms)
+✔ external cancellation aborts the active sbx exec process and still cleans the sandbox (0.404208ms)
+✔ timeout aborts the active sbx exec process and exports a timed_out diagnostic (13.888208ms)
+✔ a hung cleanup is aborted on its own deadline and recorded without blocking the run (13.82975ms)
+▶ keepSandbox preserves resources and reports copyable commands after success and failure
+  ✔ success (1.524875ms)
+  ✔ failure (1.271708ms)
+✔ keepSandbox preserves resources and reports copyable commands after success and failure (3.000042ms)
+✔ reconciles a persisted sandbox only when its stable identity and checkpoint base match (0.182125ms)
+✔ resumes a matching sandbox after creation without creating a second resource (0.200375ms)
+✔ resumes after checkpoint persistence without relaunching Codex or requiring the removed resource (0.104958ms)
+✔ repeats cleanup idempotently when a checkpointed sandbox disappeared before removed state persisted (0.091666ms)
+✔ suspends an uncheckpointed sandbox with partial worktree changes (0.096959ms)
+▶ suspends reconciliation on identity or base divergence without relaunch, cleanup, or Promotion
+  ✔ identity (0.086542ms)
+  ✔ base (0.04825ms)
+✔ suspends reconciliation on identity or base divergence without relaunch, cleanup, or Promotion (0.232958ms)
+✔ launches descendants of unchanged approval checkpoints without creating an empty bundle (0.142125ms)
+ℹ tests 61
+ℹ suites 0
+ℹ pass 60
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 154.547167
+
+✖ failing tests:
+
+test at dist/test/runtime.test.js:188:1
+✖ launches Mistral Vibe programmatically inside a Vibe sandbox (0.780208ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:
+  + actual - expected
+  
+    {
+      'mistral-medium-latest': {
+        alias: 'mistral-medium-latest',
+  -     auto_compact_threshold: 12000,
+        name: 'mistral-medium-latest',
+        provider: 'mistral'
+      }
+    }
+  
+      at TestContext.<anonymous> (file:///Users/dhuyet/Documents/POC/Slopify/acp-sandbox/dist/test/runtime.test.js:205:12)
+      at async Test.run (node:internal/test_runner/test:1332:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:911:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: { 'mistral-medium-latest': { name: 'mistral-medium-latest', alias: 'mistral-medium-latest', provider: 'mistral' } },
+    expected: { 'mistral-medium-latest': { name: 'mistral-medium-latest', alias: 'mistral-medium-latest', provider: 'mistral', auto_compact_threshold: 12000 } },
+    operator: 'deepStrictEqual',
+    diff: 'simple'
+  }
+npm error Lifecycle script `test` failed with error:
+npm error code 1
+npm error path /Users/dhuyet/Documents/POC/Slopify/acp-sandbox
+npm error workspace @acp-client/sandbox@0.0.0
+npm error location /Users/dhuyet/Documents/POC/Slopify/acp-sandbox
+npm error command failed
+npm error command sh -c npm run build && node --test "dist/test/**/*.test.js"

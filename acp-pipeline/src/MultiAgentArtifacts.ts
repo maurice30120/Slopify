@@ -1,5 +1,6 @@
 import type { PipelineArtifact, PipelineArtifactFormat } from "./PipelineV3Types";
 
+/** Type métier MultiAgentArtifactContractId utilisé pour représenter une étape ou un résultat du cycle de vie du pipeline. */
 export type MultiAgentArtifactContractId =
   | "acp.grill-decision/v1"
   | "acp.specification/v1"
@@ -8,12 +9,14 @@ export type MultiAgentArtifactContractId =
   | "acp.merge-result/v1"
   | "acp.verification-report/v1";
 
+/** Contrat fonctionnel de ArtifactValidationResult dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface ArtifactValidationResult<T = unknown> {
   ok: boolean;
   value?: T;
   errors: string[];
 }
 
+/** Contrat d'une décision de grillage, avec son choix, sa justification et ses questions. */
 export interface GrillDecisionArtifact {
   contract: "acp.grill-decision/v1";
   decision: "continue" | "revise" | "stop";
@@ -21,6 +24,7 @@ export interface GrillDecisionArtifact {
   questions: string[];
 }
 
+/** Contrat d'une spécification, de son résumé jusqu'à ses exigences et non-objectifs. */
 export interface SpecificationArtifact {
   contract: "acp.specification/v1";
   title: string;
@@ -29,8 +33,11 @@ export interface SpecificationArtifact {
   nonGoals: string[];
 }
 
+/** Contrat d'un graphe de tickets et des informations nécessaires à leur traitement. */
 export interface TicketGraphArtifact {
   contract: "acp.ticket-graph/v1";
+  /** Références de workspace entre backticks vers les adaptateurs de tickets lisibles par l'humain. */
+  documentation?: string;
   tickets: Array<{
     id: string;
     title: string;
@@ -41,6 +48,7 @@ export interface TicketGraphArtifact {
   }>;
 }
 
+/** Contrat du résultat d'implémentation produit pour un ticket et sa branche. */
 export interface ImplementationResultArtifact {
   contract: "acp.implementation-result/v1";
   ticketId: string;
@@ -50,6 +58,7 @@ export interface ImplementationResultArtifact {
   validations: string[];
 }
 
+/** Contrat du résultat de fusion, incluant les branches intégrées et les conflits résolus. */
 export interface MergeResultArtifact {
   contract: "acp.merge-result/v1";
   sourceBranches: string[];
@@ -58,6 +67,7 @@ export interface MergeResultArtifact {
   conflicts: Array<{ path: string; resolvedBy: string }>;
 }
 
+/** Contrat d'un rapport de vérification et du statut de chacune de ses catégories. */
 export interface VerificationReportArtifact {
   contract: "acp.verification-report/v1";
   verdict: "passed" | "failed";
@@ -69,6 +79,7 @@ export interface VerificationReportArtifact {
   }>;
 }
 
+/** Type métier MultiAgentArtifact utilisé pour représenter une étape ou un résultat du cycle de vie du pipeline. */
 export type MultiAgentArtifact =
   | GrillDecisionArtifact
   | SpecificationArtifact
@@ -86,6 +97,7 @@ const CONTRACT_FORMAT: Record<MultiAgentArtifactContractId, PipelineArtifactForm
   "acp.verification-report/v1": "json",
 };
 
+/** Valide la structure et les valeurs d'un artefact selon son contrat déclaré. */
 export function validateMultiAgentArtifact(
   contract: string,
   payload: unknown,
@@ -103,34 +115,54 @@ export function validateMultiAgentArtifact(
 
   switch (contract) {
     case "acp.grill-decision/v1":
+/** Valide ou résout les données de cette étape du cycle de vie ; les entrées invalides restent signalées au point d'appel. */
       readEnum(payload.decision, `${contract}.decision`, ["continue", "revise", "stop"], errors);
+/** Valide ou résout les données de cette étape du cycle de vie ; les entrées invalides restent signalées au point d'appel. */
       readString(payload.rationale, `${contract}.rationale`, errors);
+/** Valide ou résout les données de cette étape du cycle de vie ; les entrées invalides restent signalées au point d'appel. */
       readStringArray(payload.questions, `${contract}.questions`, errors);
       break;
     case "acp.specification/v1":
+/** Valide ou résout les données de cette étape du cycle de vie ; les entrées invalides restent signalées au point d'appel. */
       readString(payload.title, `${contract}.title`, errors);
+/** Valide ou résout les données de cette étape du cycle de vie ; les entrées invalides restent signalées au point d'appel. */
       readString(payload.summary, `${contract}.summary`, errors);
+/** Valide ou résout les données de cette étape du cycle de vie ; les entrées invalides restent signalées au point d'appel. */
       readStringArray(payload.requirements, `${contract}.requirements`, errors);
+/** Valide ou résout les données de cette étape du cycle de vie ; les entrées invalides restent signalées au point d'appel. */
       readStringArray(payload.nonGoals, `${contract}.nonGoals`, errors);
       break;
     case "acp.ticket-graph/v1":
+/** Valide ou résout les données de cette étape du cycle de vie ; les entrées invalides restent signalées au point d'appel. */
       validateTicketGraph(payload.tickets, errors);
+      if (payload.documentation !== undefined) readString(payload.documentation, `${contract}.documentation`, errors);
       break;
     case "acp.implementation-result/v1":
+/** Valide ou résout les données de cette étape du cycle de vie ; les entrées invalides restent signalées au point d'appel. */
       readString(payload.ticketId, `${contract}.ticketId`, errors);
+/** Valide ou résout les données de cette étape du cycle de vie ; les entrées invalides restent signalées au point d'appel. */
       readString(payload.branch, `${contract}.branch`, errors);
+/** Valide ou résout les données de cette étape du cycle de vie ; les entrées invalides restent signalées au point d'appel. */
       readStringArray(payload.commits, `${contract}.commits`, errors);
+/** Valide ou résout les données de cette étape du cycle de vie ; les entrées invalides restent signalées au point d'appel. */
       readString(payload.summary, `${contract}.summary`, errors);
+/** Valide ou résout les données de cette étape du cycle de vie ; les entrées invalides restent signalées au point d'appel. */
       readStringArray(payload.validations, `${contract}.validations`, errors);
       break;
     case "acp.merge-result/v1":
+/** Valide ou résout les données de cette étape du cycle de vie ; les entrées invalides restent signalées au point d'appel. */
       readStringArray(payload.sourceBranches, `${contract}.sourceBranches`, errors);
+/** Valide ou résout les données de cette étape du cycle de vie ; les entrées invalides restent signalées au point d'appel. */
       readString(payload.integrationBranch, `${contract}.integrationBranch`, errors);
+/** Valide ou résout les données de cette étape du cycle de vie ; les entrées invalides restent signalées au point d'appel. */
       readStringArray(payload.commits, `${contract}.commits`, errors);
+/** Valide ou résout les données de cette étape du cycle de vie ; les entrées invalides restent signalées au point d'appel. */
       validateConflicts(payload.conflicts, errors);
       break;
     case "acp.verification-report/v1":
+/** Valide ou résout les données de cette étape du cycle de vie ; les entrées invalides restent signalées au point d'appel. */
       readEnum(payload.verdict, `${contract}.verdict`, ["passed", "failed"], errors);
+/** Valide ou résout les données de cette étape du cycle de vie ; les entrées invalides restent signalées au point d'appel. */
       validateCategories(payload.categories, errors);
       break;
   }
@@ -140,6 +172,7 @@ export function validateMultiAgentArtifact(
     : { ok: false, errors };
 }
 
+/** Valide un artefact puis l'encapsule dans le format publiable du pipeline. */
 export function publishMultiAgentArtifact(
   nodeId: string,
   name: string,
@@ -163,6 +196,7 @@ export function publishMultiAgentArtifact(
   };
 }
 
+/** Vérifie la liste non vide des tickets, leurs champs et l'unicité de leurs identifiants. */
 function validateTicketGraph(value: unknown, errors: string[]): void {
   if (!Array.isArray(value) || value.length === 0) {
     errors.push("acp.ticket-graph/v1.tickets must be a non-empty array.");
@@ -182,16 +216,22 @@ function validateTicketGraph(value: unknown, errors: string[]): void {
     if (id) {
       ids.add(id);
     }
+/** Valide ou résout les données de cette étape du cycle de vie ; les entrées invalides restent signalées au point d'appel. */
     readString(ticket.title, `${label}.title`, errors);
+/** Valide ou résout les données de cette étape du cycle de vie ; les entrées invalides restent signalées au point d'appel. */
     readStringArray(ticket.scope, `${label}.scope`, errors);
+/** Valide ou résout les données de cette étape du cycle de vie ; les entrées invalides restent signalées au point d'appel. */
     readStringArray(ticket.needs, `${label}.needs`, errors);
+/** Valide ou résout les données de cette étape du cycle de vie ; les entrées invalides restent signalées au point d'appel. */
     readStringArray(ticket.validation, `${label}.validation`, errors);
     if (ticket.agent !== undefined) {
+/** Valide ou résout les données de cette étape du cycle de vie ; les entrées invalides restent signalées au point d'appel. */
       readString(ticket.agent, `${label}.agent`, errors);
     }
   }
 }
 
+/** Vérifie que chaque conflit de fusion contient un chemin et un résolveur valides. */
 function validateConflicts(value: unknown, errors: string[]): void {
   if (!Array.isArray(value)) {
     errors.push("acp.merge-result/v1.conflicts must be an array.");
@@ -203,11 +243,14 @@ function validateConflicts(value: unknown, errors: string[]): void {
       errors.push(`${label} must be an object.`);
       continue;
     }
+/** Valide ou résout les données de cette étape du cycle de vie ; les entrées invalides restent signalées au point d'appel. */
     readString(conflict.path, `${label}.path`, errors);
+/** Valide ou résout les données de cette étape du cycle de vie ; les entrées invalides restent signalées au point d'appel. */
     readString(conflict.resolvedBy, `${label}.resolvedBy`, errors);
   }
 }
 
+/** Vérifie la liste non vide des catégories et les valeurs de leurs champs de statut. */
 function validateCategories(value: unknown, errors: string[]): void {
   if (!Array.isArray(value) || value.length === 0) {
     errors.push("acp.verification-report/v1.categories must be a non-empty array.");
@@ -219,19 +262,24 @@ function validateCategories(value: unknown, errors: string[]): void {
       errors.push(`${label} must be an object.`);
       continue;
     }
+/** Valide ou résout les données de cette étape du cycle de vie ; les entrées invalides restent signalées au point d'appel. */
     readString(category.name, `${label}.name`, errors);
     if (typeof category.required !== "boolean") {
       errors.push(`${label}.required must be a boolean.`);
     }
+/** Valide ou résout les données de cette étape du cycle de vie ; les entrées invalides restent signalées au point d'appel. */
     readEnum(category.status, `${label}.status`, ["passed", "failed", "skipped"], errors);
+/** Valide ou résout les données de cette étape du cycle de vie ; les entrées invalides restent signalées au point d'appel. */
     readString(category.details, `${label}.details`, errors);
   }
 }
 
+/** Indique si une chaîne correspond à un contrat d'artefact connu. */
 function isKnownContract(value: string): value is MultiAgentArtifactContractId {
   return Object.prototype.hasOwnProperty.call(CONTRACT_FORMAT, value);
 }
 
+/** Vérifie qu'une valeur est une chaîne non vide et enregistre l'erreur sinon. */
 function readString(value: unknown, label: string, errors: string[]): string {
   if (typeof value !== "string" || value.trim() === "") {
     errors.push(`${label} must be a non-empty string.`);
@@ -240,6 +288,7 @@ function readString(value: unknown, label: string, errors: string[]): string {
   return value;
 }
 
+/** Vérifie qu'une valeur est un tableau de chaînes non vides et enregistre l'erreur sinon. */
 function readStringArray(value: unknown, label: string, errors: string[]): string[] {
   if (!Array.isArray(value) || value.some(item => typeof item !== "string" || item.trim() === "")) {
     errors.push(`${label} must be an array of non-empty strings.`);
@@ -248,12 +297,14 @@ function readStringArray(value: unknown, label: string, errors: string[]): strin
   return value;
 }
 
+/** Vérifie qu'une valeur textuelle appartient à la liste des valeurs autorisées. */
 function readEnum(value: unknown, label: string, allowed: string[], errors: string[]): void {
   if (typeof value !== "string" || !allowed.includes(value)) {
     errors.push(`${label} must be one of: ${allowed.join(", ")}.`);
   }
 }
 
+/** Détermine si une valeur est un objet dictionnaire non nul et non tableau. */
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }

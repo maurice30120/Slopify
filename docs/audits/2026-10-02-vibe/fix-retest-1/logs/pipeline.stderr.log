@@ -1,0 +1,9 @@
+[runtime] run_started
+[runtime] node_started node=implementation
+[slopify] Starting node agent "Vibe Sandbox" (skills=implement)
+[slopify] Agent "Vibe Sandbox" failed: Unable to create the Docker Sandbox: error: unknown agent "vibe"
+  try: sbx create --help
+[runtime] node_failed node=implementation Unable to create the Docker Sandbox: error: unknown agent "vibe"
+  try: sbx create --help
+[runtime] failed node=implementation Unable to create the Docker Sandbox: error: unknown agent "vibe"
+  try: sbx create --help

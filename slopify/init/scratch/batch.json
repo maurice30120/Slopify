@@ -1,0 +1,19 @@
+{
+  "specFile": "spec.md",
+  "tasks": [
+    {
+      "id": "implement-example",
+      "prompt": "$implement\nImplement the complete approved specification in spec.md using test-driven development.",
+      "agent": "codex",
+      "dependsOn": [],
+      "source": "https://github.com/example/project/issues/1"
+    },
+    {
+      "id": "review-example",
+      "prompt": "$code-review\nReview the integrated implementation against spec.md and repository standards.",
+      "agent": "pi",
+      "dependsOn": ["implement-example"],
+      "source": "https://github.com/example/project/issues/1"
+    }
+  ]
+}

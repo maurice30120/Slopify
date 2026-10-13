@@ -1,0 +1,10 @@
+{
+  "status": "failed",
+  "runId": "ba2a2e52-a061-44e3-9d9f-34d77c11761c",
+  "error": {
+    "nodeId": "implementation",
+    "attempt": 1,
+    "code": "agent_failed",
+    "message": "Unable to run Mistral Vibe non-interactively: Warning: /private/var/folders/yd/6910m5zs4v7d7308h_8ypmy80000gp/T/slopify-vibe-audit-dUOegF is not trusted; project configuration (.agents/) will be ignored. Re-run with --trust to trust this folder temporarily.\nError: API error from mistral (model: mistral-vibe-cli-latest): Invalid API key (from env var MISTRAL_API_KEY). Please check your API key and try again."
+  }
+}
