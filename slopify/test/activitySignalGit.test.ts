@@ -26,11 +26,17 @@ async function fixtureClone(t: { after(fn: () => Promise<void>): void }) {
   return { root, repo };
 }
 
+/** Le premier signal d'un clone modifié, base des deltas suivants. */
+async function premierSignal(repo: string) {
+  await writeFile(path.join(repo, 'a.txt'), 'a modifie\n');
+  const signal = await extractActivityGitSignal(repo, null);
+  assert.ok(signal.snapshot);
+  return signal;
+}
+
 test('decrit le delta entre deux snapshots par une phrase mecanique', async (t) => {
   const { repo } = await fixtureClone(t);
-  await writeFile(path.join(repo, 'a.txt'), 'a modifie\n');
-  const first = await extractActivityGitSignal(repo, null);
-  assert.ok(first.snapshot);
+  const first = await premierSignal(repo);
 
   await writeFile(path.join(repo, 'b.txt'), 'b\n');
   rmSync(path.join(repo, 'c.txt'));
@@ -42,9 +48,7 @@ test('decrit le delta entre deux snapshots par une phrase mecanique', async (t) 
 
 test('un etat inchangé entre deux signaux produit « pas de delta »', async (t) => {
   const { repo } = await fixtureClone(t);
-  await writeFile(path.join(repo, 'a.txt'), 'a modifie\n');
-  const first = await extractActivityGitSignal(repo, null);
-  assert.ok(first.snapshot);
+  const first = await premierSignal(repo);
 
   const second = await extractActivityGitSignal(repo, first.snapshot);
 
@@ -62,9 +66,7 @@ test('un clone propre ne produit pas de delta dès le premier signal', async (t)
 
 test('un même fichier dont le statut porcelain évolue reste un delta', async (t) => {
   const { repo } = await fixtureClone(t);
-  await writeFile(path.join(repo, 'a.txt'), 'a modifie\n');
-  const first = await extractActivityGitSignal(repo, null);
-  assert.ok(first.snapshot);
+  const first = await premierSignal(repo);
   git(repo, 'add', 'a.txt');
 
   const second = await extractActivityGitSignal(repo, first.snapshot);
@@ -74,9 +76,7 @@ test('un même fichier dont le statut porcelain évolue reste un delta', async (
 
 test("tout échec de la commande git se résout en « pas de delta » sans exception", async (t) => {
   const { repo } = await fixtureClone(t);
-  await writeFile(path.join(repo, 'a.txt'), 'a modifie\n');
-  const first = await extractActivityGitSignal(repo, null);
-  assert.ok(first.snapshot);
+  const first = await premierSignal(repo);
 
   const cloneDisparu = path.join(repo, '..', 'inexistant');
   const signalSansRepo = await extractActivityGitSignal(cloneDisparu, first.snapshot);
@@ -124,6 +124,31 @@ test('decrit un renommage comme renommé, du point de vue du nouveau nom', async
   const signal = await extractActivityGitSignal(repo, null);
 
   assert.equal(signal.phrase, '1 fichier renommé (renomme.txt)');
+});
+
+test("un snapshot d'une autre tentative est ignoré : le delta repart de l'état courant", async (t) => {
+  const { repo } = await fixtureClone(t);
+  const autreTentative = await fixtureClone(t);
+  await writeFile(path.join(autreTentative.repo, 'a.txt'), 'a modifie ailleurs\n');
+  const autrePremier = await extractActivityGitSignal(autreTentative.repo, null);
+  assert.ok(autrePremier.snapshot);
+
+  await writeFile(path.join(repo, 'a.txt'), 'a modifie ici\n');
+  const signal = await extractActivityGitSignal(repo, autrePremier.snapshot);
+
+  assert.equal(signal.phrase, '1 fichier modifié (a.txt)');
+});
+
+test('un fichier redevenu propre ne fait plus partie du delta', async (t) => {
+  const { repo } = await fixtureClone(t);
+  const first = await premierSignal(repo);
+  git(repo, 'checkout', '--', 'a.txt');
+
+  const second = await extractActivityGitSignal(repo, first.snapshot);
+
+  assert.equal(second.phrase, null);
+  assert.ok(second.snapshot);
+  assert.deepEqual(second.snapshot.statuses, {});
 });
 
 test('capture le statut porcelain du clone comme snapshot du signal', async (t) => {

@@ -24,7 +24,10 @@ export interface ActivityGitSignal {
   readonly snapshot: ActivityGitSnapshot | null;
 }
 
-/** Capture le delta `git status` du clone de la tentative, côté hôte, sans jamais lever d'exception. */
+/**
+ * Capture le delta `git status` du clone de la tentative, côté hôte, sans jamais lever d'exception.
+ * Seul un snapshot du même clone compte comme signal précédent : celui d'une autre tentative est ignoré.
+ */
 export async function extractActivityGitSignal(
   clonePath: string,
   previous: ActivityGitSnapshot | null,
@@ -32,7 +35,8 @@ export async function extractActivityGitSignal(
   const statuses = await readStatuses(clonePath);
   if (statuses === null) return { phrase: null, snapshot: null };
   const snapshot: ActivityGitSnapshot = { clonePath, statuses };
-  const delta = computeDelta(statuses, previous?.statuses ?? {});
+  const previousStatuses = previous !== null && previous.clonePath === clonePath ? previous.statuses : {};
+  const delta = computeDelta(statuses, previousStatuses);
   return { phrase: delta.size === 0 ? null : describeDelta(delta), snapshot };
 }
 
@@ -62,10 +66,10 @@ function describeDelta(delta: ReadonlyMap<string, string>): string {
     counts.set(category, [...(counts.get(category) ?? []), file]);
   }
   const firstCategory = CATEGORY_ORDER.find(category => (counts.get(category) ?? []).length > 0);
-  const parts = CATEGORY_ORDER
+  const phrase = CATEGORY_ORDER
     .map(category => describeCategory(category, counts.get(category) ?? [], category === firstCategory))
-    .filter(part => part !== null);
-  const phrase = parts.length === 0 ? '' : parts.join(', ');
+    .filter(part => part !== null)
+    .join(', ');
   const names = [...delta.keys()].sort().map(truncateName);
   const listed = names.slice(0, MAX_LISTED_NAMES).join(', ');
   const remainder = names.length - MAX_LISTED_NAMES;
