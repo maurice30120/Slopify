@@ -13,7 +13,7 @@ export const taskBatchHelp = [
   '  slopify tasks validate-resolution <run-id> <resolution-id> [--cwd <repository>] [--store <directory>] [--json]',
   '  slopify tasks resolution <run-id> [--cwd <repository>] [--store <directory>] [--json]',
   '',
-  'Runs execute the first five ready tasks in JSON order, then integrate the entire wave.',
+  'Runs execute the first ten ready tasks in JSON order, then integrate the entire wave.',
   'Execution exit codes: 0 succeeded, 2 failed/interrupted/conflicted, 1 invalid input or command.',
   'Status and final output include progress, issues, evidence paths and next actions.',
   'During execution progress is written to stderr (JSON lines with --json); stdout keeps one final result.',

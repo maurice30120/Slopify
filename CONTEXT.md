@@ -14,6 +14,10 @@ _Avoid_: agent, coordinateur, agent de pipeline
 Travail de développement défini pendant la préparation, accompagné des dépendances qui conditionnent son démarrage.
 _Avoid_: étape de clarification, étape de planification, nœud de pipeline générique
 
+**Signal d’activité**:
+Phrase courte émise périodiquement pendant un run pour informer l’Agent Hôte de l’action en cours, entre deux transitions d’état durable.
+_Avoid_: heartbeat, progress, log
+
 ### V1 — vocabulaire du fonctionnement actuel
 
 **Sandbox Run**:

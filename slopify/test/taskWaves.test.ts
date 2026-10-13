@@ -296,10 +296,10 @@ test('cross-wave tasks start from the integrated commit of the previous wave', {
 });
 
 for (const resume of [false, true]) {
-  test(`seven ready mixed-agent tasks execute in waves of five${resume ? ' after explicit resume' : ''}`, { timeout: 30000 }, async t => {
-    const fiveStarted = gate(); const finishSlow = gate(); const fourFinished = gate();
-    t.after(async () => { fiveStarted.release(); finishSlow.release(); });
-    const ids = Array.from({ length: 7 }, (_, index) => `task-${index}`);
+  test(`twelve ready mixed-agent tasks execute in waves of ten${resume ? ' after explicit resume' : ''}`, { timeout: 30000 }, async t => {
+    const tenStarted = gate(); const finishSlow = gate(); const nineFinished = gate();
+    t.after(async () => { tenStarted.release(); finishSlow.release(); });
+    const ids = Array.from({ length: 12 }, (_, index) => `task-${index}`);
     const bases = new Map<string, string>();
     let executing = !resume;
     let active = 0; let maximum = 0; let finished = 0;
@@ -310,18 +310,18 @@ for (const resume of [false, true]) {
       if (!executing) return 1;
       bases.set(id, git(sandbox, 'rev-parse', 'HEAD'));
       active++; maximum = Math.max(maximum, active);
-      if (ids.indexOf(id) < 5) {
-        if (active === 5) fiveStarted.release();
-        await fiveStarted.promise;
+      if (ids.indexOf(id) < 10) {
+        if (active === 10) tenStarted.release();
+        await tenStarted.promise;
         if (id === ids[0]) await finishSlow.promise;
       } else {
-        for (const earlier of ids.slice(0, 5)) {
+        for (const earlier of ids.slice(0, 10)) {
           assert.equal(await readFile(path.join(sandbox, `${earlier}.txt`), 'utf8'), earlier);
         }
       }
       await writeFile(path.join(sandbox, `${id}.txt`), id);
       active--; finished++;
-      if (finished === 4) fourFinished.release();
+      if (finished === 9) nineFinished.release();
       return 0;
     });
     let result: ReturnType<TaskBatchService['run']>;
@@ -335,25 +335,25 @@ for (const resume of [false, true]) {
       executing = true;
       result = f.service.resume(failed.runId);
     } else result = f.service.run(f.batchFile);
-    assert.equal(await Promise.race([fiveStarted.promise.then(() => 'started'), result.then(() => 'returned')]), 'started');
-    await fourFinished.promise;
-    assert.deepEqual([...f.launched].sort(), ids.slice(0, 5));
+    assert.equal(await Promise.race([tenStarted.promise.then(() => 'started'), result.then(() => 'returned')]), 'started');
+    await nineFinished.promise;
+    assert.deepEqual([...f.launched].sort(), ids.slice(0, 10));
     const runId = (await readdir(path.join(f.root, 'runs')))[0];
     const during = await f.service.status(runId);
     assert.equal(git(f.repo, 'rev-parse', during.integrationBranch), firstBase);
-    assert.ok(during.tasks.filter(task => task.status === 'running').length <= 5);
+    assert.ok(during.tasks.filter(task => task.status === 'running').length <= 10);
     finishSlow.release();
     const state = await result;
     assert.equal(state.status, 'succeeded');
-    assert.equal(maximum, 5);
+    assert.equal(maximum, 10);
     assert.equal(f.updates[0].status, 'ready', 'host learns the run ID before tasks launch');
     assert.equal(f.updates[0].runId, state.runId);
-    assert.ok(f.updates.every(update => update.tasks.filter(task => task.status === 'running').length <= 5));
+    assert.ok(f.updates.every(update => update.tasks.filter(task => task.status === 'running').length <= 10));
     assert.ok(f.updates.some(update => update.tasks.some(task => task.status === 'completed')), 'host sees results awaiting integration');
     assert.equal(f.updates.at(-1)!.status, 'succeeded');
     const work = state.tasks.filter(task => task.id !== 'seed');
-    for (const id of ids.slice(0, 5)) assert.equal(bases.get(id), firstBase);
-    for (const id of ids.slice(5)) assert.equal(bases.get(id), work[4].attempts.at(-1)!.integratedCommit);
+    for (const id of ids.slice(0, 10)) assert.equal(bases.get(id), firstBase);
+    for (const id of ids.slice(10)) assert.equal(bases.get(id), work[9].attempts.at(-1)!.integratedCommit);
     for (const [index, task] of work.entries()) {
       assert.equal(task.attempts.length, resume ? 2 : 1);
       const commit = task.attempts.at(-1)!.integratedCommit!;
@@ -361,6 +361,6 @@ for (const resume of [false, true]) {
       if (index > 0) assert.equal(parent, work[index - 1].attempts.at(-1)!.integratedCommit);
     }
     if (resume) assert.equal(state.tasks[0].attempts.length, 1, 'successful seed never re-executes');
-    assert.equal(f.sandboxes.size, resume ? 15 : 7, 'each attempt has a distinct sandbox');
+    assert.equal(f.sandboxes.size, resume ? 25 : 12, 'each attempt has a distinct sandbox');
   });
 }

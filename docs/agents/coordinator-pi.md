@@ -226,12 +226,12 @@ Avant tout lancement, Slopify :
 
 Slopify exécute les tâches par **vagues** :
 
-1. **Vague 0** : Les cinq premières tâches sans dépendance (`dependsOn: []`), dans l’ordre du JSON
-2. **Vague suivante** : Les cinq premières tâches encore prêtes, après intégration de la vague précédente
-3. **Vague N** : Les cinq premières tâches encore prêtes dont **toutes** les dépendances ont réussi
+1. **Vague 0** : Les dix premières tâches sans dépendance (`dependsOn: []`), dans l’ordre du JSON
+2. **Vague suivante** : Les dix premières tâches encore prêtes, après intégration de la vague précédente
+3. **Vague N** : Les dix premières tâches encore prêtes dont **toutes** les dépendances ont réussi
 
 **Propriétés :**
-- Au maximum **cinq tâches** sont lancées en parallèle, y compris après reprise ; le plafond est fixe. Les tâches prêtes restantes attendent la vague suivante.
+- Au maximum **dix tâches** sont lancées en parallèle, y compris après reprise ; le plafond est fixe. Les tâches prêtes restantes attendent la vague suivante.
 - Chaque tâche dans son **propre sandbox Docker**
 - Les tâches d'une vague partagent le **même commit de base** (état intégré courant)
 - L’intégration attend la fin de **toute la vague**, intègre les réussites dans l’ordre du JSON, puis recalcule les tâches prêtes.
@@ -762,7 +762,7 @@ Aucune configuration spéciale. Pi fonctionne dans la session de l'utilisateur.
 
 La CLI expose uniquement les commandes `tasks`. `list`, `run <pipeline> <prompt>` et `resume --agent` sont retirées. Les commandes d’exécution et de reprise retournent 0 si le run réussit, 2 s’il échoue, est interrompu ou en conflit, et 1 pour une erreur d’entrée ou de commande. Les consultations réussies retournent 0.
 
-`slopify tasks resume <run-id>` reprend explicitement les échecs/interruption et les tâches en attente sans réexécuter les réussites. Arrêter les anciens agents avant de reprendre les tentatives encore marquées `running` avec `resume-task`. Une reprise isolée attend qu’une place soit disponible si cinq autres tâches sont encore en cours.
+`slopify tasks resume <run-id>` reprend explicitement les échecs/interruption et les tâches en attente sans réexécuter les réussites. Arrêter les anciens agents avant de reprendre les tentatives encore marquées `running` avec `resume-task`. Une reprise isolée attend qu’une place soit disponible si dix autres tâches sont encore en cours.
 
 | Commande | Description |
 |----------|-------------|

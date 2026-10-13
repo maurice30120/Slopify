@@ -98,7 +98,7 @@ export class TaskBatchExecutionError extends Error {
 }
 
 const execFileAsync = promisify(execFile);
-const WAVE_SIZE = 5;
+const WAVE_SIZE = 10;
 
 /** Seam public V2 : la validation et le contexte durable ne pénètrent jamais dans le runtime de pipeline V1. */
 export class TaskBatchService {
@@ -441,7 +441,7 @@ export class TaskBatchService {
     const snapshot = await this.status(runId);
     if (snapshot.conflict) throw new TaskBatchExecutionError(snapshot, 'Run has an unresolved conflict. Use tasks resolve-conflict first.');
     if (snapshot.tasks.filter(task => task.id !== taskId && task.status === 'running').length >= WAVE_SIZE) {
-      throw new Error('Five other tasks are still running. Wait for the current wave before resuming a task.');
+      throw new Error('Ten other tasks are still running. Wait for the current wave before resuming a task.');
     }
 
     // Recherche la tâche concernée.
