@@ -51,9 +51,11 @@ export function createPiTaskAdapter(): TaskAgentAdapter {
       await mkdir(path.join(configPath, 'agents'), { recursive: true });
       await writeFile(path.join(configPath, 'models.json'), JSON.stringify({ providers: {
         'slopify-mistral': {
-          baseUrl: 'https://api.mistral.ai/v1', api: 'openai-completions', apiKey: '${MISTRAL_API_KEY}',
-          models: [{ id: 'mistral-medium-latest', name: 'Mistral Medium', reasoning: false,
-            input: ['text'], contextWindow: 128000, maxTokens: 8192, compat: { supportsStore: false } }],
+          baseUrl: 'https://api.mistral.ai', api: 'mistral-conversations', apiKey: '${MISTRAL_API_KEY}',
+          models: [{ id: 'zai-glm-5-3', name: 'GLM-5.3', reasoning: true,
+            input: ['text'], contextWindow: 1000000, maxTokens: 131072,
+            thinkingLevelMap: { off: null, minimal: null, low: 'low', medium: null, high: 'high', xhigh: null, max: 'max' },
+            compat: { supportsStore: false } }],
         },
       } }, null, 2));
       const officialReview = await readFile(path.join(context.skillsStore, 'code-review', 'SKILL.md'), 'utf8');
@@ -87,7 +89,7 @@ export function createPiTaskAdapter(): TaskAgentAdapter {
       const result = await context.command(['exec', '-w', context.containerWorkspacePath,
         '-e', `PI_CODING_AGENT_DIR=${containerConfig}`, context.sandboxName,
         'pi', '--extension', extensionPath, '--offline', '--approve',
-        '--provider', 'slopify-mistral', '--model', 'mistral-medium-latest',
+        '--provider', 'slopify-mistral', '--model', 'zai-glm-5-3',
         '--skill', context.skillsStore, '--append-system-prompt', `${containerConfig}/harness.md`,
         '--mode', 'json', '--print', context.prompt]);
       const diagnostics: TaskBatchDiagnostic[] = [];
