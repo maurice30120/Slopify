@@ -1,6 +1,36 @@
 import * as path from 'node:path';
 import { taskBatchReport, formatTaskBatchReport } from './taskBatchReport.js';
+import { formatActivitySignalEvent, parseActivitySignal, type ActivitySignal } from './activitySignal.js';
 import { TaskBatchService, TaskBatchValidationError, TaskBatchExecutionError, type TaskBatchSnapshot, type TaskBatchServiceOptions } from './taskBatch.js';
+
+/** Options du service enrichies du callback du Signal d'activité du contrat SA-1 (#68). */
+export type TaskBatchCliServiceOptions = TaskBatchServiceOptions & {
+  onActivitySignal?: (signal: ActivitySignal) => void;
+};
+
+/** Rend chaque phrase du signal en une ligne préfixée `[run X] <tâches> : <phrase>`. */
+function activitySignalLines(signal: ActivitySignal): string[] {
+  const prefix = `[run ${signal.runId}]`;
+  const lines = signal.tasks.map(task => `${prefix} ${task.taskId} : ${task.sentence}`);
+  if (signal.grouped) lines.push(`${prefix} ${signal.grouped.taskIds.join(', ')} : ${signal.grouped.sentence}`);
+  if (signal.integration) lines.push(`${prefix} intégration : ${signal.integration.sentence}`);
+  return lines;
+}
+
+/**
+ * Émet un Signal d'activité sur stderr : un événement JSON dédié par ligne en mode
+ * --json, une phrase préfixée par ligne en mode texte. Un signal mal formé n'est
+ * jamais émis et ne casse pas les suivants (ADR 0013).
+ */
+function emitActivitySignal(signal: ActivitySignal, json: boolean, output: { writeError(message: string): void }): void {
+  try {
+    if (!parseActivitySignal(signal)) return;
+    if (json) output.writeError(`${formatActivitySignalEvent(signal)}\n`);
+    else for (const line of activitySignalLines(signal)) output.writeError(`${line}\n`);
+  } catch {
+    // La lisibilité prime : l'échec d'un signal ne remonte jamais à l'exécution.
+  }
+}
 
 export const taskBatchHelp = [
   'Task batches (Pi / Codex):',
@@ -17,6 +47,7 @@ export const taskBatchHelp = [
   'Execution exit codes: 0 succeeded, 2 failed/interrupted/conflicted, 1 invalid input or command.',
   'Status and final output include progress, issues, evidence paths and next actions.',
   'During execution progress is written to stderr (JSON lines with --json); stdout keeps one final result.',
+  'Periodic activity signals also go to stderr: JSON events of type "activity-signal" with --json, one prefixed sentence per line in text mode.',
   'Running is durable state; inspect sandbox liveness before retrying an interrupted process.',
   'Batch paths are relative to the calling directory; specFile is relative to the batch file.',
 ].join('\n');
@@ -29,7 +60,7 @@ export async function runTaskBatchCli(
   argv: string[],
   output: { write(message: string): void; writeError(message: string): void },
   baseCwd = process.cwd(),
-  createService: (options: TaskBatchServiceOptions) => BatchCliService = options => new TaskBatchService(options),
+  createService: (options: TaskBatchCliServiceOptions) => BatchCliService = options => new TaskBatchService(options),
 ): Promise<number> {
   let json = argv.includes('--json');
   let reportStorePath: string | undefined;
@@ -83,7 +114,9 @@ export async function runTaskBatchCli(
             + tasks.map(task => `${task.id}: ${task.status} (${task.agent})`).join(', ')
             + issues.filter(issue => issue.severity !== 'info' && !issue.historical).map(issue => `\n[${issue.code}] ${issue.taskId ?? 'run'}: ${issue.message}`).join(''));
       };
-    const service = createService({ repositoryPath, storePath, onUpdate });
+    const onActivitySignal = action === 'status' || action === 'conflict' || action === 'resolution' ? undefined
+      : (signal: ActivitySignal) => { emitActivitySignal(signal, json, output); };
+    const service = createService({ repositoryPath, storePath, onUpdate, onActivitySignal });
     const [runId, taskId] = positional;
     if (action === 'conflict') {
       const conflict = await service.getConflict(runId);

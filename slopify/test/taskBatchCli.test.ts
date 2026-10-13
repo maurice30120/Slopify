@@ -4,6 +4,14 @@ import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import { runTaskBatchCli } from '../src/taskBatchCli.js';
 import { TaskBatchExecutionError, type TaskBatchSnapshot } from '../src/taskBatch.js';
+import { ACTIVITY_SIGNAL_EVENT_TYPE, type ActivitySignal } from '../src/activitySignal.js';
+
+const activitySignal: ActivitySignal = {
+  version: 1,
+  runId: 'run',
+  timestamp: '2026-10-13T18:30:00.000Z',
+  tasks: [{ taskId: 'sa-6', sentence: 'Câblage CLI du Signal d’activité en cours.', source: 'log' }],
+};
 
 const cli = fileURLToPath(new URL('../src/cli.js', import.meta.url));
 const output = () => {
@@ -120,4 +128,127 @@ test('generic command errors are machine-readable with --json', async () => {
   })), 1);
   assert.equal(JSON.parse(sink.messages[0]).diagnostics[0].message, 'Frozen specification is missing');
   assert.deepEqual(sink.errors, []);
+});
+
+test('a service-delivered activity signal is emitted as one dedicated JSON event line on stderr', async () => {
+  const sink = output();
+  const code = await runTaskBatchCli(['run', 'batch', '--json'], sink, '/repo', options => ({
+    ...service(snapshot('succeeded')), run: async () => {
+      options.onActivitySignal?.(activitySignal);
+      return snapshot('succeeded');
+    },
+  }));
+  assert.equal(code, 0);
+  assert.equal(sink.errors.length, 1, 'one JSON object per line for the whole signal');
+  assert.ok(sink.errors[0].endsWith('\n'), 'the event line is newline-terminated');
+  const event = JSON.parse(sink.errors[0]);
+  assert.equal(event.type, ACTIVITY_SIGNAL_EVENT_TYPE);
+  assert.notEqual(event.type, 'progress');
+  assert.equal(event.runId, 'run');
+  assert.deepEqual(event.signal, activitySignal);
+  assert.equal(sink.messages.length, 1, 'stdout keeps one final result');
+  assert.equal(JSON.parse(sink.messages[0]).status, 'succeeded');
+});
+
+test('in text mode each sentence of the signal becomes one prefixed line on stderr', async () => {
+  const sink = output();
+  const full: ActivitySignal = {
+    version: 1,
+    runId: 'run',
+    timestamp: '2026-10-13T18:31:00.000Z',
+    tasks: [
+      { taskId: 'sa-4', sentence: 'Tick minute démarré avec l’exécution.', source: 'log' },
+      { taskId: 'sa-5', sentence: 'Fenêtre des dix derniers signaux lue.', source: 'git' },
+    ],
+    grouped: { taskIds: ['sa-1', 'sa-2'], sentence: 'rien de nouveau depuis 3 minutes.', source: 'none' },
+    integration: { sentence: 'Intégration de la vague 1 en cours.' },
+  };
+  const code = await runTaskBatchCli(['run', 'batch'], sink, '/repo', options => ({
+    ...service(snapshot('succeeded')), run: async () => {
+      options.onActivitySignal?.(full);
+      return snapshot('succeeded');
+    },
+  }));
+  assert.equal(code, 0);
+  assert.deepEqual(sink.errors, [
+    '[run run] sa-4 : Tick minute démarré avec l’exécution.\n',
+    '[run run] sa-5 : Fenêtre des dix derniers signaux lue.\n',
+    '[run run] sa-1, sa-2 : rien de nouveau depuis 3 minutes.\n',
+    '[run run] intégration : Intégration de la vague 1 en cours.\n',
+  ]);
+  assert.equal(sink.messages.length, 1, 'stdout keeps one final result');
+});
+
+test('a malformed signal is skipped without breaking execution or the following signals', async () => {
+  const sink = output();
+  const code = await runTaskBatchCli(['run', 'batch', '--json'], sink, '/repo', options => ({
+    ...service(snapshot('succeeded')), run: async () => {
+      options.onActivitySignal?.({ version: 2, runId: 'run', timestamp: '', tasks: [] } as unknown as ActivitySignal);
+      options.onActivitySignal?.('not even an object' as unknown as ActivitySignal);
+      options.onActivitySignal?.(activitySignal);
+      return snapshot('succeeded');
+    },
+  }));
+  assert.equal(code, 0);
+  assert.equal(sink.errors.length, 1, 'only the well-formed signal reaches stderr');
+  assert.equal(JSON.parse(sink.errors[0]).type, ACTIVITY_SIGNAL_EVENT_TYPE);
+  assert.equal(sink.messages.length, 1, 'stdout keeps one final result');
+});
+
+test('a failing signal emission never interrupts execution or the following signals', async () => {
+  const messages: string[] = [];
+  const errors: string[] = [];
+  let failing = true;
+  const sink = {
+    messages,
+    errors,
+    write: (message: string) => { messages.push(message); },
+    writeError: (message: string) => {
+      if (message.includes(ACTIVITY_SIGNAL_EVENT_TYPE) && failing) { failing = false; throw new Error('stderr burst'); }
+      errors.push(message);
+    },
+  };
+  const code = await runTaskBatchCli(['run', 'batch', '--json'], sink, '/repo', options => ({
+    ...service(snapshot('succeeded')), run: async () => {
+      options.onActivitySignal?.(activitySignal);
+      options.onActivitySignal?.(activitySignal);
+      return snapshot('succeeded');
+    },
+  }));
+  assert.equal(code, 0, 'the formatting failure never propagates to execution');
+  assert.equal(sink.errors.filter(line => JSON.parse(line).type === ACTIVITY_SIGNAL_EVENT_TYPE).length, 1,
+    'the signal after the failure is still emitted');
+  assert.equal(sink.messages.length, 1, 'stdout keeps one final result');
+});
+
+test('progress events and the final stdout result stay byte-identical while activity signals flow', async () => {
+  const scenario = async (withSignals: boolean, args: string[]) => {
+    const sink = output();
+    await runTaskBatchCli(args, sink, '/repo', options => ({
+      ...service(snapshot('succeeded')), run: async () => {
+        options.onUpdate?.(snapshot('ready'));
+        options.onUpdate?.(snapshot('running'));
+        if (withSignals) options.onActivitySignal?.(activitySignal);
+        options.onUpdate?.(snapshot('succeeded'));
+        return snapshot('succeeded');
+      },
+    }));
+    const isActivity = (line: string) => args.includes('--json')
+      ? JSON.parse(line).type === ACTIVITY_SIGNAL_EVENT_TYPE
+      : line.startsWith('[run run]');
+    return { stdout: sink.messages.join(''), stderr: sink.errors.filter(line => !isActivity(line)) };
+  };
+  for (const args of [['run', 'batch', '--json'], ['run', 'batch']]) {
+    const without = await scenario(false, args);
+    const withSignals = await scenario(true, args);
+    assert.deepEqual(withSignals.stderr, without.stderr, `progress output unchanged for ${args.join(' ')}`);
+    assert.equal(withSignals.stdout, without.stdout, 'stdout keeps one byte-identical final result');
+  }
+});
+
+test('the tasks help documents the activity signal channel on stderr', async () => {
+  const sink = output();
+  assert.equal(await runTaskBatchCli(['--help'], sink, '/repo', () => { throw new Error('Service must not be constructed'); }), 0);
+  assert.match(sink.messages[0], /activity-signal/);
+  assert.match(sink.messages[0], /prefixed sentence/);
 });
