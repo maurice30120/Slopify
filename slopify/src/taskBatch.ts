@@ -158,7 +158,7 @@ export class TaskBatchService {
       version: 1, runId, repositoryPath: this.repositoryPath, status: 'ready', runBaseCommit,
       integrationBranch: `feature/slopify-${runId}`, createdAt: now, updatedAt: now,
       context: { specFile: frozenSpecFile, specText, batchFile: frozenBatchFile },
-      tasks: batch.tasks.map((task) => ({ ...task, status: 'pending', attempts: [] })), diagnostics: [],
+      tasks: [...batch.tasks.map((task) => ({ ...task, status: 'pending' as const, attempts: [] as BatchTaskAttempt[] })), finalReviewTask(batch, runBaseCommit)], diagnostics: [],
     };
     await this.save(snapshot);
     if (options.execute !== false) await this.executeWaves(snapshot, options.signal);
@@ -782,6 +782,30 @@ export interface BatchTask {
 export interface TaskBatch {
   specFile: string;
   tasks: BatchTask[];
+}
+
+/**
+ * Étape finale du lot, alignée sur implement-spec (étape 7) : une seule revue combinée
+ * de la branche d'intégration une fois tous les tickets intégrés, chaque finding
+ * corrigé dans cette même tâche, puis validation complète du monorepo et commit.
+ */
+function finalReviewTask(batch: TaskBatch, runBaseCommit: string): BatchTaskState {
+  const used = new Set(batch.tasks.map((task) => task.id));
+  let id = 'final-review';
+  for (let suffix = 2; used.has(id); suffix += 1) id = `final-review-${suffix}`;
+  return {
+    id,
+    agent: batch.tasks[0].agent,
+    source: 'final-review',
+    dependsOn: batch.tasks.map((task) => task.id),
+    prompt:
+      `Tous les tickets du lot sont implémentés et intégrés sur cette branche. ` +
+      `Étape finale du lot : applique le skill officiel code-review au diff complet ${runBaseCommit}...HEAD (les deux axes, Standards et Spec), avec le contexte du run (spec figée et tickets d'origine). ` +
+      `Corrige chaque finding dans cette même tâche, sans annuler les décisions figées de la spec. ` +
+      `Valide le monorepo complet (npm run build puis npm test à la racine) sans échec, puis commite.`,
+    status: 'pending',
+    attempts: [],
+  };
 }
 
 /** Point d'entrée record du cycle de vie du pipeline.

@@ -70,15 +70,12 @@ export function createPiTaskAdapter(): TaskAgentAdapter {
         `Read the complete frozen specification at ${context.containerContextPath}/spec.md.`,
         `Task baseline: ${context.taskBaseCommit}. Run baseline: ${context.runBaseCommit}.`,
         `Official skills and all their resources are mounted readonly at ${context.skillsStore}.`,
-        `Follow implement with TDD at the approved public seams; commit before reviewing and correct findings.`,
-        `For code-review, invoke the subagent tool once with agentScope user and tasks for agents standards and spec in parallel.`,
-        `The only registered reviewer agent names are "standards" and "spec". "code-review" and "general-purpose" are skill/tool descriptions, not registered agent names.`,
-        `Use exactly: {"agentScope":"user","tasks":[{"agent":"standards","task":"Standards review with the fixed baseline and evidence paths"},{"agent":"spec","task":"Spec review with the fixed baseline and evidence paths"}]}. Replace the task descriptions with the complete review context.`,
-        `Give both agents the chosen fixed point (task baseline for implementation, run baseline for final combined review).`,
-        `Actual execution stdout and stderr are streamed to ${evidenceDirectory}/stdout.log and ${evidenceDirectory}/stderr.log; commands at ${evidenceDirectory}/commands.jsonl.`,
-        `Ask reviewers to read those traces; distinguish observed commands from declarations and flag unavailable evidence.`,
+        `Follow implement with TDD at the approved public seams; commit when green. Skip the implement skill's final /code-review step: independent per-ticket Standards/Spec reviews are not required; the batch performs one final combined review of the integration branch.`,
+        `If the ticket prompt itself delegates a review, run only that delegation.`,
+        `Give a delegated reviewer the chosen fixed point (task baseline for implementation, run baseline for final combined review).`,
+        `Actual execution stdout and stderr are streamed to ${evidenceDirectory}/stdout.log and ${evidenceDirectory}/stderr.log; commands at ${evidenceDirectory}/commands.jsonl. Keep them intact as evidence for the final combined review.`,
         `Read repository AGENTS.md and every applicable standard before implementation.`,
-        `Report final validations and each independent reviewer result honestly.`,
+        `Report final validations honestly.`,
       ].join('\n'));
       const created = await context.command(['exec', context.sandboxName, 'mkdir', '-p', `${containerConfig}/agents`]);
       if (created.exitCode !== 0) throw new Error(`Cannot create Pi configuration directory: ${created.stderr}`);

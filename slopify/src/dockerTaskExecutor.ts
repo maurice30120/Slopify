@@ -89,13 +89,13 @@ export class DockerTaskExecutor implements TaskExecutor {
         'Read the full frozen spec: '+path.join(containerContextPath,'spec.md'),
         'Task baseline: '+request.taskBaseCommit+'; run baseline: '+request.runBaseCommit+'.',
         'Use the official implement skill and its referenced resources. The ticket prompt is unchanged.',
-        'TDD interfaces in the ticket are approved. Follow one red/green behavior at a time, targeted validation, full suite, provisional commit before review, independent Standards/Spec review and fixes.',
-        'Read all applicable AGENTS.md and repository standards. Review from the task baseline; final review prompts may explicitly use the run baseline.',
-        'Actual live raw execution traces: '+stdoutPath+' and '+stderrPath+'. Observed harness commands: '+eventsPath+'. Give these paths to both reviewers.',
-        'Codex native parent and reviewer execution rollouts are also in $HOME/.codex/sessions; preserve and inspect them for delegation evidence. Treat reports as declarations; missing process/delegation evidence must be reported as missing. End with factual validations, review findings, commits and blockers.',
+        'TDD interfaces in the ticket are approved. Follow one red/green behavior at a time, targeted validation, full suite, then commit. Independent per-ticket Standards/Spec reviews are not required; the batch performs one final combined review of the integration branch.',
+        'Read all applicable AGENTS.md and repository standards before implementation.',
+        'Actual live raw execution traces: '+stdoutPath+' and '+stderrPath+'. Observed harness commands: '+eventsPath+'. Keep them intact as evidence for the final combined review.',
+        'Codex native parent and reviewer execution rollouts are also in $HOME/.codex/sessions; preserve and inspect them for delegation evidence. Treat reports as declarations; missing process/delegation evidence must be reported as missing. End with factual validations, commits and blockers.',
         'Uncommitted user changes are excluded from this private checkout.',
         'End your final assistant message with exactly one standalone line: SLOPIFY_RESULT={"status":"succeeded"} or SLOPIFY_RESULT={"status":"failed","reason":"concrete remaining blocker"}.',
-        'Report failed if final required validations fail, a documented Standards/Spec violation remains unresolved, or work is incomplete. Expected intermediate TDD red tests are not final failures. A process exit code of zero does not establish task success. Missing or invalid verdicts fail the task. Never put this marker in reviewer reports or intermediate messages.',
+        'Report failed if final required validations fail or work is incomplete. Expected intermediate TDD red tests are not final failures. A process exit code of zero does not establish task success. Missing or invalid verdicts fail the task. Never put this marker in reviewer reports or intermediate messages.',
       ].join('\n');
       await writeFile(path.join(containerContextPath,'harness.txt'),harness,{mode:0o600});
       const context:TaskAgentContext={...request,sandboxName,containerWorkspacePath:request.workspacePath,containerContextPath,skillsStore:inventory.store,command};

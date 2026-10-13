@@ -87,7 +87,7 @@ async function fixture(t: { after(fn: () => Promise<void>): void }, tasks: Batch
       if (a.some(v => v.includes('npm root -g'))) return ok('/opt/pi/examples/extensions/subagent/index.ts\n');
       if (a.includes('sh') && a.some(v => v.includes('$HOME/.codex/sessions'))) return ok('/home/agent/.codex/sessions');
       if ((a.includes('codex') && a.includes('--json')) || (a.includes('pi') && a.includes('--print'))) {
-        const id = a.at(-1)!;
+        const id = String(a.at(-1)).includes('code-review au diff complet') ? 'final-review' : a.at(-1)!;
         launched.push(id);
         const exitCode = await agent(id, sandbox);
         const stdout = a.includes('pi')
@@ -151,8 +151,8 @@ test('a mixed wave overlaps, waits for every task and gives its descendant the c
   assert.equal(git(f.repo, 'rev-parse', 'HEAD'), f.head);
   assert.equal(git(f.repo, 'status', '--porcelain=v1'), f.dirty);
   assert.equal(await readFile(path.join(f.repo, 'base.txt'), 'utf8'), 'dirty user content');
-  assert.equal(f.sandboxes.size, 3); assert.equal(f.removed.length, 3);
-  assert.deepEqual(state.tasks.map(v => v.status), ['succeeded', 'succeeded', 'succeeded']);
+  assert.equal(f.sandboxes.size, 4); assert.equal(f.removed.length, 4);
+  assert.deepEqual(state.tasks.map(v => v.status), ['succeeded', 'succeeded', 'succeeded', 'succeeded']);
   for (const item of state.tasks) {
     assert.equal(item.attempts.length, 1);
     assert.ok(item.attempts[0].checkpoint?.commit);
@@ -173,9 +173,10 @@ test('a failed task blocks only its descendants while an independent later wave 
   });
   const state = await f.service.run(f.batchFile);
   assert.equal(state.status, 'failed');
-  assert.deepEqual(state.tasks.map(v => v.status), ['failed', 'succeeded', 'blocked', 'blocked', 'succeeded']);
+  assert.deepEqual(state.tasks.map(v => v.status), ['failed', 'succeeded', 'blocked', 'blocked', 'succeeded', 'blocked']);
   assert.deepEqual(state.tasks[2].blockedBy, ['failed']);
   assert.deepEqual(state.tasks[3].blockedBy, ['blocked']);
+  assert.deepEqual(state.tasks[5].blockedBy, ['failed', 'blocked', 'blocked-again']);
   assert.deepEqual([...f.launched].sort(), ['failed', 'good', 'good-child']);
   assert.equal(state.tasks[0].attempts.length, 1);
   assert.equal(state.tasks[0].attempts[0].resourceState, 'retained');
@@ -219,6 +220,7 @@ test('final verification task depending on all implementation tasks fails and pr
   assert.equal(state.tasks[2].attempts.length, 1);
   assert.equal(state.tasks[0].attempts.length, 1);
   assert.equal(state.tasks[1].attempts.length, 1);
+  assert.equal(state.tasks[3].status, 'blocked');
 });
 
 test('batch report exposes per-task status, commits, reports, blockers, and integration branch', { timeout: 15000 }, async t => {
@@ -351,7 +353,11 @@ for (const resume of [false, true]) {
     assert.ok(f.updates.every(update => update.tasks.filter(task => task.status === 'running').length <= 10));
     assert.ok(f.updates.some(update => update.tasks.some(task => task.status === 'completed')), 'host sees results awaiting integration');
     assert.equal(f.updates.at(-1)!.status, 'succeeded');
-    const work = state.tasks.filter(task => task.id !== 'seed');
+    const work = state.tasks.filter(task => ids.includes(task.id));
+    const finalReview = state.tasks.at(-1)!;
+    assert.equal(finalReview.id, 'final-review');
+    assert.equal(finalReview.status, 'succeeded');
+    assert.equal(finalReview.attempts.length, 1);
     for (const id of ids.slice(0, 10)) assert.equal(bases.get(id), firstBase);
     for (const id of ids.slice(10)) assert.equal(bases.get(id), work[9].attempts.at(-1)!.integratedCommit);
     for (const [index, task] of work.entries()) {
@@ -361,6 +367,6 @@ for (const resume of [false, true]) {
       if (index > 0) assert.equal(parent, work[index - 1].attempts.at(-1)!.integratedCommit);
     }
     if (resume) assert.equal(state.tasks[0].attempts.length, 1, 'successful seed never re-executes');
-    assert.equal(f.sandboxes.size, resume ? 25 : 12, 'each attempt has a distinct sandbox');
+    assert.equal(f.sandboxes.size, resume ? 26 : 13, 'each attempt has a distinct sandbox');
   });
 }

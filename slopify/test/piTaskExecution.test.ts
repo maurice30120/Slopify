@@ -23,7 +23,7 @@ async function fixture(t: {after(fn:()=>Promise<void>):void}, events?: string, u
   const prompt = '$implement\nOriginal approved ticket';
   const batchFile=path.join(root,'batch.json');
   await writeFile(batchFile,JSON.stringify({specFile:'spec.md',tasks:[{id:'work / unsafe',prompt,agent:'pi',source:'01.md',dependsOn:[]}]}));
-  const calls: string[][]=[]; let sandbox=''; let removed=false;
+  const calls: string[][]=[]; let sandbox=''; let removed=false; const sandboxes=new Map<string,string>();
   const execute:SubprocessExecutor=async request=>{
     if(request.command==='git') {const r=spawnSync('git',request.args,{cwd:request.cwd,encoding:'utf8'});return {exitCode:r.status??1,stdout:r.stdout??'',stderr:r.stderr??''};}
     calls.push(request.args);
@@ -36,8 +36,8 @@ async function fixture(t: {after(fn:()=>Promise<void>):void}, events?: string, u
     if(a[0]==='kit')return ok('{}');
     if(a[0]==='ls')return ok('[]');
     if(a[0]==='create') {
-      sandbox=path.join(root,'sandbox');execFileSync('git',['clone','-q',request.cwd,sandbox]);
-      const name=a[a.indexOf('--name')+1];git(request.cwd,'remote','add',`sandbox-${name}`,sandbox);return ok();
+      const name=a[a.indexOf('--name')+1];sandbox=path.join(root,name);execFileSync('git',['clone','-q',request.cwd,sandbox]);
+      git(request.cwd,'remote','add',`sandbox-${name}`,sandbox);sandboxes.set(name,sandbox);return ok();
     }
     if(a[0]==='rm'){removed=true;return ok();}
     if(a[0]==='cp') {
@@ -48,13 +48,15 @@ async function fixture(t: {after(fn:()=>Promise<void>):void}, events?: string, u
       return ok();
     }
     if(a[0]==='exec') {
-      const index=a.indexOf('git'); if(index>=0){const r=spawnSync('git',a.slice(index+1),{cwd:sandbox,encoding:'utf8'});return {exitCode:r.status??1,stdout:r.stdout??'',stderr:r.stderr??''};}
+      const index=a.indexOf('git'); if(index>=0){const name=a.find(v=>sandboxes.has(v));const cwd=name?sandboxes.get(name)!:sandbox;const r=spawnSync('git',a.slice(index+1),{cwd,encoding:'utf8'});return {exitCode:r.status??1,stdout:r.stdout??'',stderr:r.stderr??''};}
       if(a.includes('sh') && a.some(v=>v.includes('findmnt')))return unavailable==='readonly'?{exitCode:1,stdout:'',stderr:'Official skills are writable'}:ok();
       if(a.includes('sh') && a.some(v=>v.includes('npm root -g')))return unavailable==='extension'?{exitCode:1,stdout:'',stderr:'extension missing'}:ok('/opt/pi/node_modules/@earendil-works/pi-coding-agent/examples/extensions/subagent/index.ts\n');
       if(a.includes('pi')&&a.includes('--print')){
-        assert.equal(a.at(-1),prompt);assert.equal(git(sandbox,'rev-parse','HEAD'),head);
-        assert.equal(await readFile(path.join(sandbox,'base.txt'),'utf8'),'committed base');
-        await writeFile(path.join(sandbox,'implemented.txt'),'implementation result');
+        const active=a.find(v=>sandboxes.has(v));const cwd=active?sandboxes.get(active)!:sandbox;
+        if(String(a.at(-1)).includes('code-review au diff complet'))return {exitCode:0,stdout:JSON.stringify({type:'message_end',message:{role:'assistant',content:[{type:'text',text:'Final combined review report\nSLOPIFY_RESULT={\"status\":\"succeeded\"}'}]}})+'\n',stderr:''};
+        assert.equal(a.at(-1),prompt);assert.equal(git(cwd,'rev-parse','HEAD'),head);
+        assert.equal(await readFile(path.join(cwd,'base.txt'),'utf8'),'committed base');
+        await writeFile(path.join(cwd,'implemented.txt'),'implementation result');
         assert.ok(a.includes('--skill'));assert.ok(a.includes('--extension'));
         const stdout=events ?? JSON.stringify({type:'tool_execution_end',toolName:'subagent',isError:false,result:{details:{mode:'parallel',results:[{agent:'standards',exitCode:0,messages:[{role:'assistant',content:[{type:'text',text:'Independent Standards findings'}]}]},{agent:'spec',exitCode:0,messages:[{role:'assistant',content:[{type:'text',text:'Independent Spec findings'}]}]}]}}})+'\n'+JSON.stringify({type:'message_end',message:{role:'assistant',content:[{type:'text',text:'Pi tests and review report\nSLOPIFY_RESULT={"status":"succeeded"}'}]}})+'\n';
         return {exitCode:0,stdout,stderr:''};
@@ -63,7 +65,7 @@ async function fixture(t: {after(fn:()=>Promise<void>):void}, events?: string, u
     }
     throw new Error(`Unhandled sbx ${a.join(' ')}`);
   };
-  return {root,repo,head,batchFile,prompt,calls,execute,get removed(){return removed;}};
+  return {root,repo,head,batchFile,prompt,calls,execute,sandboxes,get removed(){return removed;}};
 }
 
 test('one Pi task publishes durable checkpoint, logs and report without altering the user workspace',async t=>{

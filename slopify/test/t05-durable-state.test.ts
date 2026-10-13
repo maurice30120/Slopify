@@ -195,12 +195,16 @@ test('AC1: state contains all task attempts with their fields', async (t) => {
   const stateFile = path.join(f.storePath, snapshot.runId, 'state.json');
   const state = JSON.parse(await readFile(stateFile, 'utf8')) as TaskBatchSnapshot;
   
-  // Verify tasks have proper structure
-  assert.equal(state.tasks.length, 1);
+  // Verify tasks have proper structure, with the synthetic final combined review appended
+  assert.equal(state.tasks.length, 2);
   assert.equal(state.tasks[0].id, 'a');
   assert.equal(state.tasks[0].status, 'pending');
   assert.ok(Array.isArray(state.tasks[0].attempts));
   assert.equal(state.tasks[0].attempts.length, 0);
+  assert.equal(state.tasks[1].id, 'final-review');
+  assert.equal(state.tasks[1].status, 'pending');
+  assert.deepEqual(state.tasks[1].dependsOn, ['a']);
+  assert.equal(state.tasks[1].attempts.length, 0);
 });
 
 // AC2: Resume after process restart - reconstruct from store
@@ -223,9 +227,11 @@ test('AC2: service can reconstruct state from store after restart', async (t) =>
   assert.equal(reconstructed.runId, runId);
   assert.equal(reconstructed.repositoryPath, f.repo);
   assert.equal(reconstructed.status, 'ready');
-  assert.equal(reconstructed.tasks.length, 2);
+  assert.equal(reconstructed.tasks.length, 3);
   assert.equal(reconstructed.tasks[0].id, 'a');
   assert.equal(reconstructed.tasks[1].id, 'b');
+  assert.equal(reconstructed.tasks[2].id, 'final-review');
+  assert.deepEqual(reconstructed.tasks[2].dependsOn, ['a', 'b']);
   assert.equal(reconstructed.context.specText, '# Spec');
 });
 

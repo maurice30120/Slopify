@@ -117,8 +117,15 @@ test('a mixed-agent batch freezes its spec, prompts, references and chosen Git b
   assert.equal(state.runBaseCommit, baseCommit);
   assert.equal(state.context.specText, '# Approved spec\nUse Pi and Codex.\n');
   assert.equal(await readFile(state.context.specFile, 'utf8'), state.context.specText);
-  assert.deepEqual(state.tasks.map(({ id, prompt, source, agent, dependsOn, status }) => ({ id, prompt, source, agent, dependsOn, status })),
+  assert.deepEqual(state.tasks.slice(0, -1).map(({ id, prompt, source, agent, dependsOn, status }) => ({ id, prompt, source, agent, dependsOn, status })),
     input.tasks.map((task) => ({ ...task, status: 'pending' })));
+  const finalReview = state.tasks.at(-1)!;
+  assert.equal(finalReview.id, 'final-review');
+  assert.equal(finalReview.agent, 'codex');
+  assert.equal(finalReview.source, 'final-review');
+  assert.deepEqual(finalReview.dependsOn, ['codex-work', 'pi-review']);
+  assert.equal(finalReview.status, 'pending');
+  assert.match(finalReview.prompt, /code-review au diff complet/);
   assert.equal(await readFile(path.join(f.repo, 'initial.txt'), 'utf8'), 'user changes\n');
   assert.equal(execFileSync('git', ['-C', f.repo, 'rev-parse', 'HEAD']).toString().trim(), hostHead);
 });

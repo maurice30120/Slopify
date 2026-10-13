@@ -22,7 +22,7 @@ async function fixture(t: {after(fn:()=>Promise<void>):void}, failure: boolean |
   const prompt = '$implement\nOriginal approved ticket';
   const batchFile=path.join(root,'batch.json');
   await writeFile(batchFile,JSON.stringify({specFile:'spec.md',tasks:[{id:'work / unsafe',prompt,agent:'codex',source:'01.md',dependsOn:[]}]}));
-  const calls: string[][]=[]; let sandbox=''; let removed=false;
+  const calls: string[][]=[]; let sandbox=''; let removed=false; const sandboxes=new Map<string,string>();
   const execute:SubprocessExecutor=async request=>{
     if(request.command==='git') {const r=spawnSync('git',request.args,{cwd:request.cwd,encoding:'utf8'});return {exitCode:r.status??1,stdout:r.stdout??'',stderr:r.stderr??''};}
     calls.push(request.args);
@@ -34,8 +34,8 @@ async function fixture(t: {after(fn:()=>Promise<void>):void}, failure: boolean |
     if(a[0]==='skills')return ok(JSON.stringify({store:skills,skills:['implement','tdd','code-review']}));
     if(a[0]==='ls')return ok('[]');
     if(a[0]==='create') {
-      sandbox=path.join(root,'sandbox');execFileSync('git',['clone','-q',request.cwd,sandbox]);
-      const name=a[a.indexOf('--name')+1];git(request.cwd,'remote','add',`sandbox-${name}`,sandbox);return ok();
+      const name=a[a.indexOf('--name')+1];sandbox=path.join(root,name);execFileSync('git',['clone','-q',request.cwd,sandbox]);
+      git(request.cwd,'remote','add',`sandbox-${name}`,sandbox);sandboxes.set(name,sandbox);return ok();
     }
     if(a[0]==='rm'){
       const mounted=calls.find(a=>a[0]==='create'&&!a.includes('--help'))!.find(a=>a.startsWith(path.join(root,'runs'))&&a.endsWith(':ro'))!.slice(0,-3);
@@ -51,11 +51,13 @@ async function fixture(t: {after(fn:()=>Promise<void>):void}, failure: boolean |
     }
     if(a[0]==='cp'){if(a.at(-1)?.endsWith('codex-sessions')){await mkdir(a.at(-1)!);await writeFile(path.join(a.at(-1)!,'reviewer.jsonl'),failure==='child-error'?[JSON.stringify({type:'response_item',payload:{type:'function_call',name:'list_agents',namespace:'collaboration',call_id:'review-status'}}),JSON.stringify({type:'response_item',payload:{type:'function_call_output',call_id:'review-status',output:JSON.stringify({agents:[{agent_name:'/root/spec',agent_status:{errored:'review provider failed'}}]})}})].join('\n'):'{"type":"response_item","name":"spawn_agent"}');}return ok();}
     if(a[0]==='exec') {
-      const index=a.indexOf('git'); if(index>=0){const r=spawnSync('git',a.slice(index+1),{cwd:sandbox,encoding:'utf8'});return {exitCode:r.status??1,stdout:r.stdout??'',stderr:r.stderr??''};}
+      const index=a.indexOf('git'); if(index>=0){const name=a.find(v=>sandboxes.has(v));const cwd=name?sandboxes.get(name)!:sandbox;const r=spawnSync('git',a.slice(index+1),{cwd,encoding:'utf8'});return {exitCode:r.status??1,stdout:r.stdout??'',stderr:r.stderr??''};}
       if(a.includes('codex')&&a.includes('exec')){
-        assert.equal(a.at(-1),prompt);assert.equal(git(sandbox,'rev-parse','HEAD'),head);
-        assert.equal(await readFile(path.join(sandbox,'base.txt'),'utf8'),'committed base');
-        await writeFile(path.join(sandbox,'implemented.txt'),'implementation result');
+        const active=a.find(v=>sandboxes.has(v));const cwd=active?sandboxes.get(active)!:sandbox;
+        if(String(a.at(-1)).includes('code-review au diff complet'))return {exitCode:0,stdout:JSON.stringify({type:'item.completed',item:{type:'agent_message',text:'Final combined review report\nSLOPIFY_RESULT={\"status\":\"succeeded\"}'}})+'\n',stderr:''};
+        assert.equal(a.at(-1),prompt);assert.equal(git(cwd,'rev-parse','HEAD'),head);
+        assert.equal(await readFile(path.join(cwd,'base.txt'),'utf8'),'committed base');
+        await writeFile(path.join(cwd,'implemented.txt'),'implementation result');
         const report = failure === 'reported-failure' ? 'Final review failed\nSLOPIFY_RESULT={"status":"failed","reason":"Final review rejected changes"}'
           : failure === 'missing-outcome' ? 'No explicit verdict' : 'Tests and review report\nSLOPIFY_RESULT={"status":"succeeded"}';
         const stdout=failure===true?'':failure==='parent-zero-error'?JSON.stringify({type:'turn.failed',error:{message:'Provider rejected request'}})+'\n':JSON.stringify({type:'item.completed',item:{type:'agent_message',text:report}})+'\n';
