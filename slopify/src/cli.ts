@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { realpathSync } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { NodeCliTerminal } from './terminal.js';
 import { runTaskBatchCli, taskBatchHelp } from './taskBatchCli.js';
@@ -31,6 +32,6 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
 }
 
 const entryPoint = process.argv[1];
-if (entryPoint && import.meta.url === pathToFileURL(entryPoint).href) {
+if (entryPoint && import.meta.url === pathToFileURL(realpathSync(entryPoint)).href) {
   process.exitCode = await main();
 }

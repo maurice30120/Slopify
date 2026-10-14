@@ -33,15 +33,18 @@ Prérequis : Node.js >= 22.19, npm, Docker Sandboxes (`sbx`), agents Pi/Codex
 configurés et skills `implement`, `tdd`, `code-review` disponibles en lecture seule.
 
 ```bash
-npm ci
-npm run build
-npm link -w slopify
+scripts/install.sh      # npm install si besoin + build + symlink slopify dans ~/.local/bin (PATH)
 slopify --help
 slopify init --host all --yes
 slopify tasks run batch.json --cwd /chemin/du/depot --json
 slopify tasks status <run-id> --cwd /chemin/du/depot --json
 slopify tasks resume <run-id> --cwd /chemin/du/depot --json
 ```
+
+`scripts/uninstall.sh` retire le symlink et le bloc PATH correspondant du fichier
+rc du shell (dist/ est conservé ; `npm run clean` le supprime). L'install
+expose un symlink vers le repo : le CLI résout ses assets (`plugin/`, `init/`)
+relativement à sa propre position, donc le lien doit pointer dans le repo.
 
 Sans installation globale : `npm run slopify -- tasks run batch.json --json`.
 
