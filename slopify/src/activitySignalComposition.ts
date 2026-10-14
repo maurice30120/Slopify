@@ -33,7 +33,7 @@ export interface ComposeActivitySignalInput {
 export function composeActivitySignal(input: ComposeActivitySignalInput): ActivitySignal {
   const tasks: ActivityTaskSignal[] = [];
   for (const candidate of input.tasks) {
-    if ('news' in candidate) {
+    if ('news' in candidate && !signaledWithinSameMinute(input, candidate.taskId)) {
       tasks.push({ taskId: candidate.taskId, sentence: candidate.news.sentence, source: candidate.news.source });
     }
   }
@@ -43,4 +43,15 @@ export function composeActivitySignal(input: ComposeActivitySignalInput): Activi
     timestamp: input.now.toISOString(),
     tasks,
   };
+}
+
+/** Bornage ADR : au plus une phrase par tâche et par minute, depuis l'état « dernier signal émis ». */
+function signaledWithinSameMinute(input: ComposeActivitySignalInput, taskId: string): boolean {
+  const lastSignalAt = input.lastSignalAtByTask?.[taskId];
+  if (lastSignalAt === undefined) return false;
+  return minuteOf(lastSignalAt) === minuteOf(input.now);
+}
+
+function minuteOf(instant: Date): number {
+  return Math.floor(instant.getTime() / 60_000);
 }
