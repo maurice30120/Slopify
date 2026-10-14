@@ -25,15 +25,18 @@ export interface ActivityTaskPhraseInput {
 
 /** Produit la phrase d'une tâche active en enchaînant les étages dans l'ordre de l'ADR 0013. */
 export function activityTaskPhrase(input: ActivityTaskPhraseInput): ActivityTaskSignal {
-  const taskId = typeof input.taskId === 'string' ? input.taskId : '';
+  let taskId = '';
   try {
+    taskId = typeof input.taskId === 'string' ? input.taskId : '';
     const fromLog = phraseFromLog(input);
     if (fromLog !== undefined) return { taskId, sentence: fromLog, source: 'log' };
     const fromGit = phraseFromGit(input);
     if (fromGit !== undefined) return { taskId, sentence: fromGit, source: 'git' };
     return { taskId, sentence: rienDeNouveau(input), source: 'none' };
   } catch {
-    // Repli cataclysmique sans toucher aux entrées : un getter piégé ne doit rien faire fuir du module.
+    // Repli cataclysmique sans toucher aux entrées : un getter piégé ne doit rien
+    // faire fuir du module. L'identifiant déjà lu survit ; un getter piégé
+    // laisse la chaîne vide.
     return { taskId, sentence: nothingNewSincePhrase(new Date(), undefined), source: 'none' };
   }
 }

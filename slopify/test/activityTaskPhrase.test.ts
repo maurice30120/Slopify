@@ -98,6 +98,28 @@ test('hostile inputs whose reads throw never let an exception escape', () => {
   assert.equal(signal.taskId, 't83-chaine-sources');
 });
 
+test('a hostile taskId getter cannot escape the module and falls back to an empty id', () => {
+  const hostile = {
+    get taskId(): string {
+      throw new Error('identifiant piégé');
+    },
+    get log(): string | undefined {
+      throw new Error('log illisible');
+    },
+    get git(): ActivityGitSignal | undefined {
+      throw new Error('git en échec');
+    },
+    now,
+    get lastSignalAt(): Date {
+      throw new Error('instant inconnu');
+    },
+  };
+  const signal = activityTaskPhrase(hostile);
+  assert.equal(signal.source, 'none');
+  assert.equal(signal.sentence, 'rien de nouveau depuis 1 minute');
+  assert.equal(signal.taskId, '', 'un identifiant piégé retombe sur une chaîne vide sans jamais fuir du module');
+});
+
 test('no lastSignalAt and no news yields the US 5 wording with N = 1', () => {
   const signal = activityTaskPhrase({
     taskId: 't83-chaine-sources',

@@ -31,7 +31,7 @@ export interface TaskBatchServiceOptions {
   repositoryPath: string;
   storePath?: string;
   subprocessExecutor?: SubprocessExecutor;
-  /** Receives a copy after each durable save, for CLI progress reporting. */
+  /** Reçoit une copie après chaque sauvegarde durable, pour l'avancement de la CLI. */
   onUpdate?: (snapshot: TaskBatchSnapshot) => void;
   /** Seam du Signal d'activité (ADR 0013) : reçoit chaque signal complet composé par le tick minute. */
   onActivitySignal?: (signal: ActivitySignal) => void;
