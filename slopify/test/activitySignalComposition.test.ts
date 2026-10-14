@@ -55,3 +55,15 @@ test('several tasks without news share one grouped entry listing them all', () =
     source: 'none',
   });
 });
+
+test('an integration phase produces an integration entry with its sentence', () => {
+  const signal = composeActivitySignal({
+    runId: 'run-1',
+    now,
+    tasks: [],
+    integration: { sentence: 'Intégration de la vague 1 en cours.' },
+  });
+  assert.deepEqual(signal.tasks, []);
+  assert.equal(signal.grouped, undefined);
+  assert.deepEqual(signal.integration, { sentence: 'Intégration de la vague 1 en cours.' });
+});

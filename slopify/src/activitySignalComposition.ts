@@ -43,12 +43,14 @@ export function composeActivitySignal(input: ComposeActivitySignalInput): Activi
     }
   }
   const grouped = quietTaskIds.length > 0 ? groupedSignal(input, quietTaskIds) : undefined;
+  const integration = input.integration !== undefined ? { sentence: input.integration.sentence } : undefined;
   return {
     version: 1,
     runId: input.runId,
     timestamp: input.now.toISOString(),
     tasks,
     ...(grouped !== undefined ? { grouped } : {}),
+    ...(integration !== undefined ? { integration } : {}),
   };
 }
 
