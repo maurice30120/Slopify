@@ -73,6 +73,7 @@ export function createPiTaskAdapter(): TaskAgentAdapter {
         `Follow implement with TDD at the approved public seams; commit when green. Skip the implement skill's final /code-review step: independent per-ticket Standards/Spec reviews are not required; the batch performs one final combined review of the integration branch.`,
         `If the ticket prompt itself delegates a review, run only that delegation.`,
         `Give a delegated reviewer the chosen fixed point (task baseline for implementation, run baseline for final combined review).`,
+        `Subagent delegation always carries the complete task parameter: single mode is {agent, task}, parallel mode is {tasks: [{agent, task}]}, chain mode is {chain: [{agent, task}]}. A call missing task is invalid and answers "Invalid parameters. Provide exactly one mode"; fix the call shape instead of repeating it.`,
         `Actual execution stdout and stderr are streamed to ${evidenceDirectory}/stdout.log and ${evidenceDirectory}/stderr.log; commands at ${evidenceDirectory}/commands.jsonl. Keep them intact as evidence for the final combined review.`,
         `Read repository AGENTS.md and every applicable standard before implementation.`,
         `Report final validations honestly.`,
