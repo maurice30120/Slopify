@@ -16,7 +16,7 @@ _Avoid_: étape de clarification, étape de planification, nœud de pipeline gé
 
 **Signal d’activité**:
 Phrase courte émise périodiquement pendant un run pour informer l’Agent Hôte de l’action en cours, entre deux transitions d’état durable.
-_Avoid_: heartbeat, progress, log
+_Avoid_: heartbeat, progress, log, pulse de vie
 
 ### V1 — vocabulaire du fonctionnement actuel
 
