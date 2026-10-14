@@ -6,7 +6,7 @@ import * as path from 'node:path';
 import test from 'node:test';
 import type { SubprocessExecutor } from '@acp-client/sandbox';
 import { TaskBatchService, type BatchTask, type TaskBatchSnapshot } from '../src/taskBatch.js';
-import { activityJournalPath, readActivitySignals } from '../src/activityJournal.js';
+import { activityJournalPath, readAllActivitySignals } from '../src/activityJournal.js';
 import { parseActivitySignal, type ActivitySignal } from '../src/activitySignal.js';
 import type { ActivityTickClock } from '../src/activityTick.js';
 
@@ -207,7 +207,7 @@ test('chaque tick minute de tasks run produit un signal complet via le seam et u
   assert.deepEqual(first.tasks, [{ taskId: 'narrated', sentence: 'Je lis la spécification figée', source: 'log' }]);
   assert.equal(first.grouped, undefined);
   assert.equal(first.integration, undefined);
-  let journal = await readActivitySignals(activityJournalPath(f.storePath, runId), 0);
+  let journal = await readAllActivitySignals(activityJournalPath(f.storePath, runId));
   assert.deepEqual(journal, [first], 'le journal du run persiste le signal intégral');
   // Une minute sans nouveau contenu : la tâche active sans nouvelles est regroupée.
   await tickUntil(f.signals, f.clock, 2);
@@ -225,7 +225,7 @@ test('chaque tick minute de tasks run produit un signal complet via le seam et u
   const before = f.signals.length;
   for (let minute = 0; minute < 3; minute++) await f.clock.advanceMinute();
   assert.equal(f.signals.length, before, 'aucun signal après la fin');
-  journal = await readActivitySignals(activityJournalPath(f.storePath, runId), 0);
+  journal = await readAllActivitySignals(activityJournalPath(f.storePath, runId));
   assert.equal(journal.length, before, 'le journal ne gagne rien après la fin');
 });
 
@@ -308,7 +308,7 @@ test('tasks resume-task émet des signaux pendant sa tentative isolée', { timeo
   await retriedStarted.promise;
   await tickUntil(f.signals, f.clock, 1);
   assert.deepEqual(f.signals[0].tasks, [{ taskId: 'work', sentence: 'Nouvelle tentative isolée', source: 'log' }]);
-  const journal = await readActivitySignals(activityJournalPath(f.storePath, interrupted.runId), 0);
+  const journal = await readAllActivitySignals(activityJournalPath(f.storePath, interrupted.runId));
   assert.deepEqual(journal, f.signals, 'le journal du run persiste les signaux de la tentative isolée');
   retriedHold.release();
   const retried = await retrying;
@@ -347,7 +347,7 @@ test('tasks resolve-conflict émet des signaux pendant la reprise des vagues', {
   const resolved = await resolving;
   assert.equal(resolved.status, 'failed');
   assert.equal(resolved.tasks.find(taskState => taskState.id === 'task-c')!.status, 'succeeded');
-  const journal = await readActivitySignals(activityJournalPath(f.storePath, conflicted.runId), 0);
+  const journal = await readAllActivitySignals(activityJournalPath(f.storePath, conflicted.runId));
   assert.deepEqual(journal, f.signals, 'les signaux de la résolution sont journalisés dans le run');
 });
 
@@ -390,7 +390,7 @@ test('tasks validate-resolution émet des signaux pendant la reprise des vagues'
   cHold.release();
   const validated = await validating;
   assert.equal(validated.status, 'succeeded');
-  const journal = await readActivitySignals(activityJournalPath(f.storePath, conflicted.runId), 0);
+  const journal = await readAllActivitySignals(activityJournalPath(f.storePath, conflicted.runId));
   assert.deepEqual(journal, f.signals, 'les signaux de la validation sont journalisés dans le run');
 });
 
@@ -424,7 +424,7 @@ test('le tick se tait sans tâche active ni intégration', { timeout: 30000 }, a
   assert.equal(state.status, 'succeeded');
   assert.ok(f.clock.firedTicks >= 3, 'le tick a bien tourné pendant la commande');
   assert.equal(f.signals.length, 0, 'aucun signal sans tâche active ni intégration');
-  assert.deepEqual(await readActivitySignals(activityJournalPath(f.storePath, snapshot.runId), 0), []);
+  assert.deepEqual(await readAllActivitySignals(activityJournalPath(f.storePath, snapshot.runId)), []);
 });
 
 test("aucune panne des sources ni de l'émission n'interrompt l'exécution d'une tâche", { timeout: 30000 }, async t => {
@@ -487,7 +487,7 @@ test('les traces de preuve gelées et les prompts restent intacts pendant que le
   assert.equal(state.context.specText, '# Approved specification');
   assert.deepEqual(f.launched.sort(), ['evidence', 'final-review']);
   // Le journal du run, et lui seul, porte les signaux.
-  const journal = await readActivitySignals(activityJournalPath(f.storePath, state.runId), 0);
+  const journal = await readAllActivitySignals(activityJournalPath(f.storePath, state.runId));
   assert.deepEqual(journal, f.signals);
   // Les preuves gelées de la tentative ne contiennent jamais le mécanisme d'observation.
   const attempt = state.tasks[0].attempts[0];

@@ -26,7 +26,15 @@ export function activityPhraseFromAttemptLog(input: ActivityPhraseInput): string
   const phrase = lastSignificantLine(input.log);
   if (phrase !== undefined) return phrase;
   if (input.lastSignalAt === undefined) return undefined;
-  const elapsedMinutes = Math.floor((input.now.getTime() - input.lastSignalAt.getTime()) / 60_000);
+  return nothingNewSincePhrase(input.now, input.lastSignalAt);
+}
+
+/**
+ * The shared "rien de nouveau depuis N minutes" fallback (N ≥ 1 per the frozen
+ * contract), computed from the last known signal of the same attempt.
+ */
+export function nothingNewSincePhrase(now: Date, lastSignalAt: Date): string {
+  const elapsedMinutes = Math.floor((now.getTime() - lastSignalAt.getTime()) / 60_000);
   const minutes = Math.max(1, elapsedMinutes);
   return `rien de nouveau depuis ${minutes} minute${minutes > 1 ? 's' : ''}`;
 }

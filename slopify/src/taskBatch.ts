@@ -120,10 +120,11 @@ interface ActivityAttemptReading {
   gitSnapshot: ActivityGitSnapshot | null;
 }
 
-/** État du tick pendant une commande longue : lectures par tentative et dernier signal émis par tâche. */
+/** État du tick pendant une commande longue : lectures par tentative, dernier signal émis par tâche (bornage) et par tentative (repli « rien de nouveau »). */
 interface ActivityTickSession {
   attempts: Map<string, ActivityAttemptReading>;
-  lastSignalAt: Map<string, Date>;
+  lastSignalAtByTask: Map<string, Date>;
+  lastSignalAtByAttempt: Map<string, Date>;
 }
 
 /** Seam public V2 : la validation et le contexte durable ne pénètrent jamais dans le runtime de pipeline V1. */
@@ -303,7 +304,7 @@ export class TaskBatchService {
     if (signal?.aborted) controller.abort();
     else signal?.addEventListener('abort', propagate, { once: true });
     this.activityIntegrationTaskId = undefined;
-    const session: ActivityTickSession = { attempts: new Map(), lastSignalAt: new Map() };
+    const session: ActivityTickSession = { attempts: new Map(), lastSignalAtByTask: new Map(), lastSignalAtByAttempt: new Map() };
     const loop = this.activityTickLoop(snapshot, session, controller.signal)
       .catch(() => {})
       .finally(() => { signal?.removeEventListener('abort', propagate); });
@@ -333,29 +334,38 @@ export class TaskBatchService {
     const now = new Date(this.activityClock.now());
     const runDirectory = path.join(this.storePath, snapshot.runId);
     const candidates: ActivityTaskCandidate[] = [];
+    const attemptIdByTask = new Map<string, string>();
     for (const task of activeTasks) {
       const attempt = task.attempts.at(-1);
       if (!attempt || attempt.status !== 'running') { candidates.push({ taskId: task.id, noNews: true }); continue; }
+      attemptIdByTask.set(task.id, attempt.attemptId);
       const reading = session.attempts.get(attempt.attemptId) ?? { logOffset: 0, gitSnapshot: null };
       const tail = await readAttemptLogTail(path.join(runDirectory, 'attempts', attempt.attemptId, 'stdout.log'), reading.logOffset);
       if (tail !== undefined) reading.logOffset = tail.offset;
       const git = await extractActivityGitSignal(path.join(runDirectory, 'workspaces', attempt.attemptId), reading.gitSnapshot);
       if (git.snapshot !== null) reading.gitSnapshot = git.snapshot;
       session.attempts.set(attempt.attemptId, reading);
-      const phrase = activityTaskPhrase({ taskId: task.id, log: tail?.text, git, now, lastSignalAt: session.lastSignalAt.get(task.id) });
+      const phrase = activityTaskPhrase({ taskId: task.id, log: tail?.text, git, now, lastSignalAt: session.lastSignalAtByAttempt.get(attempt.attemptId) });
       candidates.push(phrase.source === 'none'
-        ? { taskId: task.id, noNews: true }
+        ? { taskId: task.id, noNews: true, lastSignalAt: session.lastSignalAtByAttempt.get(attempt.attemptId) }
         : { taskId: task.id, news: { sentence: phrase.sentence, source: phrase.source } });
     }
     const composed = composeActivitySignal({
       runId: snapshot.runId, now, tasks: candidates,
-      lastSignalAtByTask: Object.fromEntries(session.lastSignalAt),
+      lastSignalAtByTask: Object.fromEntries(session.lastSignalAtByTask),
       ...(integrationTaskId !== undefined
         ? { integration: { sentence: `intégration du checkpoint de la tâche ${integrationTaskId}` } }
         : {}),
     });
     if (signal.aborted) return;
-    for (const taskSignal of composed.tasks) session.lastSignalAt.set(taskSignal.taskId, now);
+    // Rien à dire : une tâche active sans nouvelles est groupée, donc un signal
+    // sans tâche, sans groupe ni intégration n'apporte rien — il ne pollue pas le journal.
+    if (composed.tasks.length === 0 && composed.grouped === undefined && composed.integration === undefined) return;
+    for (const taskSignal of composed.tasks) {
+      session.lastSignalAtByTask.set(taskSignal.taskId, now);
+      const attemptId = attemptIdByTask.get(taskSignal.taskId);
+      if (attemptId !== undefined) session.lastSignalAtByAttempt.set(attemptId, now);
+    }
     try { await appendActivitySignal(activityJournalPath(this.storePath, snapshot.runId), composed); }
     catch { /* Le journal ne doit jamais interrompre l'exécution. */ }
     try { this.onActivitySignal?.(composed); }

@@ -8,7 +8,7 @@
  */
 import type { ActivityTaskSignal } from './activitySignal.js';
 import type { ActivityGitSignal } from './activitySignalGit.js';
-import { activityPhraseFromAttemptLog } from './activitySignalLogPhrase.js';
+import { activityPhraseFromAttemptLog, nothingNewSincePhrase } from './activitySignalLogPhrase.js';
 
 /** Entrées du chaînage : le log stdout de la tentative, le delta git de son clone, les instants. */
 export interface ActivityTaskPhraseInput {
@@ -57,7 +57,7 @@ function rienDeNouveau(input: ActivityTaskPhraseInput): string {
   const lastSignalAt = validInstant(input.lastSignalAt);
   const now = validInstant(input.now);
   if (lastSignalAt === undefined || now === undefined) return RIEN_DE_NOUVEAU;
-  return activityPhraseFromAttemptLog({ log: '', now, lastSignalAt }) ?? RIEN_DE_NOUVEAU;
+  return nothingNewSincePhrase(now, lastSignalAt);
 }
 
 /** Un instant exploitable : une Date dont le temps est fini, sinon `undefined`. */

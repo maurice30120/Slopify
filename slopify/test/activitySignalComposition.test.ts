@@ -40,14 +40,10 @@ test('several tasks without news share one grouped entry listing them all', () =
     runId: 'run-1',
     now,
     tasks: [
-      { taskId: 'sa-2', noNews: true },
-      { taskId: 'sa-3', noNews: true },
+      { taskId: 'sa-2', noNews: true, lastSignalAt: new Date('2026-10-14T10:02:10Z') }, // 1 minute de silence
+      { taskId: 'sa-3', noNews: true, lastSignalAt: new Date('2026-10-14T09:58:00Z') }, // 6 minutes de silence : le plus long l'emporte
       { taskId: 'sa-4', noNews: true }, // jamais signalée : silence inconnu, planché à 1 minute
     ],
-    lastSignalAtByTask: {
-      'sa-2': new Date('2026-10-14T10:02:10Z'), // 1 minute de silence
-      'sa-3': new Date('2026-10-14T09:58:00Z'), // 6 minutes de silence : le plus long l'emporte
-    },
   });
   assert.deepEqual(signal.tasks, [], 'une tâche sans nouvelles ne produit jamais d’entrée tâche');
   assert.deepEqual(signal.grouped, {
@@ -75,9 +71,8 @@ test('every composed signal passes the frozen contract validation', () => {
     now,
     tasks: [
       { taskId: 'sa-1', news: { sentence: 'extraction du log en cours', source: 'log' } },
-      { taskId: 'sa-2', noNews: true },
+      { taskId: 'sa-2', noNews: true, lastSignalAt: new Date('2026-10-14T10:01:00Z') },
     ],
-    lastSignalAtByTask: { 'sa-2': new Date('2026-10-14T10:01:00Z') },
     integration: { sentence: 'Intégration de la vague 1 en cours.' },
   });
   assert.deepEqual(parseActivitySignal(full), full);
@@ -97,15 +92,10 @@ test('a full wave mixes news tasks, one grouped entry and one integration entry'
     tasks: [
       { taskId: 'sa-1', news: { sentence: 'extraction du log en cours', source: 'log' } },
       { taskId: 'sa-2', news: { sentence: 'delta git visible', source: 'git' } },
-      { taskId: 'sa-3', noNews: true },
-      { taskId: 'sa-4', noNews: true },
-      { taskId: 'sa-5', noNews: true },
+      { taskId: 'sa-3', noNews: true, lastSignalAt: new Date('2026-10-14T10:00:00Z') }, // 4 minutes de silence
+      { taskId: 'sa-4', noNews: true, lastSignalAt: new Date('2026-10-14T10:03:30Z') }, // 0 minute → plancher 1
+      { taskId: 'sa-5', noNews: true, lastSignalAt: new Date('2026-10-14T10:02:00Z') }, // 2 minutes de silence
     ],
-    lastSignalAtByTask: {
-      'sa-3': new Date('2026-10-14T10:00:00Z'), // 4 minutes de silence
-      'sa-4': new Date('2026-10-14T10:03:30Z'), // 0 minute → plancher 1
-      'sa-5': new Date('2026-10-14T10:02:00Z'), // 2 minutes de silence
-    },
     integration: { sentence: 'Intégration de la vague 1 en cours.' },
   });
   assert.deepEqual(signal, {

@@ -129,7 +129,7 @@ Voir le [guide Pi](../docs/agents/coordinator-pi.md) pour la préparation, le su
 
 ## Suivi par l’agent hôte
 
-`run` et les reprises annoncent le `runId` dès la première sauvegarde, puis publient les changements d’avancement sur stderr. Avec `--json`, ce sont des événements JSON par ligne (`type: "progress"`). stdout contient toujours un seul objet JSON final :
+`run` et les reprises annoncent le `runId` dès la première sauvegarde, puis publient les changements d’avancement sur stderr. Avec `--json`, ce sont des événements JSON par ligne (`type: "progress"`). Pendant l’exécution, un tick minute émet en plus des Signaux d’activité sur stderr : un événement JSON dédié par ligne (`type: "activity-signal"`) en `--json`, une phrase préfixée `[run <id>] <tâche(s)> : <phrase>` par ligne en mode texte. stdout contient toujours un seul objet JSON final :
 
 ```bash
 slopify tasks run batch.json --json > result.json 2> progress.jsonl
@@ -140,7 +140,8 @@ Le statut conserve les champs existants et ajoute :
 
 - `progress` : phase, compteurs par état, tâches en cours, résultats à intégrer, tâches prêtes et dépendances attendues ;
 - `issues` : diagnostics du run et des dernières tentatives, causes d’échec, descendants bloqués et fichiers en conflit. Les anciens diagnostics désormais dépassés portent `historical: true` ;
-- `nextActions` : descriptions, commandes sous forme de tableaux d’arguments et préconditions pour consulter, inspecter, reprendre ou valider une résolution.
+- `nextActions` : descriptions, commandes sous forme de tableaux d’arguments et préconditions pour consulter, inspecter, reprendre ou valider une résolution ;
+- `activitySignals` : les dix derniers Signaux d’activité du run, en texte comme en `--json`, absents quand aucun signal n’a encore été émis.
 
 La sortie texte présente aussi les codes de sortie des agents, les commits, rapports, logs et sandboxes retenus. `completed` signifie que le checkpoint attend encore l’intégration ; seul `succeeded` compte comme intégré. `running` est un état sauvegardé : vérifier que le précédent processus Slopify et l’ancien agent sont arrêtés avant de reprendre une tentative laissée en cours après un crash.
 

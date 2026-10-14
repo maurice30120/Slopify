@@ -5,9 +5,9 @@ import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import test from 'node:test';
 import type { SubprocessExecutor } from '@acp-client/sandbox';
-import { TaskBatchService, type BatchTask } from '../src/taskBatch.js';
-import { runTaskBatchCli, type TaskBatchCliServiceOptions } from '../src/taskBatchCli.js';
-import { activityJournalPath, readActivitySignals } from '../src/activityJournal.js';
+import { TaskBatchService, type BatchTask, type TaskBatchServiceOptions } from '../src/taskBatch.js';
+import { runTaskBatchCli } from '../src/taskBatchCli.js';
+import { activityJournalPath, readAllActivitySignals } from '../src/activityJournal.js';
 import { ACTIVITY_SIGNAL_EVENT_TYPE, parseActivitySignal, type ActivitySignal } from '../src/activitySignal.js';
 import type { ActivityTickClock } from '../src/activityTick.js';
 
@@ -159,7 +159,7 @@ async function demoFixture(
     const promise = runTaskBatchCli([...args], {
       write: message => { sink.messages.push(message); },
       writeError: message => { sink.errors.push(message); },
-    }, root, (options: TaskBatchCliServiceOptions) => new TaskBatchService({
+    }, root, (options: TaskBatchServiceOptions) => new TaskBatchService({
       ...options, subprocessExecutor: execute, activityTickIntervalMs: 60_000, activityTickClock: clock,
     }));
     return { sink, promise };
@@ -296,7 +296,7 @@ test('tasks run --json : les signaux circulent sur stderr de bout en bout et std
   assert.deepEqual(signalEvents[1].signal.tasks, [{ taskId: 'demo', sentence: 'Je lance la suite de tests', source: 'log' }]);
   assert.equal(signalEvents[1].signal.timestamp, '2026-01-01T00:02:00.000Z');
   // Le journal du run persiste les signaux intégraux, rattrapables après coup.
-  const journal = await readActivitySignals(activityJournalPath(f.storePath, JSON.parse(demonstrated.sink.messages[0]).runId), 0);
+  const journal = await readAllActivitySignals(activityJournalPath(f.storePath, JSON.parse(demonstrated.sink.messages[0]).runId));
   assert.deepEqual(journal, signalEvents.map(event => event.signal), 'le journal du run porte les signaux complets');
   // Invariabilité au byte près : stdout et événements progress identiques à la référence,
   // au seul masquage des identifiants propres à chaque run près.
@@ -358,7 +358,7 @@ test('tasks resume : la reprise émet ses signaux sur stderr de bout en bout et 
   assert.equal(events[0].runId, interrupted.runId);
   assert.deepEqual(events[0].signal.tasks, [{ taskId: 'demo', sentence: 'Reprise après interruption', source: 'log' }]);
   assert.equal(events[0].signal.timestamp, '2026-01-01T00:01:00.000Z', "l'horodatage vient de l'horloge injectée");
-  const journal = await readActivitySignals(activityJournalPath(f.storePath, interrupted.runId), 0);
+  const journal = await readAllActivitySignals(activityJournalPath(f.storePath, interrupted.runId));
   assert.deepEqual(journal, events.map(event => event.signal), 'les signaux de la reprise sont journalisés dans le run');
   const final = JSON.parse(resumed.sink.messages[0]);
   assert.equal(final.status, 'succeeded');
@@ -406,7 +406,7 @@ test('tasks resume-task : la tentative isolée émet ses signaux sur stderr de b
   assert.equal(events[0].type, ACTIVITY_SIGNAL_EVENT_TYPE);
   assert.equal(events[0].runId, interrupted.runId);
   assert.deepEqual(events[0].signal.tasks, [{ taskId: 'work', sentence: 'Nouvelle tentative isolée', source: 'log' }]);
-  const journal = await readActivitySignals(activityJournalPath(f.storePath, interrupted.runId), 0);
+  const journal = await readAllActivitySignals(activityJournalPath(f.storePath, interrupted.runId));
   assert.deepEqual(journal, events.map(event => event.signal), 'les signaux de la tentative isolée sont journalisés dans le run');
   const final = JSON.parse(retried.sink.messages[0]);
   assert.equal(final.status, 'failed');
@@ -452,7 +452,7 @@ test('tasks resolve-conflict : la résolution émet ses signaux sur stderr de bo
   assert.equal(events[0].type, ACTIVITY_SIGNAL_EVENT_TYPE);
   assert.equal(events[0].runId, conflicted.runId);
   assert.deepEqual(events[0].signal.tasks, [{ taskId: 'task-c', sentence: 'Implémente la vague suivante', source: 'log' }]);
-  const journal = await readActivitySignals(activityJournalPath(f.storePath, conflicted.runId), 0);
+  const journal = await readAllActivitySignals(activityJournalPath(f.storePath, conflicted.runId));
   assert.deepEqual(journal, events.map(event => event.signal), 'les signaux de la résolution sont journalisés dans le run');
   const final = JSON.parse(resolving.sink.messages[0]);
   assert.equal(final.tasks.find((taskState: { id: string }) => taskState.id === 'task-c')!.status, 'succeeded');
@@ -507,7 +507,7 @@ test('tasks validate-resolution : la validation émet ses signaux sur stderr de 
   assert.equal(events[0].type, ACTIVITY_SIGNAL_EVENT_TYPE);
   assert.equal(events[0].runId, conflicted.runId);
   assert.deepEqual(events[0].signal.tasks, [{ taskId: 'task-c', sentence: 'Implémente après validation', source: 'log' }]);
-  const journal = await readActivitySignals(activityJournalPath(f.storePath, conflicted.runId), 0);
+  const journal = await readAllActivitySignals(activityJournalPath(f.storePath, conflicted.runId));
   assert.deepEqual(journal, events.map(event => event.signal), 'les signaux de la validation sont journalisés dans le run');
   const final = JSON.parse(validating.sink.messages[0]);
   assert.equal(final.status, 'succeeded');
@@ -543,7 +543,7 @@ test('tasks status rattrape les dix derniers signaux du journal du run, émis pa
   }
   assert.equal(await run, 0);
   const runId = JSON.parse(running.sink.messages[0]).runId;
-  const journal = await readActivitySignals(activityJournalPath(f.storePath, runId), 0);
+  const journal = await readAllActivitySignals(activityJournalPath(f.storePath, runId));
   assert.equal(journal.length, MINUTES, 'le journal du run persiste les douze signaux du tick');
   assert.equal(activitySignalLines(running.sink, true).length, MINUTES, 'stderr a observé les douze signaux de bout en bout');
   // Rattrapage en mode texte : la fenêtre affiche les dix derniers signaux du journal.

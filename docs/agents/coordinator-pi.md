@@ -296,9 +296,9 @@ slopify tasks status <run-id> --cwd /chemin/vers/depot --store /chemin/vers/stoc
 }
 ```
 
-Le `runId` est annoncé dès le lancement sur stderr, sans attendre la fin. Avec `--json`, les changements d’avancement sont des lignes JSON `type: "progress"` sur stderr ; stdout reste un seul résultat final. Lire ensuite `tasks status` avec les mêmes `--cwd` et `--store`.
+Le `runId` est annoncé dès le lancement sur stderr, sans attendre la fin. Avec `--json`, les changements d’avancement sont des lignes JSON `type: "progress"` sur stderr ; pendant l’exécution, un tick minute ajoute des Signaux d’activité, lignes JSON dédiées `type: "activity-signal"` (phrases préfixées `[run <id>] <tâche(s)> : <phrase>` en mode texte) ; stdout reste un seul résultat final. Lire ensuite `tasks status` avec les mêmes `--cwd` et `--store`.
 
-Le statut JSON conserve le snapshot et ajoute `progress` (phase, compteurs, tâches actives, checkpoints à intégrer, tâches prêtes et dépendances attendues), `issues` (causes des problèmes, avec tâche et tentative) et `nextActions` (commandes en tableaux d’arguments et préconditions). Le texte expose les mêmes informations avec les rapports, logs, commits et sandboxes inspectables. Les diagnostics historiques sont marqués `historical: true` : ils ne constituent pas un nouveau problème de la reprise.
+Le statut JSON conserve le snapshot et ajoute `progress` (phase, compteurs, tâches actives, checkpoints à intégrer, tâches prêtes et dépendances attendues), `issues` (causes des problèmes, avec tâche et tentative), `nextActions` (commandes en tableaux d’arguments et préconditions) et `activitySignals` (les dix derniers Signaux d’activité du run, absents quand aucun n’a été émis). Le texte expose les mêmes informations avec les rapports, logs, commits et sandboxes inspectables. Les diagnostics historiques sont marqués `historical: true` : ils ne constituent pas un nouveau problème de la reprise.
 
 `running` indique l’état enregistré, sans prouver que le processus travaille encore. Utiliser la date de dernière sauvegarde et l’inspection du sandbox pour diagnostiquer un arrêt ; vérifier que l’ancien processus Slopify et l’agent précédent ont terminé avant de relancer. Une tâche `completed` attend l’intégration et ne doit pas être relancée.
 

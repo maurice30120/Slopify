@@ -16,13 +16,12 @@ export function activityJournalPath(storePath: string, runId: string): string {
 }
 
 /**
- * Lit la fenêtre des `last` derniers Signaux d'activité du journal, en ordre
- * d'émission. Tolérant par contrat : journal absent ou illisible → fenêtre
- * vide, jamais d’exception ; les lignes déchirées ou étrangères sont ignorées.
- * `last` vaut 10 par défaut (fenêtre de `tasks status`) ; 0 ou négatif renvoie
- * tout le journal.
+ * Lit tout le journal des Signaux d'activité du run, en ordre d'émission :
+ * la persistance intégrale (ADR 0013) se vérifie sur l'intégralité. Tolérant
+ * par contrat : journal absent ou illisible → liste vide, jamais d’exception ;
+ * les lignes déchirées ou étrangères sont ignorées.
  */
-export async function readActivitySignals(journalPath: string, last = 10): Promise<ActivitySignal[]> {
+export async function readAllActivitySignals(journalPath: string): Promise<ActivitySignal[]> {
   let contents: string;
   try {
     contents = await readFile(journalPath, 'utf8');
@@ -42,7 +41,17 @@ export async function readActivitySignals(journalPath: string, last = 10): Promi
     const signal = parseActivitySignal(parsed);
     if (signal) signals.push(signal);
   }
-  return last > 0 ? signals.slice(-last) : signals;
+  return signals;
+}
+
+/**
+ * Lit la fenêtre des `last` derniers Signaux d'activité du journal, en ordre
+ * d'émission ; `last` vaut 10 par défaut (fenêtre de rattrapage de
+ * `tasks status`), et une valeur nulle ou négative donne une fenêtre vide.
+ */
+export async function readActivitySignals(journalPath: string, last = 10): Promise<ActivitySignal[]> {
+  const signals = await readAllActivitySignals(journalPath);
+  return signals.slice(Math.max(signals.length - last, 0));
 }
 
 // Sérialise les ajouts vers un même fichier : un append ne démarre qu'après le

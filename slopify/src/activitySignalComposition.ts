@@ -12,7 +12,7 @@ export type ActivityNewsSource = 'log' | 'git';
 /** Candidat de Signal d'activité pour une tâche active : du nouveau (phrase + source), ou l'absence de nouvelles. */
 export type ActivityTaskCandidate =
   | { taskId: string; news: { sentence: string; source: ActivityNewsSource } }
-  | { taskId: string; noNews: true };
+  | { taskId: string; noNews: true; /** Instant du dernier signal connu de la tentative courante de la tâche. */ lastSignalAt?: Date };
 
 /** Phase d'intégration de vague courante, avec sa phrase. */
 export interface ActivityIntegrationInput {
@@ -32,17 +32,17 @@ export interface ComposeActivitySignalInput {
 /** Compose un Signal d'activité complet au contrat figé v1. */
 export function composeActivitySignal(input: ComposeActivitySignalInput): ActivitySignal {
   const tasks: ActivityTaskSignal[] = [];
-  const quietTaskIds: string[] = [];
+  const quiet: Extract<ActivityTaskCandidate, { noNews: true }>[] = [];
   for (const candidate of input.tasks) {
     if ('news' in candidate) {
       if (!signaledWithinSameMinute(input, candidate.taskId)) {
         tasks.push({ taskId: candidate.taskId, sentence: candidate.news.sentence, source: candidate.news.source });
       }
     } else {
-      quietTaskIds.push(candidate.taskId);
+      quiet.push(candidate);
     }
   }
-  const grouped = quietTaskIds.length > 0 ? groupedSignal(input, quietTaskIds) : undefined;
+  const grouped = quiet.length > 0 ? groupedSignal(input, quiet) : undefined;
   const integration = input.integration !== undefined ? { sentence: input.integration.sentence } : undefined;
   return {
     version: 1,
@@ -55,16 +55,16 @@ export function composeActivitySignal(input: ComposeActivitySignalInput): Activi
 }
 
 /** Une seule phrase partagée pour toutes les tâches actives sans nouvelles. */
-function groupedSignal(input: ComposeActivitySignalInput, taskIds: string[]): ActivityGroupedSignal {
+function groupedSignal(input: ComposeActivitySignalInput, quiet: Extract<ActivityTaskCandidate, { noNews: true }>[]): ActivityGroupedSignal {
   let minutes = 0;
-  for (const taskId of taskIds) {
-    const lastSignalAt = input.lastSignalAtByTask?.[taskId];
+  for (const candidate of quiet) {
+    const lastSignalAt = candidate.lastSignalAt;
     if (lastSignalAt !== undefined) {
       minutes = Math.max(minutes, Math.floor((input.now.getTime() - lastSignalAt.getTime()) / 60_000));
     }
   }
   const silence = Math.max(1, minutes);
-  return { taskIds, sentence: `rien de nouveau depuis ${silence} minute${silence > 1 ? 's' : ''}`, source: 'none' };
+  return { taskIds: quiet.map(candidate => candidate.taskId), sentence: `rien de nouveau depuis ${silence} minute${silence > 1 ? 's' : ''}`, source: 'none' };
 }
 
 /** Bornage ADR : au plus une phrase par tâche et par minute, depuis l'état « dernier signal émis ». */

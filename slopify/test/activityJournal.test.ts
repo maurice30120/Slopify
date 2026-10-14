@@ -3,7 +3,7 @@ import test from 'node:test';
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
-import { ACTIVITY_JOURNAL_FILE, activityJournalPath, appendActivitySignal, readActivitySignals } from '../src/activityJournal.js';
+import { ACTIVITY_JOURNAL_FILE, activityJournalPath, appendActivitySignal, readActivitySignals, readAllActivitySignals } from '../src/activityJournal.js';
 import type { ActivitySignal } from '../src/activitySignal.js';
 
 function signal(runId: string, minute: number, taskId = 'sa-1'): ActivitySignal {
@@ -79,8 +79,10 @@ test('the reader returns the N last entries in emission order', async (t) => {
   const window3 = await readActivitySignals(journal, 3);
   assert.deepEqual(window3.map(parsed => parsed.tasks[0].sentence).at(-1), 'minute 15: building the activity signal contract');
   assert.equal(window3.length, 3);
-  const all = await readActivitySignals(journal, 0);
+  const all = await readAllActivitySignals(journal);
   assert.equal(all.length, 15);
+  assert.deepEqual(await readActivitySignals(journal, 0), [], 'une fenêtre nulle ou négative est vide, pas le journal entier');
+  assert.deepEqual(await readActivitySignals(journal, -2), []);
 });
 
 test('the reader returns an empty window when the journal is absent or unreadable', async (t) => {
@@ -98,7 +100,7 @@ test('the reader skips malformed lines without losing the valid entries around t
   const torn = await readFile(journal, 'utf8');
   await writeFile(journal, `${torn}{"version":1,"runId":"run-1"  // torn mid-wr\n${JSON.stringify({ version: 1, runId: 'run-1', timestamp: '2026-10-13T10:03:00.000Z', tasks: [{ taskId: 'sa-1', sentence: 'minute 3', source: 'log' }] })}\nnot json at all\n`);
   await appendActivitySignal(journal, signal('run-1', 4));
-  const signals = await readActivitySignals(journal, 0);
+  const signals = await readAllActivitySignals(journal);
   assert.deepEqual(signals.map(parsed => parsed.tasks[0].sentence), [
     'minute 1: building the activity signal contract',
     'minute 2: building the activity signal contract',

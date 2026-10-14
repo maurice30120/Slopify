@@ -3,9 +3,6 @@ import { taskBatchReport, formatTaskBatchReport } from './taskBatchReport.js';
 import { formatActivitySignalEvent, parseActivitySignal, type ActivitySignal } from './activitySignal.js';
 import { TaskBatchService, TaskBatchValidationError, TaskBatchExecutionError, type TaskBatchSnapshot, type TaskBatchServiceOptions } from './taskBatch.js';
 
-/** Options du service du canal CLI, y compris le seam du Signal d'activité (ADR 0013). */
-export type TaskBatchCliServiceOptions = TaskBatchServiceOptions;
-
 /** Rend chaque phrase du signal en une ligne préfixée `[run X] <tâches> : <phrase>`. */
 function activitySignalLines(signal: ActivitySignal): string[] {
   const prefix = `[run ${signal.runId}]`;
@@ -58,7 +55,7 @@ export async function runTaskBatchCli(
   argv: string[],
   output: { write(message: string): void; writeError(message: string): void },
   baseCwd = process.cwd(),
-  createService: (options: TaskBatchCliServiceOptions) => BatchCliService = options => new TaskBatchService(options),
+  createService: (options: TaskBatchServiceOptions) => BatchCliService = options => new TaskBatchService(options),
 ): Promise<number> {
   let json = argv.includes('--json');
   let reportStorePath: string | undefined;
