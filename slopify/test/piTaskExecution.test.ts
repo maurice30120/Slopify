@@ -43,7 +43,7 @@ async function fixture(t: {after(fn:()=>Promise<void>):void}, events?: string, u
     if(a[0]==='cp') {
       const source=a[1];
       if(source.endsWith('models.json')){const provider=JSON.parse(await readFile(source,'utf8')).providers['slopify-mistral'];assert.equal(provider.models[0].compat.supportsStore,false);assert.equal(provider.apiKey,'${MISTRAL_API_KEY}');}
-      if(source.endsWith('harness.md')){const harness=await readFile(source,'utf8');assert.match(harness,/\{agent, task\}/);assert.match(harness,/\{tasks: \[\{agent, task\}\]\}/);assert.match(harness,/Invalid parameters\. Provide exactly one mode/);assert.match(harness,/fix the call shape/);}
+      if(source.endsWith('harness.md')){const harness=await readFile(source,'utf8');assert.match(harness,/\{agent, task\}/);assert.match(harness,/\{tasks: \[\{agent, task\}\]\}/);assert.match(harness,/Invalid parameters\. Provide exactly one mode/);assert.match(harness,/fix the call shape/);assert.match(harness,/Delegated reviewer agents are named standards and spec/);}
       if(source.endsWith('standards.md')) {const role=await readFile(source,'utf8');assert.match(role,/AGENTS\.md/);assert.match(role,/Official fixed smell baseline/);assert.match(role,/stdout/);}
       if(source.endsWith('spec.md') && source.includes('agents'))assert.match(await readFile(source,'utf8'), /full.*spec|complete.*spec/i);
       return ok();
