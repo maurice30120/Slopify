@@ -1,23 +1,22 @@
+import { truncatePhrase } from './activitySignalText.js';
+
 /**
- * Pure seam for the Activity Signal log source (ADR 0013).
+ * Seam pur de la source log du Signal d'activité (ADR 0013).
  *
- * Extracts the activity phrase from the stdout log of an attempt: the last
- * significant line, with ANSI escapes stripped, truncated to a single line of
- * at most 200 characters. Falls back to "rien de nouveau depuis N minutes"
- * computed from the last known signal, or undefined when there is nothing to
- * say (the tick then falls back to the Git delta).
+ * Extrait la phrase d'activité depuis le log stdout d'une tentative : la
+ * dernière ligne significative, codes ANSI retirés, tronquée sur une seule
+ * ligne d'au plus 200 caractères. Repli « rien de nouveau depuis N minutes »
+ * calculé depuis le dernier signal connu, ou undefined quand il n'y a rien à
+ * dire (le tick retombe alors sur le delta Git).
  */
 export interface ActivityPhraseInput {
-  /** Full stdout log of the attempt. */
+  /** Log stdout complet de la tentative. */
   log: string;
-  /** Current instant. */
+  /** Instant courant. */
   now: Date;
-  /** Instant of the last known Activity Signal for the same attempt. */
+  /** Instant du dernier Signal d'activité connu pour la même tentative. */
   lastSignalAt?: Date;
 }
-
-/** At most 200 characters total on the phrase: 199 kept + ellipsis. */
-const MAX_PHRASE_LENGTH = 200;
 
 const LETTER_PATTERN = /\p{L}/u;
 const ANSI_PATTERN = /\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g;
@@ -30,11 +29,17 @@ export function activityPhraseFromAttemptLog(input: ActivityPhraseInput): string
 }
 
 /**
- * The shared "rien de nouveau depuis N minutes" fallback (N ≥ 1 per the frozen
- * contract), computed from the last known signal of the same attempt.
+ * Repli partagé « rien de nouveau depuis N minutes » (N ≥ 1 selon le contrat
+ * figé), calculé depuis le dernier signal connu de la même tentative. Un
+ * instant de référence manquant ou invalide donne la formulation N = 1 —
+ * la chaîne et la composition partagent cette convention, pour que le
+ * libellé de l'US 5 ne perde jamais sa durée.
  */
-export function nothingNewSincePhrase(now: Date, lastSignalAt: Date): string {
-  const elapsedMinutes = Math.floor((now.getTime() - lastSignalAt.getTime()) / 60_000);
+export function nothingNewSincePhrase(now: Date, lastSignalAt: Date | undefined): string {
+  const elapsedMinutes = lastSignalAt instanceof Date && Number.isFinite(lastSignalAt.getTime())
+    && now instanceof Date && Number.isFinite(now.getTime())
+    ? Math.floor((now.getTime() - lastSignalAt.getTime()) / 60_000)
+    : 0;
   const minutes = Math.max(1, elapsedMinutes);
   return `rien de nouveau depuis ${minutes} minute${minutes > 1 ? 's' : ''}`;
 }
@@ -57,10 +62,10 @@ function lastSignificantLine(log: string): string | undefined {
       index++;
     }
   }
-  return last === undefined ? undefined : truncate(last);
+  return last === undefined ? undefined : truncatePhrase(last);
 }
 
-/** Consumes a raw JSON block (single or pretty-printed multi-line) via brace balance. */
+/** Consomme un bloc JSON brut (mono-ligne ou pretty-printé multi-lignes) par balance d'accolades. */
 function endOfJsonBlock(lines: string[], start: number): number {
   let depth = 0;
   for (let index = start; index < lines.length; index++) {
@@ -75,10 +80,4 @@ function endOfJsonBlock(lines: string[], start: number): number {
 
 function stripAnsi(text: string): string {
   return text.replace(ANSI_PATTERN, '');
-}
-
-function truncate(line: string): string {
-  return line.length > MAX_PHRASE_LENGTH
-    ? `${line.slice(0, MAX_PHRASE_LENGTH - 1)}…`
-    : line;
 }

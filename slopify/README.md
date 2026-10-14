@@ -129,7 +129,7 @@ Voir le [guide Pi](../docs/agents/coordinator-pi.md) pour la préparation, le su
 
 ## Suivi par l’agent hôte
 
-`run` et les reprises annoncent le `runId` dès la première sauvegarde, puis publient les changements d’avancement sur stderr. Avec `--json`, ce sont des événements JSON par ligne (`type: "progress"`). Pendant l’exécution, un tick minute émet en plus des Signaux d’activité sur stderr : un événement JSON dédié par ligne (`type: "activity-signal"`) en `--json`, une phrase préfixée `[run <id>] <tâche(s)> : <phrase>` par ligne en mode texte. stdout contient toujours un seul objet JSON final :
+`run` et les reprises annoncent le `runId` dès la première sauvegarde, puis publient les changements d’avancement sur stderr. Avec `--json`, ce sont des événements JSON par ligne (`type: "progress"`). Pendant l’exécution, un tick minute émet en plus des Signaux d’activité sur stderr : un événement JSON dédié par ligne (`type: "activity-signal"`) en `--json`, une phrase préfixée `[run <id>] <tâche(s)> : <phrase>` par ligne en mode texte. La phrase de chaque tâche est mécanique, sans LLM, dans l’ordre de priorité de l’ADR 0013 : dernière ligne significative du contenu **nouveau** du log de la tentative depuis le tick précédent (lecture incrémentale assumée : une ligne déjà narrée n’est pas réémise chaque minute), à défaut delta `git status` du clone, à défaut « rien de nouveau depuis N minutes ». stdout contient toujours un seul objet JSON final :
 
 ```bash
 slopify tasks run batch.json --json > result.json 2> progress.jsonl

@@ -339,6 +339,11 @@ export class TaskBatchService {
       const attempt = task.attempts.at(-1);
       if (!attempt || attempt.status !== 'running') { candidates.push({ taskId: task.id, noNews: true }); continue; }
       attemptIdByTask.set(task.id, attempt.attemptId);
+      // Lecture incrémentale délibérée : le seam de phrase ne voit que le contenu
+      // nouveau depuis le tick précédent, pas le log entier. Écart assumé à la
+      // lecture littérale de l'US 6 (« dernière ligne significative du log »),
+      // cohérent avec l'US 3 (au plus une phrase par tâche et par minute) : une
+      // ligne déjà narrée n'est pas réémise chaque minute comme du nouveau.
       const reading = session.attempts.get(attempt.attemptId) ?? { logOffset: 0, gitSnapshot: null };
       const tail = await readAttemptLogTail(path.join(runDirectory, 'attempts', attempt.attemptId, 'stdout.log'), reading.logOffset);
       if (tail !== undefined) reading.logOffset = tail.offset;
@@ -995,7 +1000,7 @@ function validateBatch(input: unknown): TaskBatch {
     }
   }
   if (diagnostics.length) throw new TaskBatchValidationError(diagnostics);
-  // SÉCURITÉ : l'entrée a été validée ci-dessus et est nécessairement un TaskBatch.
+  // SAFETY: l'entrée a été validée ci-dessus et est nécessairement un TaskBatch (validateBatch rejette tout le reste avant).
   const batch = input as unknown as TaskBatch;
   const visited = new Set<string>();
   const active: string[] = [];

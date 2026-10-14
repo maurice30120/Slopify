@@ -111,9 +111,30 @@ test('tronque un nom de fichier trop long et borne la longueur totale de la phra
   const signal = await extractActivityGitSignal(repo, null);
 
   assert.ok(signal.phrase);
-  assert.ok(signal.phrase.length <= 201, `phrase trop longue: ${signal.phrase.length}`);
+  assert.ok(signal.phrase.length <= 200, `phrase trop longue: ${signal.phrase.length}`);
   assert.ok(!signal.phrase.includes(longName));
   assert.ok(signal.phrase.includes('…'));
+  assert.ok(!signal.phrase.includes('\n'));
+});
+
+test('borne la phrase totale a 200 caracteres, points de suspension compris', async (t) => {
+  const { repo } = await fixtureClone(t);
+  const longBase1 = `${'tres-long-'.repeat(5)}-base-1.txt`;
+  const longBase2 = `${'tres-long-'.repeat(5)}-base-2.txt`;
+  await writeFile(path.join(repo, longBase1), 'b1\n');
+  await writeFile(path.join(repo, longBase2), 'b2\n');
+  git(repo, 'add', '.');
+  git(repo, 'commit', '-qm', 'base longue');
+  await writeFile(path.join(repo, longBase1), 'b1 modifie\n');
+  rmSync(path.join(repo, longBase2));
+  await writeFile(path.join(repo, `${'tres-long-'.repeat(5)}-cree-1.txt`), 'c1\n');
+  await writeFile(path.join(repo, `${'tres-long-'.repeat(5)}-cree-2.txt`), 'c2\n');
+
+  const signal = await extractActivityGitSignal(repo, null);
+
+  assert.ok(signal.phrase);
+  assert.ok(signal.phrase.endsWith('…'), 'la troncature de la phrase a bien tiré');
+  assert.ok(signal.phrase.length <= 200, `phrase trop longue: ${signal.phrase.length}`);
   assert.ok(!signal.phrase.includes('\n'));
 });
 

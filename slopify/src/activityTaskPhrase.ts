@@ -23,9 +23,6 @@ export interface ActivityTaskPhraseInput {
   lastSignalAt?: Date;
 }
 
-/** Phrase « rien de nouveau » sans durée : dernier repli quand aucun instant de référence n'est connu. */
-const RIEN_DE_NOUVEAU = 'rien de nouveau';
-
 /** Produit la phrase d'une tâche active en enchaînant les étages dans l'ordre de l'ADR 0013. */
 export function activityTaskPhrase(input: ActivityTaskPhraseInput): ActivityTaskSignal {
   const taskId = typeof input.taskId === 'string' ? input.taskId : '';
@@ -36,7 +33,8 @@ export function activityTaskPhrase(input: ActivityTaskPhraseInput): ActivityTask
     if (fromGit !== undefined) return { taskId, sentence: fromGit, source: 'git' };
     return { taskId, sentence: rienDeNouveau(input), source: 'none' };
   } catch {
-    return { taskId, sentence: RIEN_DE_NOUVEAU, source: 'none' };
+    // Repli cataclysmique sans toucher aux entrées : un getter piégé ne doit rien faire fuir du module.
+    return { taskId, sentence: nothingNewSincePhrase(new Date(), undefined), source: 'none' };
   }
 }
 
@@ -52,15 +50,7 @@ function phraseFromGit(input: ActivityTaskPhraseInput): string | undefined {
   return typeof phrase === 'string' && phrase.length > 0 ? phrase : undefined;
 }
 
-/** Étage 3 : « rien de nouveau depuis N minutes » depuis le dernier signal connu de la même tentative. */
+/** Étage 3 : « rien de nouveau depuis N minutes » (N ≥ 1), depuis le dernier signal connu de la même tentative. */
 function rienDeNouveau(input: ActivityTaskPhraseInput): string {
-  const lastSignalAt = validInstant(input.lastSignalAt);
-  const now = validInstant(input.now);
-  if (lastSignalAt === undefined || now === undefined) return RIEN_DE_NOUVEAU;
-  return nothingNewSincePhrase(now, lastSignalAt);
-}
-
-/** Un instant exploitable : une Date dont le temps est fini, sinon `undefined`. */
-function validInstant(instant: Date | undefined): Date | undefined {
-  return instant instanceof Date && Number.isFinite(instant.getTime()) ? instant : undefined;
+  return nothingNewSincePhrase(input.now, input.lastSignalAt);
 }

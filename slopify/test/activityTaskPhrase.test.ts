@@ -94,11 +94,11 @@ test('hostile inputs whose reads throw never let an exception escape', () => {
   };
   const signal = activityTaskPhrase(hostile);
   assert.equal(signal.source, 'none');
-  assert.equal(signal.sentence, 'rien de nouveau');
+  assert.equal(signal.sentence, 'rien de nouveau depuis 1 minute');
   assert.equal(signal.taskId, 't83-chaine-sources');
 });
 
-test('no lastSignalAt and no news yields the defined fallback without a duration', () => {
+test('no lastSignalAt and no news yields the US 5 wording with N = 1', () => {
   const signal = activityTaskPhrase({
     taskId: 't83-chaine-sources',
     log: '',
@@ -106,7 +106,7 @@ test('no lastSignalAt and no news yields the defined fallback without a duration
     now,
   });
   assert.equal(signal.source, 'none');
-  assert.equal(signal.sentence, 'rien de nouveau');
+  assert.equal(signal.sentence, 'rien de nouveau depuis 1 minute');
 });
 
 test('a silent log with an intact clone yields “rien de nouveau depuis N minutes” of source none', () => {

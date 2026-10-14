@@ -5,6 +5,7 @@
  */
 
 import type { ActivityGroupedSignal, ActivitySignal, ActivityTaskSignal } from './activitySignal.js';
+import { nothingNewSincePhrase } from './activitySignalLogPhrase.js';
 
 /** Source d'une phrase qui a du nouveau : log de la tentative ou delta git du clone. */
 export type ActivityNewsSource = 'log' | 'git';
@@ -56,15 +57,14 @@ export function composeActivitySignal(input: ComposeActivitySignalInput): Activi
 
 /** Une seule phrase partagée pour toutes les tâches actives sans nouvelles. */
 function groupedSignal(input: ComposeActivitySignalInput, quiet: Extract<ActivityTaskCandidate, { noNews: true }>[]): ActivityGroupedSignal {
-  let minutes = 0;
+  let earliest: Date | undefined;
   for (const candidate of quiet) {
     const lastSignalAt = candidate.lastSignalAt;
-    if (lastSignalAt !== undefined) {
-      minutes = Math.max(minutes, Math.floor((input.now.getTime() - lastSignalAt.getTime()) / 60_000));
+    if (lastSignalAt !== undefined && (earliest === undefined || lastSignalAt.getTime() < earliest.getTime())) {
+      earliest = lastSignalAt;
     }
   }
-  const silence = Math.max(1, minutes);
-  return { taskIds: quiet.map(candidate => candidate.taskId), sentence: `rien de nouveau depuis ${silence} minute${silence > 1 ? 's' : ''}`, source: 'none' };
+  return { taskIds: quiet.map(candidate => candidate.taskId), sentence: nothingNewSincePhrase(input.now, earliest), source: 'none' };
 }
 
 /** Bornage ADR : au plus une phrase par tâche et par minute, depuis l'état « dernier signal émis ». */

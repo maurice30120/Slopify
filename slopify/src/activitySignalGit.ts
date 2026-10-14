@@ -1,12 +1,12 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { truncatePhrase } from './activitySignalText.js';
 
 const execFileAsync = promisify(execFile);
 
 const GIT_TIMEOUT_MS = 5000;
 const MAX_LISTED_NAMES = 3;
 const MAX_NAME_LENGTH = 50;
-const MAX_PHRASE_LENGTH = 200;
 
 const CATEGORY_ORDER = ['modified', 'created', 'deleted', 'renamed'] as const;
 
@@ -40,7 +40,7 @@ export async function extractActivityGitSignal(
   return { phrase: delta.size === 0 ? null : describeDelta(delta), snapshot };
 }
 
-/** Fichiers dont le statut a change depuis le signal precedent : nouveaux, modifies ou reclasses. */
+/** Fichiers dont le statut a changé depuis le signal précédent : nouveaux, modifiés ou reclassés. */
 function computeDelta(current: Readonly<Record<string, string>>, previous: Readonly<Record<string, string>>): Map<string, string> {
   const delta = new Map<string, string>();
   for (const [file, xy] of Object.entries(current)) {
@@ -58,7 +58,7 @@ function categorize(xy: string): Category {
   return 'modified';
 }
 
-/** Construit la phrase mecanique sur une ligne, noms tronques si trop nombreux. */
+/** Construit la phrase mécanique sur une ligne, noms tronqués si trop nombreux. */
 function describeDelta(delta: ReadonlyMap<string, string>): string {
   const counts = new Map<Category, string[]>([]);
   for (const [file, xy] of delta) {
@@ -94,10 +94,6 @@ function describeCategory(category: Category, files: string[], first: boolean): 
 function truncateName(file: string): string {
   const sanitized = file.replace(/[\r\n\t]/g, ' ');
   return sanitized.length > MAX_NAME_LENGTH ? `${sanitized.slice(0, MAX_NAME_LENGTH)}…` : sanitized;
-}
-
-function truncatePhrase(phrase: string): string {
-  return phrase.length > MAX_PHRASE_LENGTH ? `${phrase.slice(0, MAX_PHRASE_LENGTH)}…` : phrase;
 }
 
 /** Lit le statut porcelain du clone ; null en cas d'échec quelconque de la commande git. */

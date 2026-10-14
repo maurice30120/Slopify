@@ -1,15 +1,12 @@
 import assert from 'node:assert/strict';
-import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import test from 'node:test';
-import type { SubprocessExecutor } from '@acp-client/sandbox';
 import { TaskBatchService, type BatchTask, type TaskBatchServiceOptions } from '../src/taskBatch.js';
 import { runTaskBatchCli } from '../src/taskBatchCli.js';
 import { activityJournalPath, readAllActivitySignals } from '../src/activityJournal.js';
 import { ACTIVITY_SIGNAL_EVENT_TYPE, parseActivitySignal, type ActivitySignal } from '../src/activitySignal.js';
-import type { ActivityTickClock } from '../src/activityTick.js';
+import { fakeSbxExecutor, gate, git, ManualActivityClock, prepareSlopifyFixture, task } from './activityTickHarness.js';
 
 /** T85 : démonstration observable de bout en bout des Signaux d'activité (ADR 0013).
  * La preuve finale du lot : chaque commande longue est pilotée depuis la CLI avec un
@@ -18,46 +15,6 @@ import type { ActivityTickClock } from '../src/activityTick.js';
  * résultat stdout et les événements progress restent inchangés au byte près pendant
  * que les signaux circulent, et que le journal du run est rattrapable par
  * `tasks status` (dix derniers signaux). Aucune mécanique nouvelle : l'existant intégré. */
-
-function git(repo: string, ...args: string[]) {
-  return execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8' }).trim();
-}
-function gate() {
-  let release!: () => void;
-  const promise = new Promise<void>(resolve => { release = resolve; });
-  return { promise, release };
-}
-const task = (id: string, agent: 'pi' | 'codex', dependsOn: string[] = []): BatchTask => ({
-  id, agent, dependsOn, prompt: id, source: `${id}.md`,
-});
-
-/** Horloge manuelle : le temps n'avance que quand le test le décide, tick rapide et déterministe. */
-class ManualActivityClock implements ActivityTickClock {
-  private waiters: Array<() => void> = [];
-  private instant = new Date('2026-01-01T00:00:00Z');
-  now(): Date { return new Date(this.instant); }
-  wait(_intervalMs: number, signal: AbortSignal): Promise<void> {
-    return new Promise(resolve => {
-      if (signal.aborted) return resolve();
-      const settle = () => {
-        const index = this.waiters.indexOf(settle);
-        if (index >= 0) this.waiters.splice(index, 1);
-        signal.removeEventListener('abort', settle);
-        resolve();
-      };
-      signal.addEventListener('abort', settle, { once: true });
-      this.waiters.push(settle);
-    });
-  }
-  /** Avance le temps d'une minute et lève chaque tick en attente ; l'émission rend la main au test. */
-  async advanceMinute(): Promise<void> {
-    this.instant = new Date(this.instant.getTime() + 60_000);
-    const waiting = this.waiters.splice(0);
-    for (const settle of waiting) settle();
-    await new Promise(resolve => setImmediate(resolve));
-    await new Promise(resolve => setTimeout(resolve, 2));
-  }
-}
 
 interface CliSink {
   messages: string[];
@@ -76,82 +33,14 @@ interface DemoFixture {
   cli(args: string[]): { sink: CliSink; promise: Promise<number> };
 }
 
-/** Substitute sbx alone: all clones, commits, checkpoints and published branches are real Git. */
 async function demoFixture(
   t: { after(fn: () => Promise<void>): void },
   tasks: BatchTask[],
   agent: (id: string, sandbox: string, emit: (text: string) => void, cwd: string) => Promise<number>,
 ): Promise<DemoFixture> {
-  const root = await mkdtemp(path.join(tmpdir(), 'slopify-t85-demo-'));
-  t.after(() => rm(root, { recursive: true, force: true }));
-  const repo = path.join(root, 'host');
-  execFileSync('git', ['init', '-q', repo]);
-  git(repo, 'config', 'user.name', 'Test');
-  git(repo, 'config', 'user.email', 'test@example.invalid');
-  await writeFile(path.join(repo, 'base.txt'), 'committed base');
-  git(repo, 'add', '.'); git(repo, 'commit', '-qm', 'base');
-  const skills = path.join(root, 'official-skills');
-  await mkdir(path.join(skills, 'code-review'), { recursive: true });
-  await writeFile(path.join(skills, 'code-review', 'SKILL.md'), 'Official review reference');
-  await writeFile(path.join(root, 'spec.md'), '# Approved specification');
-  const batchFile = path.join(root, 'batch.json');
-  await writeFile(batchFile, JSON.stringify({ specFile: 'spec.md', tasks }));
+  const { root, repo, skills, batchFile } = await prepareSlopifyFixture('slopify-t85-demo-', t, tasks);
   const sandboxes = new Map<string, string>();
-  const execute: SubprocessExecutor = async request => {
-    if (request.command === 'git') {
-      const r = spawnSync('git', request.args, { cwd: request.cwd, encoding: 'utf8' });
-      return { exitCode: r.status ?? 1, stdout: r.stdout ?? '', stderr: r.stderr ?? '' };
-    }
-    assert.equal(request.command, 'sbx');
-    const a = request.args;
-    const ok = (stdout = '') => ({ exitCode: 0, stdout, stderr: '' });
-    if (a[0] === 'version') return ok('sbx 0.47.0');
-    if (a.includes('--help')) return ok('--clone --skills --json policy init');
-    if (a[0] === 'policy') return ok('{"initialized":true}');
-    if (a[0] === 'skills') return ok(JSON.stringify({ store: skills, skills: ['implement', 'tdd', 'code-review'] }));
-    if (a[0] === 'kit') return ok('{}');
-    if (a[0] === 'ls') return ok('[]');
-    if (a[0] === 'create') {
-      const name = a[a.indexOf('--name') + 1];
-      const sandbox = path.join(root, name);
-      execFileSync('git', ['clone', '-q', request.cwd!, sandbox]);
-      git(request.cwd!, 'remote', 'add', `sandbox-${name}`, sandbox);
-      sandboxes.set(name, sandbox);
-      return ok();
-    }
-    if (a[0] === 'rm') return ok();
-    if (a[0] === 'cp') {
-      if (a.at(-1)?.endsWith('codex-sessions')) {
-        await mkdir(a.at(-1)!);
-        await writeFile(path.join(a.at(-1)!, 'native.jsonl'), '{"type":"response_item"}\n');
-      }
-      return ok();
-    }
-    if (a[0] === 'exec') {
-      const name = a.find((v: string) => sandboxes.has(v));
-      const sandbox = name ? sandboxes.get(name)! : undefined;
-      assert.ok(sandbox, 'execution uses its own created sandbox');
-      const index = a.indexOf('git');
-      if (index >= 0) {
-        const r = spawnSync('git', a.slice(index + 1), { cwd: sandbox, encoding: 'utf8' });
-        return { exitCode: r.status ?? 1, stdout: r.stdout ?? '', stderr: r.stderr ?? '' };
-      }
-      if (a.some((v: string) => v.includes('npm root -g'))) return ok('/opt/pi/examples/extensions/subagent/index.ts\n');
-      if (a.includes('sh') && a.some((v: string) => v.includes('$HOME/.codex/sessions'))) return ok('/home/agent/.codex/sessions');
-      if ((a.includes('codex') && a.includes('--json')) || (a.includes('pi') && a.includes('--print'))) {
-        const id = String(a.at(-1)).includes('code-review au diff complet') ? 'final-review' : a.at(-1)!;
-        const emit = (text: string) => request.onOutput?.('stdout', `${text}\n`);
-        const exitCode = await agent(id, sandbox, emit, request.cwd!);
-        const stdout = a.includes('pi')
-          ? JSON.stringify({ type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: `${id} report\nSLOPIFY_RESULT={"status":"succeeded"}` }] } })
-          : JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: `${id} report\nSLOPIFY_RESULT={"status":"succeeded"}` } });
-        request.onOutput?.('stdout', stdout + '\n');
-        return { exitCode, stdout: stdout + '\n', stderr: exitCode ? `${id} failed` : '' };
-      }
-      return ok();
-    }
-    throw new Error(`Unhandled sbx ${a.join(' ')}`);
-  };
+  const execute = fakeSbxExecutor({ root, skills, agent, sandboxes });
   const clock = new ManualActivityClock();
   const storePath = path.join(root, 'runs');
   const cli = (args: string[]) => {
