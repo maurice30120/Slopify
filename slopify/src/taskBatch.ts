@@ -7,8 +7,12 @@ import * as path from 'node:path';
 import { createNodeSubprocessExecutor, type SubprocessExecutor } from '@acp-client/sandbox';
 import { DockerTaskExecutor } from './dockerTaskExecutor.js';
 import type { TaskExecutionResult, TaskSandboxResource } from './taskExecution.js';
-import { activityJournalPath, readActivitySignals } from './activityJournal.js';
+import { activityJournalPath, appendActivitySignal, readActivitySignals } from './activityJournal.js';
 import type { ActivitySignal } from './activitySignal.js';
+import { composeActivitySignal, type ActivityTaskCandidate } from './activitySignalComposition.js';
+import { activityTaskPhrase } from './activityTaskPhrase.js';
+import { extractActivityGitSignal, type ActivityGitSnapshot } from './activitySignalGit.js';
+import { createSystemActivityTickClock, readAttemptLogTail, type ActivityTickClock } from './activityTick.js';
 
 export interface TaskBatchDiagnostic {
   code: string;
@@ -29,6 +33,12 @@ export interface TaskBatchServiceOptions {
   subprocessExecutor?: SubprocessExecutor;
   /** Receives a copy after each durable save, for CLI progress reporting. */
   onUpdate?: (snapshot: TaskBatchSnapshot) => void;
+  /** Seam du Signal d'activité (ADR 0013) : reçoit chaque signal complet composé par le tick minute. */
+  onActivitySignal?: (signal: ActivitySignal) => void;
+  /** Intervalle du tick d'activité en millisecondes ; une minute par défaut (ADR 0013). */
+  activityTickIntervalMs?: number;
+  /** Horloge du tick d'activité : instant courant et attente entre deux ticks ; horloge système par défaut. */
+  activityTickClock?: ActivityTickClock;
 }
 
 export interface TaskBatchRunOptions {
@@ -101,6 +111,20 @@ export class TaskBatchExecutionError extends Error {
 
 const execFileAsync = promisify(execFile);
 const WAVE_SIZE = 10;
+/** Intervalle du tick d'activité par défaut : une minute (ADR 0013). */
+const ACTIVITY_TICK_INTERVAL_MS = 60_000;
+
+/** Lecture d'une tentative observée par le tick : offset du log et dernier delta git du clone. */
+interface ActivityAttemptReading {
+  logOffset: number;
+  gitSnapshot: ActivityGitSnapshot | null;
+}
+
+/** État du tick pendant une commande longue : lectures par tentative et dernier signal émis par tâche. */
+interface ActivityTickSession {
+  attempts: Map<string, ActivityAttemptReading>;
+  lastSignalAt: Map<string, Date>;
+}
 
 /** Seam public V2 : la validation et le contexte durable ne pénètrent jamais dans le runtime de pipeline V1. */
 export class TaskBatchService {
@@ -108,12 +132,20 @@ export class TaskBatchService {
   readonly storePath: string;
   private readonly subprocessExecutor: SubprocessExecutor;
   private readonly onUpdate?: TaskBatchServiceOptions['onUpdate'];
+  private readonly onActivitySignal?: TaskBatchServiceOptions['onActivitySignal'];
+  private readonly activityTickIntervalMs: number;
+  private readonly activityClock: ActivityTickClock;
+  /** Tâche en cours d'intégration de vague, observée par le tick (phrase d'intégration). */
+  private activityIntegrationTaskId?: string;
   private readonly saves = new Map<string, Promise<void>>();
 
   constructor(options: TaskBatchServiceOptions) {
     this.repositoryPath = path.resolve(options.repositoryPath);
     this.onUpdate = options.onUpdate;
     this.subprocessExecutor = options.subprocessExecutor ?? createNodeSubprocessExecutor();
+    this.onActivitySignal = options.onActivitySignal;
+    this.activityTickIntervalMs = options.activityTickIntervalMs ?? ACTIVITY_TICK_INTERVAL_MS;
+    this.activityClock = options.activityTickClock ?? createSystemActivityTickClock();
     this.storePath = path.resolve(options.storePath ?? process.env.SLOPIFY_TASK_STORE ?? path.join(
       homedir(), '.local', 'share', 'slopify', 'task-runs',
       createHash('sha256').update(this.repositoryPath).digest('hex').slice(0, 16),
@@ -186,6 +218,10 @@ export class TaskBatchService {
   }
 
   private async executeWaves(snapshot: TaskBatchSnapshot, signal?: AbortSignal): Promise<void> {
+    await this.withActivityTick(snapshot, signal, () => this.runWaves(snapshot, signal));
+  }
+
+  private async runWaves(snapshot: TaskBatchSnapshot, signal?: AbortSignal): Promise<void> {
     const runDirectory = path.join(this.storePath, snapshot.runId);
     const workspacePath = path.join(runDirectory, 'integration');
     const executor = new DockerTaskExecutor({ executor: this.subprocessExecutor });
@@ -252,6 +288,80 @@ export class TaskBatchService {
     }
   }
 
+  /**
+   * Tick minute du Signal d'activité (ADR 0013) : pendant toute commande longue,
+   * un tick par intervalle compose le Signal des tâches actives et de la phase
+   * d'intégration, le journalise dans le journal du run du store puis l'émet
+   * via le seam onActivitySignal. Le tick démarre avec l'exécution, se tait
+   * sans tâche active ni intégration, s'arrête à la fin ou à l'interruption
+   * (interruption propagée respectée), et aucune de ses pannes ne peut jamais
+   * interrompre l'exécution d'une tâche.
+   */
+  private async withActivityTick<T>(snapshot: TaskBatchSnapshot, signal: AbortSignal | undefined, operation: () => Promise<T>): Promise<T> {
+    const controller = new AbortController();
+    const propagate = () => controller.abort();
+    if (signal?.aborted) controller.abort();
+    else signal?.addEventListener('abort', propagate, { once: true });
+    this.activityIntegrationTaskId = undefined;
+    const session: ActivityTickSession = { attempts: new Map(), lastSignalAt: new Map() };
+    const loop = this.activityTickLoop(snapshot, session, controller.signal)
+      .catch(() => {})
+      .finally(() => { signal?.removeEventListener('abort', propagate); });
+    try {
+      return await operation();
+    } finally {
+      controller.abort();
+      await loop;
+    }
+  }
+
+  private async activityTickLoop(snapshot: TaskBatchSnapshot, session: ActivityTickSession, signal: AbortSignal): Promise<void> {
+    while (!signal.aborted) {
+      await this.activityClock.wait(this.activityTickIntervalMs, signal);
+      if (signal.aborted) return;
+      try { await this.emitActivityTick(snapshot, session, signal); }
+      catch { /* L'observabilité n'interrompt jamais l'exécution d'une tâche. */ }
+    }
+  }
+
+  /** Un tick : compose le Signal des tâches actives, le journalise puis l'émet ; silencieux sans activité. */
+  private async emitActivityTick(snapshot: TaskBatchSnapshot, session: ActivityTickSession, signal: AbortSignal): Promise<void> {
+    if (signal.aborted) return;
+    const activeTasks = snapshot.tasks.filter(task => task.status === 'running');
+    const integrationTaskId = this.activityIntegrationTaskId;
+    if (activeTasks.length === 0 && integrationTaskId === undefined) return;
+    const now = new Date(this.activityClock.now());
+    const runDirectory = path.join(this.storePath, snapshot.runId);
+    const candidates: ActivityTaskCandidate[] = [];
+    for (const task of activeTasks) {
+      const attempt = task.attempts.at(-1);
+      if (!attempt || attempt.status !== 'running') { candidates.push({ taskId: task.id, noNews: true }); continue; }
+      const reading = session.attempts.get(attempt.attemptId) ?? { logOffset: 0, gitSnapshot: null };
+      const tail = await readAttemptLogTail(path.join(runDirectory, 'attempts', attempt.attemptId, 'stdout.log'), reading.logOffset);
+      if (tail !== undefined) reading.logOffset = tail.offset;
+      const git = await extractActivityGitSignal(path.join(runDirectory, 'workspaces', attempt.attemptId), reading.gitSnapshot);
+      if (git.snapshot !== null) reading.gitSnapshot = git.snapshot;
+      session.attempts.set(attempt.attemptId, reading);
+      const phrase = activityTaskPhrase({ taskId: task.id, log: tail?.text, git, now, lastSignalAt: session.lastSignalAt.get(task.id) });
+      candidates.push(phrase.source === 'none'
+        ? { taskId: task.id, noNews: true }
+        : { taskId: task.id, news: { sentence: phrase.sentence, source: phrase.source } });
+    }
+    const composed = composeActivitySignal({
+      runId: snapshot.runId, now, tasks: candidates,
+      lastSignalAtByTask: Object.fromEntries(session.lastSignalAt),
+      ...(integrationTaskId !== undefined
+        ? { integration: { sentence: `intégration du checkpoint de la tâche ${integrationTaskId}` } }
+        : {}),
+    });
+    if (signal.aborted) return;
+    for (const taskSignal of composed.tasks) session.lastSignalAt.set(taskSignal.taskId, now);
+    try { await appendActivitySignal(activityJournalPath(this.storePath, snapshot.runId), composed); }
+    catch { /* Le journal ne doit jamais interrompre l'exécution. */ }
+    try { this.onActivitySignal?.(composed); }
+    catch { /* L'émission ne doit jamais interrompre l'exécution. */ }
+  }
+
   private async finishExecution(snapshot: TaskBatchSnapshot, signal?: AbortSignal): Promise<void> {
     this.blockDescendants(snapshot);
     snapshot.status = snapshot.conflict ? 'conflicted'
@@ -310,6 +420,7 @@ export class TaskBatchService {
     executor: DockerTaskExecutor): Promise<void> {
     const attempt = task.attempts.at(-1)!;
     const checkpoint = attempt.checkpoint!;
+    this.activityIntegrationTaskId = task.id;
     try {
       await execFileAsync('git', ['-C', workspacePath, 'fetch', '--no-tags', checkpoint.bundlePath, checkpoint.commit]);
       await execFileAsync('git', ['-C', workspacePath, 'merge-base', '--is-ancestor', attempt.taskBaseCommit, checkpoint.commit]);
@@ -356,6 +467,8 @@ export class TaskBatchService {
       task.status = 'failed';
       attempt.diagnostics = [...attempt.diagnostics ?? [], { code: 'integration_failed', message: String(error) }];
       await this.save(snapshot);
+    } finally {
+      this.activityIntegrationTaskId = undefined;
     }
   }
 
@@ -509,23 +622,25 @@ export class TaskBatchService {
     // Exécute la tâche ; cette opération crée une nouvelle tentative.
     const executor = new DockerTaskExecutor({ executor: this.subprocessExecutor });
 
-    try {
-      await this.executeTask(snapshot, task, currentIntegrationCommit, workspacePath, executor, options.signal);
+    await this.withActivityTick(snapshot, options.signal, async () => {
+      try {
+        await this.executeTask(snapshot, task, currentIntegrationCommit, workspacePath, executor, options.signal);
 
-      // Relit la tâche depuis le snapshot pour obtenir son état après executeTask.
-      const updatedTask = snapshot.tasks.find(t => t.id === taskId)!;
-      // Après l'exécution, intègre si elle a réussi (executeTask place task.status à completed en cas de succès).
-      if (updatedTask.status === 'completed') {
-        await this.integrateTask(snapshot, updatedTask, workspacePath, executor);
+        // Relit la tâche depuis le snapshot pour obtenir son état après executeTask.
+        const updatedTask = snapshot.tasks.find(t => t.id === taskId)!;
+        // Après l'exécution, intègre si elle a réussi (executeTask place task.status à completed en cas de succès).
+        if (updatedTask.status === 'completed') {
+          await this.integrateTask(snapshot, updatedTask, workspacePath, executor);
+        }
+
+        await this.finishExecution(snapshot, options.signal);
+      } catch (error) {
+        snapshot.status = options.signal?.aborted ? 'interrupted' : 'failed';
+        snapshot.diagnostics.push({ code: 'resume_failed', message: error instanceof Error ? error.message : String(error) });
+        await this.save(snapshot);
+        throw new TaskBatchExecutionError(snapshot, error);
       }
-
-      await this.finishExecution(snapshot, options.signal);
-    } catch (error) {
-      snapshot.status = options.signal?.aborted ? 'interrupted' : 'failed';
-      snapshot.diagnostics.push({ code: 'resume_failed', message: error instanceof Error ? error.message : String(error) });
-      await this.save(snapshot);
-      throw new TaskBatchExecutionError(snapshot, error);
-    }
+    });
 
     return snapshot;
   }

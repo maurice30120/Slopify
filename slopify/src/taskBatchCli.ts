@@ -3,10 +3,8 @@ import { taskBatchReport, formatTaskBatchReport } from './taskBatchReport.js';
 import { formatActivitySignalEvent, parseActivitySignal, type ActivitySignal } from './activitySignal.js';
 import { TaskBatchService, TaskBatchValidationError, TaskBatchExecutionError, type TaskBatchSnapshot, type TaskBatchServiceOptions } from './taskBatch.js';
 
-/** Options du service enrichies du callback du Signal d'activité du contrat SA-1 (#68). */
-export type TaskBatchCliServiceOptions = TaskBatchServiceOptions & {
-  onActivitySignal?: (signal: ActivitySignal) => void;
-};
+/** Options du service du canal CLI, y compris le seam du Signal d'activité (ADR 0013). */
+export type TaskBatchCliServiceOptions = TaskBatchServiceOptions;
 
 /** Rend chaque phrase du signal en une ligne préfixée `[run X] <tâches> : <phrase>`. */
 function activitySignalLines(signal: ActivitySignal): string[] {
