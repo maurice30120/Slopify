@@ -1,5 +1,6 @@
 import * as path from 'node:path';
 import type { TaskBatchSnapshot, TaskBatchDiagnostic, BatchTaskState } from './taskBatch.js';
+import type { ActivitySignal } from './activitySignal.js';
 
 export interface BatchIssue extends TaskBatchDiagnostic {
   severity: 'info' | 'warning' | 'error';
@@ -14,7 +15,7 @@ export interface BatchAction {
 }
 
 /** A read-only view of durable state; running means recorded, not verified process liveness. */
-export function taskBatchReport(snapshot: TaskBatchSnapshot, storePath?: string) {
+export function taskBatchReport(snapshot: TaskBatchSnapshot, storePath?: string, activitySignals?: ActivitySignal[]) {
   const byId = new Map(snapshot.tasks.map(task => [task.id, task]));
   const counts = { pending: 0, running: 0, completed: 0, succeeded: 0, failed: 0, interrupted: 0, blocked: 0, conflicted: 0 };
   for (const task of snapshot.tasks) counts[task.status]++;
@@ -90,7 +91,23 @@ export function taskBatchReport(snapshot: TaskBatchSnapshot, storePath?: string)
       description: `Inspect sandbox for task ${task.id}`, command: attempt.resource.inspectCommand,
     });
   }
-  return { ...snapshot, progress, issues, nextActions };
+  return { ...snapshot, progress, issues, nextActions, ...(activitySignals?.length ? { activitySignals } : {}) };
+}
+
+/**
+ * Fenêtre de rattrapage du `tasks status` (ADR 0013) : une ligne lisible par Signal
+ * d’activité, horodatée, dans l’ordre d’émission du journal ; vide si aucun signal.
+ */
+export function formatActivitySignalWindow(signals: ActivitySignal[]): string[] {
+  if (signals.length === 0) return [];
+  return ['Recent activity signals:', ...signals.map(signal => {
+    const phrases = [
+      ...signal.tasks.map(task => `${task.taskId} : ${task.sentence}`),
+      ...(signal.grouped ? [`${signal.grouped.taskIds.join(', ')} : ${signal.grouped.sentence}`] : []),
+      ...(signal.integration ? [`intégration : ${signal.integration.sentence}`] : []),
+    ];
+    return `  [${signal.timestamp}] ${phrases.join('; ')}`;
+  })];
 }
 
 export function displayCommand(command: string[]): string {
@@ -112,7 +129,7 @@ function taskDetails(task: BatchTaskState): string[] {
   return lines;
 }
 
-export function formatTaskBatchReport(snapshot: TaskBatchSnapshot, storePath?: string): string {
+export function formatTaskBatchReport(snapshot: TaskBatchSnapshot, storePath?: string, activitySignals?: ActivitySignal[]): string {
   const report = taskBatchReport(snapshot, storePath);
   const { progress } = report;
   const lines = [
@@ -121,6 +138,7 @@ export function formatTaskBatchReport(snapshot: TaskBatchSnapshot, storePath?: s
     `Last durable update: ${snapshot.updatedAt}`,
     `Integration branch: ${snapshot.integrationBranch}`,
     `Integration commit: ${snapshot.integrationCommit ?? snapshot.runBaseCommit}`,
+    ...formatActivitySignalWindow(activitySignals ?? []),
     ...snapshot.tasks.flatMap(taskDetails),
     ...progress.waitingOn.map(task => `${task.taskId} waits for: ${task.dependencyIds.join(', ')}`),
     ...report.issues.map(issue => `[${issue.severity}${issue.historical ? ', historical' : ''}] ${issue.code}${issue.taskId ? ` (${issue.taskId})` : ''}: ${issue.message}`),

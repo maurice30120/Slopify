@@ -1,10 +1,15 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import { runTaskBatchCli } from '../src/taskBatchCli.js';
 import { TaskBatchExecutionError, type TaskBatchSnapshot } from '../src/taskBatch.js';
 import { ACTIVITY_SIGNAL_EVENT_TYPE, type ActivitySignal } from '../src/activitySignal.js';
+import { activityJournalPath, appendActivitySignal } from '../src/activityJournal.js';
+import { formatTaskBatchReport, taskBatchReport } from '../src/taskBatchReport.js';
 
 const activitySignal: ActivitySignal = {
   version: 1,
@@ -31,7 +36,37 @@ function service(state: TaskBatchSnapshot) {
     run: async () => state, status: async () => state, resume: async () => state,
     resumeTask: async () => state, resolveConflict: async () => state, validateResolution: async () => state,
     getConflict: async () => undefined, getResolution: async () => undefined,
+    recentActivitySignals: async () => [],
   };
+}
+
+/** État durable minimal d'un run dans le store, lisible par `tasks status` sans exécuter de tâche. */
+function durableRun(runId = 'run-1'): TaskBatchSnapshot {
+  return {
+    version: 1, runId, repositoryPath: '/repo', status: 'running',
+    runBaseCommit: 'base', integrationBranch: `feature/${runId}`,
+    createdAt: '2026-10-13T10:00:00.000Z', updatedAt: '2026-10-13T10:05:00.000Z',
+    context: { specFile: 'spec.md', specText: 'spec', batchFile: 'batch.json' }, tasks: [], diagnostics: [],
+  };
+}
+
+function journalSignal(runId: string, minute: number, taskId = 'sa-6'): ActivitySignal {
+  return {
+    version: 1, runId,
+    timestamp: `2026-10-13T10:${String(minute).padStart(2, '0')}:00.000Z`,
+    tasks: [{ taskId, sentence: `minute ${minute} : écriture du journal du Signal d’activité`, source: 'log' }],
+  };
+}
+
+/** Store réel avec l'état durable du run et les signaux écrits directement dans le journal, sans attendre le tick. */
+async function storeWithJournal(t: { after(fn: () => Promise<void>): void }, signals: ActivitySignal[]): Promise<string> {
+  const root = await mkdtemp(path.join(tmpdir(), 'slopify-status-window-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const runId = 'run-1';
+  await mkdir(path.join(root, runId), { recursive: true });
+  await writeFile(path.join(root, runId, 'state.json'), JSON.stringify(durableRun(runId)));
+  for (const signal of signals) await appendActivitySignal(activityJournalPath(root, runId), signal);
+  return root;
 }
 for (const status of ['succeeded', 'failed', 'interrupted', 'conflicted'] as const) {
   for (const command of [['run', 'batch.json'], ['resume', 'run'], ['resume-task', 'run', 'task'],
@@ -251,4 +286,85 @@ test('the tasks help documents the activity signal channel on stderr', async () 
   assert.equal(await runTaskBatchCli(['--help'], sink, '/repo', () => { throw new Error('Service must not be constructed'); }), 0);
   assert.match(sink.messages[0], /activity-signal/);
   assert.match(sink.messages[0], /prefixed sentence/);
+});
+
+test('status output stays byte-identical in both modes when the journal holds no signal', async (t) => {
+  const runId = 'run-1';
+  for (const journal of ['absent', 'empty'] as const) {
+    const store = await storeWithJournal(t, []);
+    if (journal === 'empty') await writeFile(activityJournalPath(store, runId), '');
+    for (const json of [false, true]) {
+      const sink = output();
+      const args = ['status', runId, '--store', store, ...(json ? ['--json'] : [])];
+      assert.equal(await runTaskBatchCli(args, sink, '/repo'), 0, `journal ${journal}, json ${json}`);
+      const expected = json ? JSON.stringify(taskBatchReport(durableRun(runId), store))
+        : formatTaskBatchReport(durableRun(runId), store);
+      assert.equal(sink.messages[0], expected, `journal ${journal}: the pre-signal status output is preserved byte for byte`);
+      const result = json ? JSON.parse(sink.messages[0]) : undefined;
+      assert.equal('activitySignals' in (result ?? {}), false, 'no dedicated field without a signal');
+      assert.ok(!sink.messages[0].includes('Recent activity signals:'), 'no signals section without a signal');
+      assert.deepEqual(sink.errors, []);
+    }
+  }
+});
+
+test('a journal longer than ten signals keeps only the ten last in the status window', async (t) => {
+  const runId = 'run-1';
+  const signals = Array.from({ length: 15 }, (_, index) => journalSignal(runId, index + 1));
+  const store = await storeWithJournal(t, signals);
+  const text = output();
+  assert.equal(await runTaskBatchCli(['status', runId, '--store', store], text, '/repo'), 0);
+  const lines = text.messages[0].split('\n');
+  const start = lines.indexOf('Recent activity signals:');
+  assert.ok(start >= 0);
+  const window = lines.slice(start + 1, start + 11);
+  assert.equal(window.length, 10, 'only ten signals are kept in text mode');
+  assert.deepEqual(window, Array.from({ length: 10 }, (_, index) =>
+    `  [2026-10-13T10:${String(index + 6).padStart(2, '0')}:00.000Z] sa-6 : minute ${index + 6} : écriture du journal du Signal d’activité`));
+  assert.ok(!lines.slice(start + 11).some(line => line.includes('minute 1 :') || line.includes('minute 5 :')),
+    'the five oldest signals are not replayed');
+  const json = output();
+  assert.equal(await runTaskBatchCli(['status', runId, '--store', store, '--json'], json, '/repo'), 0);
+  const result = JSON.parse(json.messages[0]);
+  assert.equal(result.activitySignals.length, 10, 'only ten signals are kept in --json mode');
+  assert.deepEqual(result.activitySignals, signals.slice(-10), 'the ten last, in journal order');
+});
+
+test('status --json exposes the journal signals of the run in a dedicated field of the final result', async (t) => {
+  const runId = 'run-1';
+  const signals = Array.from({ length: 10 }, (_, index) => journalSignal(runId, index + 1));
+  const store = await storeWithJournal(t, signals);
+  const sink = output();
+  assert.equal(await runTaskBatchCli(['status', runId, '--store', store, '--json'], sink, '/repo'), 0);
+  const result = JSON.parse(sink.messages[0]);
+  assert.deepEqual(result.activitySignals, signals, 'the ten last signals travel in the final result');
+  assert.equal(result.runId, runId);
+  assert.ok(result.progress, 'the rest of the status result is unchanged');
+  assert.ok(Array.isArray(result.issues));
+  assert.ok(Array.isArray(result.nextActions));
+  assert.deepEqual(sink.errors, []);
+});
+
+test('status replays the journal signals of the run as one readable line per signal in journal order', async (t) => {
+  const runId = 'run-1';
+  const signals: ActivitySignal[] = [
+    { version: 1, runId, timestamp: '2026-10-13T10:01:00.000Z',
+      tasks: [{ taskId: 'sa-6', sentence: 'Câblage CLI du Signal d’activité en cours.', source: 'log' }] },
+    { version: 1, runId, timestamp: '2026-10-13T10:02:00.000Z',
+      tasks: [{ taskId: 'sa-4', sentence: 'Tick minute démarré avec l’exécution.', source: 'log' }],
+      grouped: { taskIds: ['sa-1', 'sa-2'], sentence: 'rien de nouveau depuis 3 minutes.', source: 'none' },
+      integration: { sentence: 'Intégration de la vague 1 en cours.' } },
+  ];
+  const store = await storeWithJournal(t, signals);
+  const sink = output();
+  assert.equal(await runTaskBatchCli(['status', runId, '--store', store], sink, '/repo'), 0);
+  const lines = sink.messages[0].split('\n');
+  const start = lines.indexOf('Recent activity signals:');
+  assert.ok(start >= 0, 'the status report has a signals section');
+  assert.deepEqual(lines.slice(start, start + signals.length + 1), [
+    'Recent activity signals:',
+    '  [2026-10-13T10:01:00.000Z] sa-6 : Câblage CLI du Signal d’activité en cours.',
+    '  [2026-10-13T10:02:00.000Z] sa-4 : Tick minute démarré avec l’exécution.; sa-1, sa-2 : rien de nouveau depuis 3 minutes.; intégration : Intégration de la vague 1 en cours.',
+  ]);
+  assert.deepEqual(sink.errors, []);
 });

@@ -7,6 +7,8 @@ import * as path from 'node:path';
 import { createNodeSubprocessExecutor, type SubprocessExecutor } from '@acp-client/sandbox';
 import { DockerTaskExecutor } from './dockerTaskExecutor.js';
 import type { TaskExecutionResult, TaskSandboxResource } from './taskExecution.js';
+import { activityJournalPath, readActivitySignals } from './activityJournal.js';
+import type { ActivitySignal } from './activitySignal.js';
 
 export interface TaskBatchDiagnostic {
   code: string;
@@ -360,6 +362,14 @@ export class TaskBatchService {
   private async publish(snapshot: TaskBatchSnapshot, workspacePath: string): Promise<void> {
     await execFileAsync('git', ['-C', this.repositoryPath, 'fetch', '--no-tags', workspacePath,
       `refs/heads/${snapshot.integrationBranch}:refs/heads/${snapshot.integrationBranch}`]);
+  }
+
+  /**
+   * Fenêtre de rattrapage (ADR 0013) : les dix derniers Signaux d’activité du run,
+   * lus du journal du store, dans l’ordre d’émission ; vide si le journal n’existe pas.
+   */
+  async recentActivitySignals(runId: string): Promise<ActivitySignal[]> {
+    return readActivitySignals(activityJournalPath(this.storePath, runId));
   }
 
   async status(runId: string): Promise<TaskBatchSnapshot> {

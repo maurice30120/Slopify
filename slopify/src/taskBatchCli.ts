@@ -54,7 +54,7 @@ export const taskBatchHelp = [
 
 
 type BatchCliService = Pick<TaskBatchService,
-  'run' | 'status' | 'resume' | 'resumeTask' | 'resolveConflict' | 'getConflict' | 'validateResolution' | 'getResolution'>;
+  'run' | 'status' | 'resume' | 'resumeTask' | 'resolveConflict' | 'getConflict' | 'validateResolution' | 'getResolution' | 'recentActivitySignals'>;
 
 export async function runTaskBatchCli(
   argv: string[],
@@ -138,16 +138,20 @@ export async function runTaskBatchCli(
     }
     const options = { signal: controller.signal };
     let snapshot: TaskBatchSnapshot;
+    let activitySignals: ActivitySignal[] | undefined;
     switch (action) {
       case 'run': snapshot = await service.run(path.resolve(baseCwd, runId), { ...options, baseRef }); break;
-      case 'status': snapshot = await service.status(runId); break;
+      case 'status':
+        snapshot = await service.status(runId);
+        activitySignals = await service.recentActivitySignals(runId);
+        break;
       case 'resume': snapshot = await service.resume(runId, options); break;
       case 'resume-task': snapshot = await service.resumeTask(runId, taskId, options); break;
       case 'resolve-conflict': snapshot = await service.resolveConflict(runId, { ...options, resolutionStrategy: strategy }); break;
       case 'validate-resolution': snapshot = await service.validateResolution(runId, taskId, options); break;
       default: throw new Error(taskBatchHelp);
     }
-    output.write(json ? JSON.stringify(taskBatchReport(snapshot, storePath)) : formatTaskBatchReport(snapshot, storePath));
+    output.write(json ? JSON.stringify(taskBatchReport(snapshot, storePath, activitySignals)) : formatTaskBatchReport(snapshot, storePath, activitySignals));
     return action === 'status' || snapshot.status === 'succeeded' ? 0 : 2;
   } catch (error) {
     if (error instanceof TaskBatchExecutionError) {
