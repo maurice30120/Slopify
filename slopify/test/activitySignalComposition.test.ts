@@ -89,3 +89,35 @@ test('every composed signal passes the frozen contract validation', () => {
   });
   assert.deepEqual(parseActivitySignal(minimal), minimal);
 });
+
+test('a full wave mixes news tasks, one grouped entry and one integration entry', () => {
+  const signal = composeActivitySignal({
+    runId: 'run-1',
+    now,
+    tasks: [
+      { taskId: 'sa-1', news: { sentence: 'extraction du log en cours', source: 'log' } },
+      { taskId: 'sa-2', news: { sentence: 'delta git visible', source: 'git' } },
+      { taskId: 'sa-3', noNews: true },
+      { taskId: 'sa-4', noNews: true },
+      { taskId: 'sa-5', noNews: true },
+    ],
+    lastSignalAtByTask: {
+      'sa-3': new Date('2026-10-14T10:00:00Z'), // 4 minutes de silence
+      'sa-4': new Date('2026-10-14T10:03:30Z'), // 0 minute → plancher 1
+      'sa-5': new Date('2026-10-14T10:02:00Z'), // 2 minutes de silence
+    },
+    integration: { sentence: 'Intégration de la vague 1 en cours.' },
+  });
+  assert.deepEqual(signal, {
+    version: 1,
+    runId: 'run-1',
+    timestamp: '2026-10-14T10:04:00.000Z',
+    tasks: [
+      { taskId: 'sa-1', sentence: 'extraction du log en cours', source: 'log' },
+      { taskId: 'sa-2', sentence: 'delta git visible', source: 'git' },
+    ],
+    grouped: { taskIds: ['sa-3', 'sa-4', 'sa-5'], sentence: 'rien de nouveau depuis 4 minutes', source: 'none' },
+    integration: { sentence: 'Intégration de la vague 1 en cours.' },
+  });
+  assert.deepEqual(parseActivitySignal(signal), signal);
+});
