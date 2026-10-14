@@ -33,3 +33,25 @@ test('bounding: a task already signaled within the same minute is not emitted ag
   });
   assert.deepEqual(signal.tasks, [{ taskId: 'sa-2', sentence: 'reprise après une minute', source: 'log' }]);
 });
+
+test('several tasks without news share one grouped entry listing them all', () => {
+  const signal = composeActivitySignal({
+    runId: 'run-1',
+    now,
+    tasks: [
+      { taskId: 'sa-2', noNews: true },
+      { taskId: 'sa-3', noNews: true },
+      { taskId: 'sa-4', noNews: true }, // jamais signalée : silence inconnu, planché à 1 minute
+    ],
+    lastSignalAtByTask: {
+      'sa-2': new Date('2026-10-14T10:02:10Z'), // 1 minute de silence
+      'sa-3': new Date('2026-10-14T09:58:00Z'), // 6 minutes de silence : le plus long l'emporte
+    },
+  });
+  assert.deepEqual(signal.tasks, [], 'une tâche sans nouvelles ne produit jamais d’entrée tâche');
+  assert.deepEqual(signal.grouped, {
+    taskIds: ['sa-2', 'sa-3', 'sa-4'],
+    sentence: 'rien de nouveau depuis 6 minutes',
+    source: 'none',
+  });
+});

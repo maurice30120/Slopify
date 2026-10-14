@@ -4,7 +4,7 @@
  * l'état « dernier signal émis » par tâche et de la phase d'intégration.
  */
 
-import type { ActivitySignal, ActivityTaskSignal } from './activitySignal.js';
+import type { ActivityGroupedSignal, ActivitySignal, ActivityTaskSignal } from './activitySignal.js';
 
 /** Source d'une phrase qui a du nouveau : log de la tentative ou delta git du clone. */
 export type ActivityNewsSource = 'log' | 'git';
@@ -32,17 +32,37 @@ export interface ComposeActivitySignalInput {
 /** Compose un Signal d'activité complet au contrat figé v1. */
 export function composeActivitySignal(input: ComposeActivitySignalInput): ActivitySignal {
   const tasks: ActivityTaskSignal[] = [];
+  const quietTaskIds: string[] = [];
   for (const candidate of input.tasks) {
-    if ('news' in candidate && !signaledWithinSameMinute(input, candidate.taskId)) {
-      tasks.push({ taskId: candidate.taskId, sentence: candidate.news.sentence, source: candidate.news.source });
+    if ('news' in candidate) {
+      if (!signaledWithinSameMinute(input, candidate.taskId)) {
+        tasks.push({ taskId: candidate.taskId, sentence: candidate.news.sentence, source: candidate.news.source });
+      }
+    } else {
+      quietTaskIds.push(candidate.taskId);
     }
   }
+  const grouped = quietTaskIds.length > 0 ? groupedSignal(input, quietTaskIds) : undefined;
   return {
     version: 1,
     runId: input.runId,
     timestamp: input.now.toISOString(),
     tasks,
+    ...(grouped !== undefined ? { grouped } : {}),
   };
+}
+
+/** Une seule phrase partagée pour toutes les tâches actives sans nouvelles. */
+function groupedSignal(input: ComposeActivitySignalInput, taskIds: string[]): ActivityGroupedSignal {
+  let minutes = 0;
+  for (const taskId of taskIds) {
+    const lastSignalAt = input.lastSignalAtByTask?.[taskId];
+    if (lastSignalAt !== undefined) {
+      minutes = Math.max(minutes, Math.floor((input.now.getTime() - lastSignalAt.getTime()) / 60_000));
+    }
+  }
+  const silence = Math.max(1, minutes);
+  return { taskIds, sentence: `rien de nouveau depuis ${silence} minute${silence > 1 ? 's' : ''}`, source: 'none' };
 }
 
 /** Bornage ADR : au plus une phrase par tâche et par minute, depuis l'état « dernier signal émis ». */
