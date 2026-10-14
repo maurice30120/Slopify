@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdtemp, mkdir, writeFile, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, appendFile, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import test from 'node:test';
@@ -8,7 +8,7 @@ import type { SubprocessExecutor } from '@acp-client/sandbox';
 import { TaskBatchService, type BatchTask, type TaskBatchSnapshot } from '../src/taskBatch.js';
 import { activityJournalPath, readAllActivitySignals } from '../src/activityJournal.js';
 import { parseActivitySignal, type ActivitySignal } from '../src/activitySignal.js';
-import type { ActivityTickClock } from '../src/activityTick.js';
+import { readAttemptLogTail, type ActivityTickClock } from '../src/activityTick.js';
 
 /** Tick minute du Signal d'activité dans le service d'exécution (ADR 0013) :
  * comportement externe uniquement — le seam onActivitySignal, le journal du run
@@ -227,6 +227,53 @@ test('chaque tick minute de tasks run produit un signal complet via le seam et u
   assert.equal(f.signals.length, before, 'aucun signal après la fin');
   journal = await readAllActivitySignals(activityJournalPath(f.storePath, runId));
   assert.equal(journal.length, before, 'le journal ne gagne rien après la fin');
+});
+
+test("un événement JSONL coupé à la frontière du tick ne fuit jamais comme phrase significative", { timeout: 30000 }, async t => {
+  const started = gate(); const firstHold = gate();
+  t.after(() => { firstHold.release(); });
+  const f = await fixture(t, [task('jsonl', 'pi')], async (id, sandbox, emit) => {
+    if (id === 'final-review') { await writeFile(path.join(sandbox, 'review.txt'), 'review'); return 0; }
+    started.release();
+    emit('Je lis la spécification figée');
+    await firstHold.promise;
+    emit('Je corrige les tests');
+    await writeFile(path.join(sandbox, 'result.txt'), 'done');
+    return 0;
+  });
+  const running = f.service.run(f.batchFile);
+  await started.promise;
+  await tickUntil(f.signals, f.clock, 1);
+  assert.deepEqual(f.signals[0].tasks, [{ taskId: 'jsonl', sentence: 'Je lis la spécification figée', source: 'log' }]);
+  // Un événement JSONL n'est écrit qu'à moitié à la frontière du tick, sans saut de ligne.
+  const runId = f.updates[0].runId;
+  const attemptsDir = path.join(f.storePath, runId, 'attempts');
+  const [attemptId] = await readdir(attemptsDir);
+  const logPath = path.join(attemptsDir, attemptId, 'stdout.log');
+  await appendFile(logPath, '{"type":"message_end","message":{"status"');
+  await tickUntil(f.signals, f.clock, 2);
+  assert.deepEqual(f.signals[1].tasks, [], 'un fragment incomplet ne devient jamais une phrase');
+  // La ligne est complétée au tick suivant : elle est lue entière et rejetée par le filtre JSON figé.
+  await appendFile(logPath, ':"succeeded"}}}\n');
+  await tickUntil(f.signals, f.clock, 3);
+  assert.deepEqual(f.signals[2].tasks, [], 'la ligne JSONL complétée est filtrée comme bloc JSON, jamais émise en fragments');
+  for (const signal of f.signals) {
+    for (const taskSignal of signal.tasks ?? []) {
+      assert.ok(!taskSignal.sentence.includes('}}'), `un fragment JSON a fui dans : ${taskSignal.sentence}`);
+    }
+  }
+  // La prose suivante redevient la phrase du Signal d'activité.
+  firstHold.release();
+  await tickUntil(f.signals, f.clock, 4);
+  assert.deepEqual(f.signals[3].tasks, [{ taskId: 'jsonl', sentence: 'Je corrige les tests', source: 'log' }]);
+  const state = await running;
+  assert.equal(state.status, 'succeeded');
+  const journal = await readAllActivitySignals(activityJournalPath(f.storePath, runId));
+  for (const signal of journal) {
+    for (const taskSignal of signal.tasks) {
+      assert.ok(!taskSignal.sentence.includes('}}'), `le journal a enregistré un fragment JSON : ${taskSignal.sentence}`);
+    }
+  }
 });
 
 test("le tick s'arrête à l'interruption propagée et aucune reprise ne laisse de signal orphelin", { timeout: 30000 }, async t => {
@@ -504,4 +551,27 @@ test('les traces de preuve gelées et les prompts restent intacts pendant que le
     assert.ok(['start', 'end', 'cleanup'].includes(entry.type), 'seules les entrées de l\'exécuteur existent');
     assert.ok(!line.includes('activity.jsonl'), 'le tick ne laisse aucune trace dans les commandes observées');
   }
+});
+
+test('readAttemptLogTail ne consomme que des lignes complètes et laisse le fragment au tick suivant', async t => {
+  const root = await mkdtemp(path.join(tmpdir(), 'slopify-tail-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const logPath = path.join(root, 'stdout.log');
+  await writeFile(logPath, 'première ligne complète\n{"type":"message_end"');
+  const completeLine = 'première ligne complète\n';
+  const first = await readAttemptLogTail(logPath, 0);
+  assert.deepEqual(first, { text: completeLine, offset: Buffer.byteLength(completeLine) }, 'seule la ligne complète est consommée');
+  await appendFile(logPath, ',"message":"ok"}}\nprose suivante\n');
+  const remainder = '{"type":"message_end","message":"ok"}}\nprose suivante\n';
+  const second = await readAttemptLogTail(logPath, first!.offset);
+  assert.deepEqual(second, { text: remainder, offset: Buffer.byteLength(completeLine) + Buffer.byteLength(remainder) }, 'la ligne complétée est lue entière au tick suivant, jamais en fragments');
+});
+
+test('readAttemptLogTail ne consomme rien quand aucune ligne n’est complète', async t => {
+  const root = await mkdtemp(path.join(tmpdir(), 'slopify-tail-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const logPath = path.join(root, 'stdout.log');
+  await writeFile(logPath, '{"incomplet sans saut de ligne');
+  const tail = await readAttemptLogTail(logPath, 0);
+  assert.deepEqual(tail, { text: '', offset: 0 }, 'aucun octet n’est consommé sans saut de ligne');
 });

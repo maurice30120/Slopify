@@ -37,7 +37,10 @@ export interface AttemptLogTail {
 /**
  * Lit le nouveau texte du log stdout de la tentative depuis `offset` ;
  * `undefined` si le fichier est illisible. Un log recréé plus court relance la
- * lecture depuis le début pour ne jamais rater de contenu.
+ * lecture depuis le début pour ne jamais rater de contenu. Seules les lignes
+ * complètes sont consommées : les octets après le dernier saut de ligne restent
+ * au tick suivant, pour qu'un événement JSONL coupé à la frontière du tick ne
+ * fuit jamais comme ligne « significative » au mépris du filtre figé.
  */
 export async function readAttemptLogTail(logPath: string, offset: number): Promise<AttemptLogTail | undefined> {
   let handle: FileHandle;
@@ -48,7 +51,9 @@ export async function readAttemptLogTail(logPath: string, offset: number): Promi
     if (start >= size) return { text: '', offset: size };
     const buffer = Buffer.alloc(size - start);
     await handle.read(buffer, 0, buffer.length, start);
-    return { text: buffer.toString('utf8'), offset: size };
+    const lastNewline = buffer.lastIndexOf(0x0a);
+    if (lastNewline === -1) return { text: '', offset: start };
+    return { text: buffer.subarray(0, lastNewline + 1).toString('utf8'), offset: start + lastNewline + 1 };
   } catch {
     return undefined;
   } finally {
