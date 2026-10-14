@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { composeActivitySignal } from '../src/activitySignalComposition.js';
+import { parseActivitySignal } from '../src/activitySignal.js';
 
 const now = new Date('2026-10-14T10:04:00Z');
 
@@ -66,4 +67,25 @@ test('an integration phase produces an integration entry with its sentence', () 
   assert.deepEqual(signal.tasks, []);
   assert.equal(signal.grouped, undefined);
   assert.deepEqual(signal.integration, { sentence: 'Intégration de la vague 1 en cours.' });
+});
+
+test('every composed signal passes the frozen contract validation', () => {
+  const full = composeActivitySignal({
+    runId: 'run-1',
+    now,
+    tasks: [
+      { taskId: 'sa-1', news: { sentence: 'extraction du log en cours', source: 'log' } },
+      { taskId: 'sa-2', noNews: true },
+    ],
+    lastSignalAtByTask: { 'sa-2': new Date('2026-10-14T10:01:00Z') },
+    integration: { sentence: 'Intégration de la vague 1 en cours.' },
+  });
+  assert.deepEqual(parseActivitySignal(full), full);
+
+  const minimal = composeActivitySignal({
+    runId: 'run-2',
+    now,
+    tasks: [{ taskId: 'sa-1', news: { sentence: 'delta git visible', source: 'git' } }],
+  });
+  assert.deepEqual(parseActivitySignal(minimal), minimal);
 });
