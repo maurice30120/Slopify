@@ -45,6 +45,8 @@ export const taskBatchHelp = [
   'Periodic activity signals also go to stderr: JSON events of type "activity-signal" with --json, one prefixed sentence per line in text mode.',
   'Running is durable state; inspect sandbox liveness before retrying an interrupted process.',
   'Batch paths are relative to the calling directory; specFile is relative to the batch file.',
+  'Batch defaults: {"agent":"codex","model":"gpt-6-luna","effort":"medium"}; each task may override agent, model and effort.',
+  'Model and effort apply to Codex tasks. Pi keeps its configured model and rejects task-level model/effort overrides.',
 ].join('\n');
 
 
@@ -99,14 +101,14 @@ export async function runTaskBatchCli(
     const onUpdate = action === 'status' || action === 'conflict' || action === 'resolution' ? undefined
       : (snapshot: TaskBatchSnapshot) => {
         const { progress, issues, nextActions } = taskBatchReport(snapshot, storePath);
-        const tasks = snapshot.tasks.map(task => ({ id: task.id, agent: task.agent, status: task.status }));
+        const tasks = snapshot.tasks.map(task => ({ id: task.id, agent: task.agent, ...(task.model ? { model: task.model } : {}), ...(task.effort ? { effort: task.effort } : {}), status: task.status }));
         const fingerprint = JSON.stringify({ runId: snapshot.runId, status: snapshot.status, progress, issues, tasks, nextActions });
         if (fingerprint === lastProgress) return;
         lastProgress = fingerprint;
         output.writeError(json ? JSON.stringify({ type: 'progress', runId: snapshot.runId, status: snapshot.status,
           updatedAt: snapshot.updatedAt, progress, tasks, issues, nextActions })
           : `Run ${snapshot.runId}: ${snapshot.status} (${progress.phase}); ${progress.counts.succeeded}/${progress.total} integrated; running: ${progress.activeTaskIds.join(', ') || 'none'}; awaiting integration: ${progress.awaitingIntegrationTaskIds.join(', ') || 'none'}\n`
-            + tasks.map(task => `${task.id}: ${task.status} (${task.agent})`).join(', ')
+            + tasks.map(task => `${task.id}: ${task.status} (${task.agent}${task.model ? `, ${task.model}` : ''}${task.effort ? `, effort ${task.effort}` : ''})`).join(', ')
             + issues.filter(issue => issue.severity !== 'info' && !issue.historical).map(issue => `\n[${issue.code}] ${issue.taskId ?? 'run'}: ${issue.message}`).join(''));
       };
     const onActivitySignal = action === 'status' || action === 'conflict' || action === 'resolution' ? undefined

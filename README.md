@@ -61,9 +61,11 @@ Cette commande adapte l'intention de l'issue historique #45 au contrat V2 : aucu
 asset `.acp`, Vibe ou Copilot et aucune restauration des anciennes commandes. Les
 ADR historiques restent inchangées.
 
-Le lot contient `specFile` et `tasks` ; chaque tâche fournit `id`, `prompt`,
-`agent` (`pi` ou `codex`), `dependsOn` et `source`. Slopify valide tout le lot
-avant lancement et transmet les prompts sans réécrire les instructions de skills.
+Le lot contient `specFile`, des `defaults` facultatifs et `tasks`. Init propose
+`agent: "codex"`, `model: "gpt-6-luna"`, `effort: "medium"` comme base ; l'Agent
+Host choisit les paramètres par tâche et peut les surcharger. `model` et `effort`
+s'appliquent aux tâches Codex. Slopify valide tout le lot avant lancement et
+transmet les prompts sans réécrire les instructions de skills.
 Il conserve l’état durable, les rapports et la branche `feature/slopify-<run-id>`
 sans modifier la branche de travail de l’utilisateur.
 

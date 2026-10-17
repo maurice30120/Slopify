@@ -116,7 +116,8 @@ export function displayCommand(command: string[]): string {
 
 function taskDetails(task: BatchTaskState): string[] {
   const attempt = task.attempts.at(-1);
-  const lines = [`${task.id}: ${task.status} (${task.agent})${attempt ? ` — attempt ${task.attempts.length}: ${attempt.attemptId}` : ''}`];
+  const config = [task.agent, task.model, task.effort ? `effort ${task.effort}` : undefined].filter(Boolean).join(', ');
+  const lines = [`${task.id}: ${task.status} (${config})${attempt ? ` — attempt ${task.attempts.length}: ${attempt.attemptId}` : ''}`];
   if (task.blockedBy?.length) lines.push(`  Blocked by: ${task.blockedBy.join(', ')}`);
   if (attempt?.exitCode !== undefined) lines.push(`  Agent exit code: ${attempt.exitCode}`);
   if (attempt?.taskBaseCommit) lines.push(`  Task base: ${attempt.taskBaseCommit}`);

@@ -413,6 +413,7 @@ export class TaskBatchService {
       await execFileAsync('git', ['clone', '--no-hardlinks', '--quiet', '--', integrationPath, workspacePath]);
       await execFileAsync('git', ['-C', workspacePath, 'checkout', '--detach', taskBaseCommit]);
       const result = await executor.execute({ runId: snapshot.runId, taskId: task.id, attemptId, agent: task.agent,
+        ...(task.model ? { model: task.model } : {}), ...(task.effort ? { effort: task.effort } : {}),
         workspacePath, specFile: snapshot.context.specFile, prompt: task.prompt, taskBaseCommit,
         runBaseCommit: snapshot.runBaseCommit, resultDirectory, signal,
         onResource: async (resource: TaskSandboxResource) => {
@@ -910,17 +911,28 @@ export class TaskBatchService {
 }
 
 export type TaskAgent = 'pi' | 'codex';
+export type TaskEffort = 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+
+export interface BatchTaskDefaults {
+  agent?: TaskAgent;
+  /** Defaults for Codex tasks; Pi keeps its configured model and effort. */
+  model?: string;
+  effort?: TaskEffort;
+}
 
 export interface BatchTask {
   id: string;
   prompt: string;
   dependsOn: string[];
   agent: TaskAgent;
+  model?: string;
+  effort?: TaskEffort;
   source: string;
 }
 
 export interface TaskBatch {
   specFile: string;
+  defaults?: BatchTaskDefaults;
   tasks: BatchTask[];
 }
 
@@ -936,6 +948,8 @@ function finalReviewTask(batch: TaskBatch, runBaseCommit: string): BatchTaskStat
   return {
     id,
     agent: batch.tasks[0].agent,
+    ...(batch.tasks[0].model ? { model: batch.tasks[0].model } : {}),
+    ...(batch.tasks[0].effort ? { effort: batch.tasks[0].effort } : {}),
     source: 'final-review',
     dependsOn: batch.tasks.map((task) => task.id),
     prompt:
@@ -972,6 +986,27 @@ function validateBatch(input: unknown): TaskBatch {
     throw new TaskBatchValidationError([{ code: 'invalid_batch', path: '$', message: 'Expected a batch object.' }]);
   }
   if (!nonempty(input.specFile)) report('invalid_spec_file', 'specFile', 'Expected a nonempty spec file path.');
+  let defaults: BatchTaskDefaults = {};
+  if (input.defaults !== undefined) {
+    if (!record(input.defaults)) report('invalid_defaults', 'defaults', 'Expected an object with optional agent, model and effort defaults.');
+    else {
+      const raw = input.defaults;
+      if (raw.agent !== undefined && raw.agent !== 'pi' && raw.agent !== 'codex') {
+        report('invalid_default_agent', 'defaults.agent', 'Agent must be pi or codex.');
+      }
+      if (raw.model !== undefined && !nonempty(raw.model)) {
+        report('invalid_default_model', 'defaults.model', 'Expected a nonempty Codex model name.');
+      }
+      if (raw.effort !== undefined && !isTaskEffort(raw.effort)) {
+        report('invalid_default_effort', 'defaults.effort', `Effort must be one of: ${TASK_EFFORTS.join(', ')}.`);
+      }
+      defaults = {
+        ...(raw.agent === 'pi' || raw.agent === 'codex' ? { agent: raw.agent } : {}),
+        ...(nonempty(raw.model) ? { model: raw.model } : {}),
+        ...(isTaskEffort(raw.effort) ? { effort: raw.effort } : {}),
+      };
+    }
+  }
   if (!Array.isArray(input.tasks) || input.tasks.length === 0) {
     report('invalid_tasks', 'tasks', 'Expected a nonempty task list.');
     throw new TaskBatchValidationError(diagnostics);
@@ -987,7 +1022,15 @@ function validateBatch(input: unknown): TaskBatch {
     if (!Array.isArray(task.dependsOn) || !task.dependsOn.every(nonempty)) {
       report('invalid_dependencies', `${at}.dependsOn`, 'Expected a list of nonempty task IDs.');
     }
-    if (task.agent !== 'pi' && task.agent !== 'codex') report('invalid_agent', `${at}.agent`, 'Agent must be pi or codex.');
+    const effectiveAgent = task.agent === undefined ? defaults.agent : task.agent;
+    if (effectiveAgent !== 'pi' && effectiveAgent !== 'codex') report('invalid_agent', `${at}.agent`, 'Set agent to pi or codex, either on the task or in defaults.agent.');
+    if (task.model !== undefined && !nonempty(task.model)) report('invalid_model', `${at}.model`, 'Expected a nonempty Codex model name.');
+    if (task.effort !== undefined && !isTaskEffort(task.effort)) {
+      report('invalid_effort', `${at}.effort`, `Effort must be one of: ${TASK_EFFORTS.join(', ')}.`);
+    }
+    if (effectiveAgent === 'pi' && (task.model !== undefined || task.effort !== undefined)) {
+      report('unsupported_pi_settings', at, 'Pi tasks use the configured Pi model and do not accept task-level model or effort overrides.');
+    }
     if (!nonempty(task.source)) report('invalid_source', `${at}.source`, 'Expected a nonempty file or issue reference.');
   }
   for (const [index, task] of input.tasks.entries()) {
@@ -1001,7 +1044,25 @@ function validateBatch(input: unknown): TaskBatch {
   }
   if (diagnostics.length) throw new TaskBatchValidationError(diagnostics);
   // SAFETY: l'entrée a été validée ci-dessus et est nécessairement un TaskBatch (validateBatch rejette tout le reste avant).
-  const batch = input as unknown as TaskBatch;
+  const batch: TaskBatch = {
+    specFile: input.specFile as string,
+    ...(Object.keys(defaults).length > 0 ? { defaults } : {}),
+    tasks: input.tasks.map((task) => {
+      const raw = task as Record<string, unknown>;
+      const agent = (raw.agent === undefined ? defaults.agent : raw.agent) as TaskAgent;
+      const model = agent === 'codex' ? raw.model ?? defaults.model : undefined;
+      const effort = agent === 'codex' ? raw.effort ?? defaults.effort : undefined;
+      return {
+        id: raw.id as string,
+        prompt: raw.prompt as string,
+        dependsOn: raw.dependsOn as string[],
+        agent,
+        ...(nonempty(model) ? { model } : {}),
+        ...(isTaskEffort(effort) ? { effort } : {}),
+        source: raw.source as string,
+      };
+    }),
+  };
   const visited = new Set<string>();
   const active: string[] = [];
   const byId = new Map(batch.tasks.map((task) => [task.id, task]));
@@ -1021,4 +1082,10 @@ function validateBatch(input: unknown): TaskBatch {
   };
   for (const task of batch.tasks) visit(task.id);
   return batch;
+}
+
+const TASK_EFFORTS: readonly TaskEffort[] = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
+
+function isTaskEffort(value: unknown): value is TaskEffort {
+  return typeof value === 'string' && TASK_EFFORTS.includes(value as TaskEffort);
 }

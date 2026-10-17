@@ -1,4 +1,4 @@
-import type { TaskAgent, TaskBatchDiagnostic } from './taskBatch.js';
+import type { TaskAgent, TaskBatchDiagnostic, TaskEffort } from './taskBatch.js';
 
 /** L'identité externe de la sandbox est enregistrée dès sa création, avant l'exécution de l'agent. */
 export interface TaskSandboxResource {
@@ -14,6 +14,8 @@ export interface TaskExecutionRequest {
   taskId: string;
   attemptId: string;
   agent: TaskAgent;
+  model?: string;
+  effort?: TaskEffort;
   workspacePath: string;
   specFile: string;
   prompt: string;

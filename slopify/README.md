@@ -51,11 +51,15 @@ hôtes historiques, aucun `.acp` n'est installé et les ADR acceptées ne change
 ```json
 {
   "specFile": "spec.md",
+  "defaults": {
+    "agent": "codex",
+    "model": "gpt-6-luna",
+    "effort": "medium"
+  },
   "tasks": [
     {
       "id": "implement",
       "prompt": "$implement\nTexte complet du ticket et interfaces de test approuvées.",
-      "agent": "codex",
       "dependsOn": [],
       "source": "issues/01-implement.md"
     },
@@ -70,12 +74,17 @@ hôtes historiques, aucun `.acp` n'est installé et les ADR acceptées ne change
 }
 ```
 
-`specFile` est relatif au fichier JSON ; le chemin du lot est relatif au répertoire
-d’appel. `source` conserve la référence du ticket ; son texte complet appartient
-au `prompt`. Les prompts et invocations de skills sont transmis sans réécriture.
-Seuls `pi` et `codex` sont acceptés. Les champs, identifiants, dépendances, cycles
-et l’accès à la spec sont validés avant de créer un run, une branche ou un sandbox.
-La vérification finale est une tâche ordinaire facultative du lot.
+`init` prépare les valeurs `defaults` `codex`, `gpt-6-luna`, `medium`. L'Agent Host
+choisit les paramètres convenables par tâche et peut surcharger `agent`, `model`
+ou `effort` dans chaque tâche. Les champs omis héritent des valeurs du lot.
+`agent` vaut `pi` ou `codex`; `model` et `effort` s'appliquent seulement à Codex.
+Pi utilise son modèle configuré et rejette les surcharges `model`/`effort` au niveau
+de la tâche. `specFile` est relatif au fichier JSON ; le chemin du lot est relatif
+au répertoire d’appel. `source` conserve la référence du ticket ; son texte complet
+appartient au `prompt`. Les prompts et invocations de skills sont transmis sans
+réécriture. Les champs, identifiants, dépendances, cycles et l’accès à la spec sont
+validés avant de créer un run, une branche ou un sandbox. La vérification finale
+est une tâche ordinaire facultative du lot.
 
 ## Exécution et reprise
 

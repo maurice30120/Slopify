@@ -144,7 +144,11 @@ const codexAdapter:TaskAgentAdapter={
       'set -eu; for skill in implement tdd code-review; do test -r "$HOME/.agents/skills/$skill/SKILL.md"; done; target=$(readlink -f "$HOME/.agents/skills/implement"); test -n "$target"; options=$(findmnt -n -o OPTIONS -T "$target"); case ",$options," in *,ro,*) ;; *) echo "Official skills are not readonly" >&2; exit 1;; esac; codex --version']);
     if(probe.exitCode!==0)return {exitCode:probe.exitCode,report:probe.stderr,diagnostics:[{code:'codex_capability',message:probe.stderr||'Readonly official skills or Codex unavailable.'}]};
     const harness=await readFile(path.join(context.containerContextPath,'harness.txt'),'utf8');
-    const run=await context.command(['exec','-w',context.containerWorkspacePath,context.sandboxName,'codex','exec','--dangerously-bypass-approvals-and-sandbox','--json','-c',`developer_instructions=${JSON.stringify(harness)}`,context.prompt]);
+    const codexArgs=['exec','--dangerously-bypass-approvals-and-sandbox','--json'];
+    if(context.model)codexArgs.push('--model',context.model);
+    if(context.effort)codexArgs.push('-c',`model_reasoning_effort=${context.effort}`);
+    codexArgs.push('-c',`developer_instructions=${JSON.stringify(harness)}`,context.prompt);
+    const run=await context.command(['exec','-w',context.containerWorkspacePath,context.sandboxName,'codex',...codexArgs]);
     const diagnostics:TaskBatchDiagnostic[]=[];
     const reports:string[]=[];
     const sessionRoot=await context.command(['exec',context.sandboxName,'sh','-c',`printf '%s' "$HOME/.codex/sessions"`]);

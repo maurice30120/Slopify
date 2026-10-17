@@ -3,7 +3,7 @@ import type { CliTerminal } from './terminal.js';
 import { parseInitArgs, type InitHost } from './initArgs.js';
 import { InitService, type InitResult } from './initService.js';
 
-export const initHelp = `Initialize a Slopify V2 project:\n  slopify init [--cwd <workspace>] [--host <pi|codex|all>] [--yes] [--json] [--verbose]\n\nWithout --host, an interactive terminal prompts for the Agent Host; --yes defaults it to all.\nThe skills download is always automatic, noninteractive, and local to the target project.\n--json never prompts; provide --host or --yes.`;
+export const initHelp = `Initialize a Slopify V2 project:\n  slopify init [--cwd <workspace>] [--host <pi|codex|all>] [--yes] [--json] [--verbose]\n\nWithout --host, an interactive terminal prompts for the Agent Host integration to install; --yes defaults it to all.\nThe generated task batch starts with defaults: agent "codex", model "gpt-6-luna", effort "medium".\nThe Agent Host can override agent/model/effort per task when it prepares a batch. Model and effort overrides apply to Codex tasks; Pi uses its configured model.\nThe Agent Host choice only controls where Slopify's launch skill is installed.\nThe skills download is always automatic, noninteractive, and local to the target project.\n--json never prompts; provide --host or --yes.`;
 
 type InitTerminal = Pick<CliTerminal, 'write' | 'writeError' | 'select'>;
 interface InitCliDependencies { packageRoot: string; execute?: SubprocessExecutor; interactive?: boolean }
@@ -20,7 +20,7 @@ export async function runInitCli(argv: string[], terminal: InitTerminal, baseCwd
     if (!host && options.json) throw new Error('--json requires --host or --yes; JSON mode never prompts.');
     if (!host && !interactive) throw new Error('A noninteractive init requires --host or --yes.');
     if (!host) {
-      const selected = await terminal.select('Choose an Agent Host:', [...await service.supportedHosts(), 'all']);
+      const selected = await terminal.select('Choose the Agent Host integration to install:', [...await service.supportedHosts(), 'all']);
       if (!selected) throw new Error('Agent Host selection was cancelled.');
       host = selected as InitHost;
     }
@@ -48,7 +48,15 @@ async function pullSkills(cwd: string, terminal: InitTerminal, execute: Subproce
 }
 
 function formatResult(cwd: string, host: InitHost, result: InitResult, verbose: boolean): string {
-  const lines = [`Initialized ${cwd} for ${host}.`, `Created (${result.created.length}):`, ...result.created.map(file => `  ${file}`), `Overwritten (${result.overwritten.length}):`, ...result.overwritten.map(file => `  ${file}`)];
+  const lines = [
+    `Initialized ${cwd} for ${host}.`,
+    'Installed the Agent Host integration and a starter batch with defaults: codex, gpt-6-luna, medium.',
+    'The Agent Host can override agent/model/effort per task; model and effort apply to Codex tasks.',
+    `Created (${result.created.length}):`,
+    ...result.created.map(file => `  ${file}`),
+    `Overwritten (${result.overwritten.length}):`,
+    ...result.overwritten.map(file => `  ${file}`),
+  ];
   if (result.warnings.length) lines.push(`Warnings (${result.warnings.length}):`, ...result.warnings.map(warning => `  ${warning}`));
   if (verbose) lines.push('Owned files are overwritten on every init; unrelated files are preserved.');
   return lines.join('\n');

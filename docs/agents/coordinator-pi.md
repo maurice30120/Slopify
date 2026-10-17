@@ -74,6 +74,11 @@ Pi construit un **fichier JSON unique** (`batch.json`) contenant :
 ```json
 {
   "specFile": "context/spec.md",
+  "defaults": {
+    "agent": "codex",
+    "model": "gpt-6-luna",
+    "effort": "medium"
+  },
   "tasks": [
     {
       "id": "task-add",
@@ -117,8 +122,9 @@ Pi construit un **fichier JSON unique** (`batch.json`) contenant :
    - **Ne pas recopier** les instructions des skills officiels (ils sont montés en lecture seule)
    - Inclure **toujours** : la description, les critères, les interfaces de test approuvées
 4. **`tasks[i].dependsOn`** : Liste des identifiants de tâches **du même lot**
-5. **`tasks[i].agent`** : `"pi"` ou `"codex"` (seuls agents V2 autorisés)
-6. **`tasks[i].source`** : Référence d'origine **non vide** (fichier local ou URL d'issue)
+5. **`defaults` et choix de l'Agent Host** : `init` prépare les valeurs de base `agent: "codex"`, `model: "gpt-6-luna"`, `effort: "medium"`. L'Agent Host doit choisir le runner, le modèle et l'effort adaptés à chaque tâche, puis écrire les champs tâche par tâche pour surcharger ces valeurs si nécessaire.
+6. **`tasks[i].agent`** : `"pi"` ou `"codex"`. Le champ sélectionne le runner et peut hériter de `defaults.agent`. Les tâches Codex transmettent `model` avec `--model` et `effort` avec `-c model_reasoning_effort=...`; les champs de tâche remplacent les valeurs par défaut. Les tâches Pi utilisent le modèle configuré `zai-glm-5-3` et rejettent les surcharges `model` ou `effort` au niveau de la tâche.
+7. **`tasks[i].source`** : Référence d'origine **non vide** (fichier local ou URL d'issue)
 
 ### 1.3 Validation par Pi avant soumission
 
@@ -129,7 +135,7 @@ Avant de soumettre le lot à Slopify, Pi **doit** vérifier :
    - Si un prérequis externe est inachevé → **bloquer le lancement** et signaler à l'utilisateur
    - Exemple : Si `task-total` dépend de `org/repo#44` (non dans le lot) → refus
 3. **Cohérence des dépendances** : Le graphe est acyclique et toutes les dépendances référencent des tâches du lot
-4. **Attribution des agents** : Chaque tâche a un agent valide (`pi` ou `codex`)
+4. **Attribution des agents** : Chaque tâche résout un agent valide (`pi` ou `codex`) depuis son champ ou `defaults.agent`; pour Codex, choisir explicitement un modèle et un effort adaptés si les valeurs de base ne conviennent pas
 5. **Interfaces de test** : Les interfaces approuvées sont incluses dans chaque prompt
 
 **Exemple de blocage sur prérequis externe :**

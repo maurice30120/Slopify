@@ -1,10 +1,14 @@
 {
   "specFile": "spec.md",
+  "defaults": {
+    "agent": "codex",
+    "model": "gpt-6-luna",
+    "effort": "medium"
+  },
   "tasks": [
     {
       "id": "implement-example",
       "prompt": "$implement\nImplement the complete approved specification in spec.md using test-driven development.",
-      "agent": "codex",
       "dependsOn": [],
       "source": "https://github.com/example/project/issues/1"
     },
