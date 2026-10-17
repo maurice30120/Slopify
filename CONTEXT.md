@@ -18,6 +18,10 @@ _Avoid_: étape de clarification, étape de planification, nœud de pipeline gé
 Phrase courte émise périodiquement pendant un run pour informer l’Agent Hôte de l’action en cours, entre deux transitions d’état durable.
 _Avoid_: heartbeat, progress, log, pulse de vie
 
+**Revue indépendante**:
+Évaluation d’une tentative par un agent distinct de celui qui a produit le travail.
+_Avoid_: auto-revue, revue par l’agent d’implémentation, revue interne
+
 ### V1 — vocabulaire du fonctionnement actuel
 
 **Sandbox Run**:
@@ -45,5 +49,5 @@ Décision explicite d’abandonner les changements d’un Sandbox Run sans modif
 _Avoid_: Cancellation, cleanup
 
 **Cancellation**:
-Fin d’un Sandbox Run sans décision explicite de promotion ou de rejet ; ses changements ne sont pas transférés.
-_Avoid_: Rejection
+Fin d’un Sandbox Run ou d’une tentative sans décision explicite de promotion ou de rejet ; ses changements ne sont pas transférés et l’exécution demeure reprendable.
+_Avoid_: Rejection, interrupted

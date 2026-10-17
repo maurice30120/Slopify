@@ -179,7 +179,7 @@ slopify tasks run batch.json \
 **Paramètres :**
 - `batch.json` : Chemin vers le fichier de lot
 - `--cwd` : Répertoire du dépôt Git (obligatoire)
-- `--store` : Répertoire de stockage des runs (optionnel, défaut : `~/.local/share/slopify/task-runs/`)
+- `--store` : Répertoire de stockage des runs (optionnel, défaut : `~/.local/share/slopify/task-runs/<hash-du-dépôt>/` — un sous-répertoire par dépôt hôte : SHA-256 du chemin absolu du dépôt, tronqué à 16 caractères)
 - `--base` : Commit de base du run (optionnel, défaut : `HEAD`)
 - `--json` : Sortie machine-readable
 
@@ -442,6 +442,8 @@ Quand le run est terminé (`succeeded` ou `failed`), Pi présente :
 5. **Ressources retenues** : Sandboxes conservés (échecs, conflits, interruptions)
 6. **Ressources supprimées** : Sandboxes réussis (après sauvegarde des résultats)
 7. **Interventions** : Actions manuelles requises ou effectuées
+
+**Hygiène des sandboxes** : les sandboxes retenues et arrêtées s’accumulent d’un run à l’autre (`sbx ls`). Nettoyer périodiquement avec `sbx prune`, mais seulement après avoir sauvegardé le travail utile : une tentative sans checkpoint n’existe que dans sa sandbox, et le prune détruit définitivement ce travail.
 
 ### 6.2 Format du rapport
 
