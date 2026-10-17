@@ -14,6 +14,27 @@ export interface BatchAction {
   precondition?: string;
 }
 
+export interface TaskBatchWatchUpdate {
+  type: 'watch-update';
+  initial: boolean;
+  runId: string;
+  status: TaskBatchSnapshot['status'];
+  progress: ReturnType<typeof taskBatchReport>['progress'];
+  tasks: Array<{ id: string; status: BatchTaskState['status'] }>;
+  changes: Array<{ taskId: string; from?: BatchTaskState['status']; to: BatchTaskState['status'] }>;
+  issues: BatchIssue[];
+  activitySignals: ActivitySignal[];
+  nextActions?: BatchAction[];
+}
+
+const TERMINAL_RUN_STATUSES: ReadonlySet<TaskBatchSnapshot['status']> = new Set([
+  'succeeded', 'failed', 'interrupted', 'conflicted',
+]);
+
+export function isTerminalTaskBatchStatus(status: TaskBatchSnapshot['status']): boolean {
+  return TERMINAL_RUN_STATUSES.has(status);
+}
+
 /** A read-only view of durable state; running means recorded, not verified process liveness. */
 export function taskBatchReport(snapshot: TaskBatchSnapshot, storePath?: string, activitySignals?: ActivitySignal[]) {
   const byId = new Map(snapshot.tasks.map(task => [task.id, task]));
@@ -92,6 +113,66 @@ export function taskBatchReport(snapshot: TaskBatchSnapshot, storePath?: string,
     });
   }
   return { ...snapshot, progress, issues, nextActions, ...(activitySignals?.length ? { activitySignals } : {}) };
+}
+
+/** Compact state transition for `tasks watch`; updatedAt is deliberately excluded from the fingerprint. */
+export function taskBatchWatchUpdate(
+  snapshot: TaskBatchSnapshot,
+  storePath: string | undefined,
+  previousStatuses: Map<string, BatchTaskState['status']> | undefined,
+  journalActivitySignals: ActivitySignal[],
+  newActivitySignals: ActivitySignal[],
+): { update: TaskBatchWatchUpdate; fingerprint: string } {
+  const report = taskBatchReport(snapshot, storePath, journalActivitySignals);
+  const tasks = snapshot.tasks.map(task => ({ id: task.id, status: task.status }));
+  const changes = previousStatuses
+    ? tasks.filter(task => previousStatuses.get(task.id) !== task.status).map(task => ({
+      taskId: task.id, from: previousStatuses.get(task.id), to: task.status,
+    }))
+    : tasks.map(task => ({ taskId: task.id, to: task.status }));
+  const update: TaskBatchWatchUpdate = {
+    type: 'watch-update',
+    initial: previousStatuses === undefined,
+    runId: snapshot.runId,
+    status: snapshot.status,
+    progress: report.progress,
+    tasks,
+    changes,
+    issues: report.issues.filter(issue => issue.severity !== 'info' && !issue.historical),
+    activitySignals: newActivitySignals,
+    ...(isTerminalTaskBatchStatus(snapshot.status)
+      ? { nextActions: report.nextActions } : {}),
+  };
+  const fingerprint = JSON.stringify({
+    status: snapshot.status,
+    progress: report.progress,
+    tasks,
+    issues: report.issues,
+    conflict: snapshot.conflict,
+    resolution: snapshot.resolution?.status,
+    activitySignals: journalActivitySignals,
+  });
+  return { update, fingerprint };
+}
+
+/** One readable summary per meaningful state change in `tasks watch`. */
+export function formatTaskBatchWatchUpdate(update: TaskBatchWatchUpdate): string {
+  const { progress } = update;
+  const lines = [
+    `Run ${update.runId}: ${update.status} (${progress.phase}); ${progress.counts.succeeded}/${progress.total} integrated; ${progress.counts.running} running; ${progress.counts.pending} pending; ${progress.counts.failed} failed; ${progress.counts.blocked} blocked; ${progress.counts.interrupted} interrupted; ${progress.counts.conflicted} conflicted`,
+  ];
+  if (update.initial) {
+    if (progress.activeTaskIds.length) lines.push(`Active: ${progress.activeTaskIds.join(', ')}`);
+    if (progress.readyTaskIds.length) lines.push(`Ready: ${progress.readyTaskIds.join(', ')}`);
+    const failed = update.tasks.filter(task => ['failed', 'blocked', 'interrupted', 'conflicted'].includes(task.status));
+    if (failed.length) lines.push(`Needs attention: ${failed.map(task => `${task.id} (${task.status})`).join(', ')}`);
+  } else if (update.changes.length) {
+    lines.push(`Tasks changed: ${update.changes.map(change => `${change.taskId} ${change.from ?? 'new'} → ${change.to}`).join(', ')}`);
+  }
+  for (const issue of update.issues) lines.push(`[${issue.severity}] ${issue.code}${issue.taskId ? ` (${issue.taskId})` : ''}: ${issue.message}`);
+  lines.push(...formatActivitySignalWindow(update.activitySignals));
+  for (const action of update.nextActions ?? []) lines.push(`Next: ${action.description}\n  ${displayCommand(action.command)}`);
+  return lines.join('\n');
 }
 
 /**

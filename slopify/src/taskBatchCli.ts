@@ -1,5 +1,5 @@
 import * as path from 'node:path';
-import { taskBatchReport, formatTaskBatchReport } from './taskBatchReport.js';
+import { taskBatchReport, formatTaskBatchReport, taskBatchWatchUpdate, formatTaskBatchWatchUpdate, isTerminalTaskBatchStatus } from './taskBatchReport.js';
 import { formatActivitySignalEvent, parseActivitySignal, type ActivitySignal } from './activitySignal.js';
 import { TaskBatchService, TaskBatchValidationError, TaskBatchExecutionError, type TaskBatchSnapshot, type TaskBatchServiceOptions } from './taskBatch.js';
 
@@ -31,6 +31,7 @@ export const taskBatchHelp = [
   'Task batches (Pi / Codex):',
   '  slopify tasks run <batch.json> [--cwd <repository>] [--store <directory>] [--base <ref>] [--json]',
   '  slopify tasks status <run-id> [--cwd <repository>] [--store <directory>] [--json]',
+  '  slopify tasks watch <run-id> [--cwd <repository>] [--store <directory>] [--interval <ms>] [--json]',
   '  slopify tasks resume <run-id> [--cwd <repository>] [--store <directory>] [--json]',
   '  slopify tasks resume-task <run-id> <task-id> [--cwd <repository>] [--store <directory>] [--json]',
   '  slopify tasks resolve-conflict <run-id> [--strategy <use-current|use-incoming|manual>] [--cwd <repository>] [--store <directory>] [--json]',
@@ -41,17 +42,69 @@ export const taskBatchHelp = [
   'Runs execute the first ten ready tasks in JSON order, then integrate the entire wave.',
   'Execution exit codes: 0 succeeded, 2 failed/interrupted/conflicted, 1 invalid input or command.',
   'Status and final output include progress, issues, evidence paths and next actions.',
+  'Watch streams only meaningful state changes; Ctrl-C stops watching without stopping the run.',
   'During execution progress is written to stderr (JSON lines with --json); stdout keeps one final result.',
   'Periodic activity signals also go to stderr: JSON events of type "activity-signal" with --json, one prefixed sentence per line in text mode.',
   'Running is durable state; inspect sandbox liveness before retrying an interrupted process.',
   'Batch paths are relative to the calling directory; specFile is relative to the batch file.',
+  'Optional inputFiles are repository-relative files; each must be committed at the selected run base.',
   'Batch defaults: {"agent":"codex","model":"gpt-6-luna","effort":"medium"}; each task may override agent, model and effort.',
   'Model and effort apply to Codex tasks. Pi keeps its configured model and rejects task-level model/effort overrides.',
 ].join('\n');
 
 
 type BatchCliService = Pick<TaskBatchService,
-  'run' | 'status' | 'resume' | 'resumeTask' | 'resolveConflict' | 'getConflict' | 'validateResolution' | 'getResolution' | 'recentActivitySignals'>;
+  'run' | 'status' | 'resume' | 'resumeTask' | 'resolveConflict' | 'getConflict' | 'validateResolution' | 'getResolution' | 'recentActivitySignals' | 'allActivitySignals'>;
+
+const DEFAULT_WATCH_INTERVAL_MS = 5_000;
+const MIN_WATCH_INTERVAL_MS = 100;
+const MAX_WATCH_INTERVAL_MS = 60_000;
+
+function waitForWatchInterval(milliseconds: number, signal: AbortSignal): Promise<void> {
+  return new Promise(resolve => {
+    if (signal.aborted) { resolve(); return; }
+    const finish = () => {
+      clearTimeout(timer);
+      signal.removeEventListener('abort', finish);
+      resolve();
+    };
+    const timer = setTimeout(finish, milliseconds);
+    signal.addEventListener('abort', finish, { once: true });
+  });
+}
+
+async function watchTaskRun(
+  service: BatchCliService,
+  runId: string,
+  storePath: string | undefined,
+  intervalMs: number,
+  signal: AbortSignal,
+  json: boolean,
+  output: { write(message: string): void },
+): Promise<number> {
+  let previousFingerprint: string | undefined;
+  let previousStatuses: Map<string, TaskBatchSnapshot['tasks'][number]['status']> | undefined;
+  let previousSignalCount = 0;
+  while (!signal.aborted) {
+    const snapshot = await service.status(runId);
+    const journalSignals = await service.allActivitySignals(runId);
+    const newSignals = previousStatuses === undefined
+      ? journalSignals.slice(-10)
+      : journalSignals.slice(previousSignalCount);
+    const { update, fingerprint } = taskBatchWatchUpdate(snapshot, storePath, previousStatuses, journalSignals, newSignals);
+    if (fingerprint !== previousFingerprint) {
+      output.write(json ? `${JSON.stringify(update)}\n` : `${formatTaskBatchWatchUpdate(update)}\n`);
+      previousFingerprint = fingerprint;
+    }
+    previousStatuses = new Map(snapshot.tasks.map(task => [task.id, task.status]));
+    previousSignalCount = journalSignals.length;
+    if (isTerminalTaskBatchStatus(snapshot.status)) {
+      return snapshot.status === 'succeeded' ? 0 : 2;
+    }
+    await waitForWatchInterval(intervalMs, signal);
+  }
+  return 0;
+}
 
 export async function runTaskBatchCli(
   argv: string[],
@@ -69,24 +122,33 @@ export async function runTaskBatchCli(
       return 0;
     }
     const action = argv[0];
-    const actions = ['run', 'status', 'resume', 'resume-task', 'resolve-conflict', 'conflict', 'validate-resolution', 'resolution'];
+    const actions = ['run', 'status', 'watch', 'resume', 'resume-task', 'resolve-conflict', 'conflict', 'validate-resolution', 'resolution'];
     if (!actions.includes(action)) throw new Error(`Unknown tasks command "${action}".\n${taskBatchHelp}`);
     let repositoryPath = baseCwd;
     let storePath: string | undefined;
     let baseRef: string | undefined;
     let strategy: 'use-current' | 'use-incoming' | 'manual' | undefined;
+    let watchIntervalMs = DEFAULT_WATCH_INTERVAL_MS;
     const positional: string[] = [];
     for (let index = 1; index < argv.length; index += 1) {
       const value = argv[index];
       if (value === '--json') { json = true; continue; }
-      if (value === '--cwd' || value === '--store' || value === '--base' || value === '--strategy') {
+      if (value === '--cwd' || value === '--store' || value === '--base' || value === '--strategy' || value === '--interval') {
         if (value === '--base' && action !== 'run') throw new Error('--base is only supported by tasks run.');
         if (value === '--strategy' && action !== 'resolve-conflict') throw new Error('--strategy is only supported by tasks resolve-conflict.');
+        if (value === '--interval' && action !== 'watch') throw new Error('--interval is only supported by tasks watch.');
         const next = argv[++index];
         if (!next || next.startsWith('-')) throw new Error(`${value} requires a value.`);
         if (value === '--cwd') repositoryPath = path.resolve(baseCwd, next);
         else if (value === '--store') storePath = path.resolve(baseCwd, next);
         else if (value === '--base') baseRef = next;
+        else if (value === '--interval') {
+          const parsed = Number(next);
+          if (!Number.isInteger(parsed) || parsed < MIN_WATCH_INTERVAL_MS || parsed > MAX_WATCH_INTERVAL_MS) {
+            throw new Error(`--interval must be an integer from ${MIN_WATCH_INTERVAL_MS} to ${MAX_WATCH_INTERVAL_MS} milliseconds.`);
+          }
+          watchIntervalMs = parsed;
+        }
         else if (next === 'use-current' || next === 'use-incoming' || next === 'manual') strategy = next;
         else throw new Error(`Invalid strategy: ${next}. Use 'use-current', 'use-incoming', or 'manual'.`);
         continue;
@@ -98,7 +160,7 @@ export async function runTaskBatchCli(
     if (positional.length !== arity) throw new Error(taskBatchHelp);
     reportStorePath = storePath;
     let lastProgress = '';
-    const onUpdate = action === 'status' || action === 'conflict' || action === 'resolution' ? undefined
+    const onUpdate = action === 'status' || action === 'watch' || action === 'conflict' || action === 'resolution' ? undefined
       : (snapshot: TaskBatchSnapshot) => {
         const { progress, issues, nextActions } = taskBatchReport(snapshot, storePath);
         const tasks = snapshot.tasks.map(task => ({ id: task.id, agent: task.agent, ...(task.model ? { model: task.model } : {}), ...(task.effort ? { effort: task.effort } : {}), status: task.status }));
@@ -111,7 +173,7 @@ export async function runTaskBatchCli(
             + tasks.map(task => `${task.id}: ${task.status} (${task.agent}${task.model ? `, ${task.model}` : ''}${task.effort ? `, effort ${task.effort}` : ''})`).join(', ')
             + issues.filter(issue => issue.severity !== 'info' && !issue.historical).map(issue => `\n[${issue.code}] ${issue.taskId ?? 'run'}: ${issue.message}`).join(''));
       };
-    const onActivitySignal = action === 'status' || action === 'conflict' || action === 'resolution' ? undefined
+    const onActivitySignal = action === 'status' || action === 'watch' || action === 'conflict' || action === 'resolution' ? undefined
       : (signal: ActivitySignal) => { emitActivitySignal(signal, json, output); };
     const service = createService({ repositoryPath, storePath, onUpdate, onActivitySignal });
     const [runId, taskId] = positional;
@@ -134,6 +196,9 @@ export async function runTaskBatchCli(
       process.on('SIGTERM', interrupt);
     }
     const options = { signal: controller.signal };
+    if (action === 'watch') {
+      return await watchTaskRun(service, runId, storePath, watchIntervalMs, controller.signal, json, output);
+    }
     let snapshot: TaskBatchSnapshot;
     let activitySignals: ActivitySignal[] | undefined;
     switch (action) {

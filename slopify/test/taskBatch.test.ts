@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { mkdtemp, mkdir, readFile, writeFile, readdir, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, writeFile, readdir, rm, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import test from 'node:test';
@@ -59,6 +59,36 @@ test('reports all malformed fields and task graph references before creating any
   await assert.rejects(readdir(f.storePath), { code: 'ENOENT' });
 });
 
+test('inputFiles reject paths that leave the repository', async (t) => {
+  const f = await fixture(t);
+  await writeFile(f.batchFile, JSON.stringify({ ...batch(), inputFiles: ['../../outside.json'] }));
+  await assert.rejects(f.service.run(f.batchFile), (error: unknown) => {
+    assert.ok(error instanceof TaskBatchValidationError);
+    assert.equal(error.diagnostics[0].code, 'invalid_input_file');
+    assert.equal(error.diagnostics[0].path, 'inputFiles[0]');
+    return true;
+  });
+  await assert.rejects(readdir(f.storePath), { code: 'ENOENT' });
+});
+
+test('inputFiles reject tracked symlinks that can point outside the selected Git base', async (t) => {
+  const f = await fixture(t);
+  await writeFile(path.join(f.root, 'spec.md'), '# Input files');
+  await writeFile(path.join(f.root, 'outside.json'), '{"outside":true}\n');
+  await symlink('../outside.json', path.join(f.repo, 'source-manifest.json'));
+  execFileSync('git', ['-C', f.repo, 'add', 'source-manifest.json']);
+  execFileSync('git', ['-C', f.repo, 'commit', '-qm', 'add external symlink']);
+  await writeFile(f.batchFile, JSON.stringify({ ...batch(), inputFiles: ['source-manifest.json'] }));
+
+  await assert.rejects(f.service.run(f.batchFile, { execute: false }), (error: unknown) => {
+    assert.ok(error instanceof TaskBatchValidationError);
+    assert.equal(error.diagnostics[0].code, 'invalid_input_file');
+    assert.equal(error.diagnostics[0].path, 'inputFiles[0]');
+    return true;
+  });
+  await assert.rejects(readdir(f.storePath), { code: 'ENOENT' });
+});
+
 function batch(tasks: Array<{ id: string; dependsOn: string[] }> = [{ id: 'implement', dependsOn: [] }]) {
   return {
     specFile: 'spec.md',
@@ -91,6 +121,46 @@ test('a missing specification prevents a valid task batch from creating a run', 
     assert.ok(error instanceof TaskBatchValidationError);
     assert.equal(error.diagnostics[0].code, 'unreadable_spec');
     assert.match(error.message, /spec\.md/);
+    return true;
+  });
+  await assert.rejects(readdir(f.storePath), { code: 'ENOENT' });
+});
+
+test('declared input files must be present in the selected Git base before a run is created', async (t) => {
+  const f = await fixture(t);
+  await writeFile(path.join(f.root, 'spec.md'), '# Input files');
+  await mkdir(path.join(f.repo, 'data'));
+  await writeFile(path.join(f.repo, 'data/source-manifest.json'), '{"partitions":["A"]}\n');
+  await writeFile(f.batchFile, JSON.stringify({ ...batch(), inputFiles: ['data/source-manifest.json'] }));
+
+  await assert.rejects(f.service.run(f.batchFile, { execute: false }), (error: unknown) => {
+    assert.ok(error instanceof TaskBatchValidationError);
+    assert.equal(error.diagnostics[0].code, 'missing_input_file');
+    assert.equal(error.diagnostics[0].path, 'inputFiles[0]');
+    return true;
+  });
+  await assert.rejects(readdir(f.storePath), { code: 'ENOENT' });
+
+  execFileSync('git', ['-C', f.repo, 'add', 'data/source-manifest.json']);
+  execFileSync('git', ['-C', f.repo, 'commit', '-qm', 'add source manifest']);
+  const snapshot = await f.service.run(f.batchFile, { execute: false });
+  const frozenBatch = JSON.parse(await readFile(snapshot.context.batchFile, 'utf8'));
+  assert.deepEqual(frozenBatch.inputFiles, ['data/source-manifest.json']);
+});
+
+test('inputFiles that name directories are diagnosed as invalid files before a run is created', async (t) => {
+  const f = await fixture(t);
+  await writeFile(path.join(f.root, 'spec.md'), '# Input files');
+  await mkdir(path.join(f.repo, 'data'));
+  await writeFile(path.join(f.repo, 'data/source-manifest.json'), '{"partitions":["A"]}\n');
+  execFileSync('git', ['-C', f.repo, 'add', 'data/source-manifest.json']);
+  execFileSync('git', ['-C', f.repo, 'commit', '-qm', 'add source manifest']);
+  await writeFile(f.batchFile, JSON.stringify({ ...batch(), inputFiles: ['data'] }));
+
+  await assert.rejects(f.service.run(f.batchFile, { execute: false }), (error: unknown) => {
+    assert.ok(error instanceof TaskBatchValidationError);
+    assert.equal(error.diagnostics[0].code, 'invalid_input_file');
+    assert.equal(error.diagnostics[0].path, 'inputFiles[0]');
     return true;
   });
   await assert.rejects(readdir(f.storePath), { code: 'ENOENT' });

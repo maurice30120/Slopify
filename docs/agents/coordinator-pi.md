@@ -74,6 +74,7 @@ Pi construit un **fichier JSON unique** (`batch.json`) contenant :
 ```json
 {
   "specFile": "context/spec.md",
+  "inputFiles": ["data/source-manifest.json"],
   "defaults": {
     "agent": "codex",
     "model": "gpt-6-luna",
@@ -125,6 +126,7 @@ Pi construit un **fichier JSON unique** (`batch.json`) contenant :
 5. **`defaults` et choix de l'Agent Host** : `init` prépare les valeurs de base `agent: "codex"`, `model: "gpt-6-luna"`, `effort: "medium"`. L'Agent Host doit choisir le runner, le modèle et l'effort adaptés à chaque tâche, puis écrire les champs tâche par tâche pour surcharger ces valeurs si nécessaire.
 6. **`tasks[i].agent`** : `"pi"` ou `"codex"`. Le champ sélectionne le runner et peut hériter de `defaults.agent`. Les tâches Codex transmettent `model` avec `--model` et `effort` avec `-c model_reasoning_effort=...`; les champs de tâche remplacent les valeurs par défaut. Les tâches Pi utilisent le modèle configuré `zai-glm-5-3` et rejettent les surcharges `model` ou `effort` au niveau de la tâche.
 7. **`tasks[i].source`** : Référence d'origine **non vide** (fichier local ou URL d'issue)
+8. **`inputFiles`** (facultatif) : chemins des manifests et fichiers locaux lus par les tâches. Les déclarer ici permet à Slopify de vérifier qu'ils sont suivis dans le commit de base du run et donc présents dans les sandboxes.
 
 ### 1.3 Validation par Pi avant soumission
 
@@ -137,6 +139,7 @@ Avant de soumettre le lot à Slopify, Pi **doit** vérifier :
 3. **Cohérence des dépendances** : Le graphe est acyclique et toutes les dépendances référencent des tâches du lot
 4. **Attribution des agents** : Chaque tâche résout un agent valide (`pi` ou `codex`) depuis son champ ou `defaults.agent`; pour Codex, choisir explicitement un modèle et un effort adaptés si les valeurs de base ne conviennent pas
 5. **Interfaces de test** : Les interfaces approuvées sont incluses dans chaque prompt
+6. **Sources du lot** : Lire les manifests réellement utilisés, vérifier la provenance et la licence, et confirmer que chaque partition demandée dispose des sources attendues. Déclarer tous les fichiers locaux dans `inputFiles`; Slopify refuse le lancement si un fichier déclaré n'existe pas dans le commit de base. Si le manifeste ou une autorisation de collecte manque, bloquer le lancement et demander les sources ou l'accord explicite avant toute collecte.
 
 **Exemple de blocage sur prérequis externe :**
 ```
@@ -205,6 +208,8 @@ Slopify rejette le lot **avant toute exécution** si :
 | `invalid_dependencies` | `dependsOn` invalide | "Expected a list of nonempty task IDs." |
 | `invalid_agent` | Agent inconnu | "Agent must be pi or codex." |
 | `invalid_source` | Source vide | "Expected a nonempty file or issue reference." |
+| `invalid_input_files` / `invalid_input_file` / `duplicate_input_file` | Liste mal formée, chemin absolu/hors dépôt ou dupliqué, ou source qui n'est pas un fichier régulier (symlink, dossier, sous-module) | Diagnostic sur `inputFiles` |
+| `missing_input_file` | Fichier déclaré absent du commit de base | "Input file ... is not present in run base ...; commit it before launching the batch." |
 | `self_dependency` | Auto-dépendance | "Task \"X\" depends on itself." |
 | `missing_dependency` | Dépendance manquante | "Dependency \"Y\" is absent from this batch." |
 | `dependency_cycle` | Cycle détecté | "Dependency cycle: A -> B -> A." |
@@ -219,7 +224,7 @@ Avant tout lancement, Slopify :
 1. Crée une **copie figée** de `spec.md` et `batch.json` dans `<store>/<runId>/context/`
 2. Résout `specFile` relativement au batch et lit son contenu
 3. Crée une **branche d'intégration** : `feature/slopify-<runId>`
-4. Enregistre le **commit de base du run** (`runBaseCommit`)
+4. Enregistre le **commit de base du run** (`runBaseCommit`), qui fixe aussi la version des `inputFiles`
 5. Persiste l'état initial dans `<store>/<runId>/state.json`
 
 **Conséquence** : Les modifications apportées aux sources après le lancement **n'affectent pas** le run en cours.
@@ -305,6 +310,8 @@ slopify tasks status <run-id> --cwd /chemin/vers/depot --store /chemin/vers/stoc
 Le `runId` est annoncé dès le lancement sur stderr, sans attendre la fin. Avec `--json`, les changements d’avancement sont des lignes JSON `type: "progress"` sur stderr ; pendant l’exécution, un tick minute ajoute des Signaux d’activité, lignes JSON dédiées `type: "activity-signal"` (phrases préfixées `[run <id>] <tâche(s)> : <phrase>` en mode texte) ; stdout reste un seul résultat final. Lire ensuite `tasks status` avec les mêmes `--cwd` et `--store`.
 
 Le statut JSON conserve le snapshot et ajoute `progress` (phase, compteurs, tâches actives, checkpoints à intégrer, tâches prêtes et dépendances attendues), `issues` (causes des problèmes, avec tâche et tentative), `nextActions` (commandes en tableaux d’arguments et préconditions) et `activitySignals` (les dix derniers Signaux d’activité du run, absents quand aucun n’a été émis). Le texte expose les mêmes informations avec les rapports, logs, commits et sandboxes inspectables. Les diagnostics historiques sont marqués `historical: true` : ils ne constituent pas un nouveau problème de la reprise.
+
+Pour suivre un run long sans relire son état complet à répétition, `slopify tasks watch <run-id>` émet une ligne par changement d'état ou nouveau Signal d’activité, puis se termine quand le run atteint un état final. `--interval <ms>` règle la fréquence de lecture (100 à 60 000 ms, 5 000 ms par défaut). `Ctrl-C` arrête uniquement le suivi; le run continue.
 
 `running` indique l’état enregistré, sans prouver que le processus travaille encore. Utiliser la date de dernière sauvegarde et l’inspection du sandbox pour diagnostiquer un arrêt ; vérifier que l’ancien processus Slopify et l’agent précédent ont terminé avant de relancer. Une tâche `completed` attend l’intégration et ne doit pas être relancée.
 
@@ -776,6 +783,7 @@ La CLI expose uniquement les commandes `tasks`. `list`, `run <pipeline> <prompt>
 |----------|-------------|
 | `slopify tasks run <batch> [--cwd <repo>] [--store <dir>] [--base <ref>]` | Lancer un nouveau run |
 | `slopify tasks status <run-id> [--cwd <repo>] [--store <dir>]` | Lire l'état d'un run |
+| `slopify tasks watch <run-id> [--cwd <repo>] [--store <dir>] [--interval <ms>]` | Suivre les changements d'état d'un run |
 | `slopify tasks resume <run-id> [--cwd <repo>] [--store <dir>]` | Reprendre le lot |
 | `slopify tasks validate-resolution <run-id> <resolution-id> [--cwd <repo>] [--store <dir>]` | Valider une résolution manuelle et reprendre |
 | `slopify tasks resolution <run-id> [--cwd <repo>] [--store <dir>]` | Consulter la résolution |
@@ -792,6 +800,7 @@ La CLI expose uniquement les commandes `tasks`. `list`, `run <pipeline> <prompt>
 - [ ] Chaque tâche a un agent valide (`pi` ou `codex`)
 - [ ] Chaque prompt contient le texte complet du ticket + invocation du skill
 - [ ] Les interfaces de test approuvées sont incluses
+- [ ] Les fichiers d'entrée locaux sont déclarés dans `inputFiles`, présents au commit de base et couvrent toutes les partitions avec une provenance et une licence vérifiées
 - [ ] La tâche finale de vérification dépend de toutes les implémentations
 - [ ] La spec et le batch sont figés avant lancement
 - [ ] Le dépôt hôte est préservé (branche de travail inchangée)

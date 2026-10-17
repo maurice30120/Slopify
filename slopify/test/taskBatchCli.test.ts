@@ -37,6 +37,7 @@ function service(state: TaskBatchSnapshot) {
     resumeTask: async () => state, resolveConflict: async () => state, validateResolution: async () => state,
     getConflict: async () => undefined, getResolution: async () => undefined,
     recentActivitySignals: async () => [],
+    allActivitySignals: async () => [],
   };
 }
 
@@ -95,15 +96,45 @@ test('top-level help exposes only V2 commands', () => {
   const result = spawnSync(process.execPath, [cli, '--help'], { encoding: 'utf8' });
   assert.equal(result.status, 0);
   assert.match(result.stdout, /tasks run <batch.json>/);
+  assert.match(result.stdout, /tasks watch <run-id>/);
   assert.match(result.stdout, /tasks validate-resolution/);
   assert.doesNotMatch(result.stdout, /slopify list|slopify run|--agent|--keep-sandboxes/);
 });
 test('invalid command arguments never construct an executor service', async () => {
   for (const args of [['run'], ['unknown'], ['run', 'batch', '--concurrency', '10'], ['run', 'batch', '--cwd'],
-    ['status', 'run', '--base', 'HEAD'], ['resume', 'run', '--agent', 'pi'], ['run', 'batch', '--strategy', 'manual']]) {
+    ['status', 'run', '--base', 'HEAD'], ['resume', 'run', '--agent', 'pi'], ['run', 'batch', '--strategy', 'manual'],
+    ['status', 'run', '--interval', '500'], ['watch', 'run', '--interval', '10']]) {
     const code = await runTaskBatchCli(args, output(), '/repo', () => { throw new Error('Service must not be constructed'); });
     assert.equal(code, 1);
   }
+});
+test('tasks watch emits only changed states and exits when the run is terminal', async () => {
+  const sink = output();
+  const states = [snapshot('running'), snapshot('running'), snapshot('succeeded')];
+  let polls = 0;
+  const code = await runTaskBatchCli(['watch', 'run', '--interval', '100', '--json'], sink, '/repo', () => ({
+    ...service(snapshot('running')),
+    status: async () => { polls += 1; return states.shift() ?? snapshot('succeeded'); },
+  }));
+  assert.equal(code, 0);
+  assert.equal(polls, 3);
+  assert.deepEqual(sink.messages.map(line => JSON.parse(line).status), ['running', 'succeeded']);
+  assert.deepEqual(sink.errors, []);
+});
+test('tasks watch catches all new journal signals after more than ten accrue between polls', async () => {
+  const sink = output();
+  const states = [snapshot('running'), snapshot('running'), snapshot('succeeded')];
+  const signals = Array.from({ length: 22 }, (_, minute) => journalSignal('run', minute));
+  const journalReads = [signals.slice(0, 10), signals, signals];
+  const code = await runTaskBatchCli(['watch', 'run', '--interval', '100', '--json'], sink, '/repo', () => ({
+    ...service(snapshot('running')),
+    status: async () => states.shift() ?? snapshot('succeeded'),
+    allActivitySignals: async () => journalReads.shift() ?? signals,
+  }));
+  assert.equal(code, 0);
+  const updates = sink.messages.map(line => JSON.parse(line));
+  assert.deepEqual(updates.map(update => update.activitySignals.length), [10, 12, 0]);
+  assert.deepEqual(updates[1].activitySignals, signals.slice(10));
 });
 test('SIGINT reaches task execution and handlers are removed after returning interrupted', async () => {
   const before = process.listenerCount('SIGINT');
@@ -286,6 +317,7 @@ test('the tasks help documents the activity signal channel on stderr', async () 
   assert.equal(await runTaskBatchCli(['--help'], sink, '/repo', () => { throw new Error('Service must not be constructed'); }), 0);
   assert.match(sink.messages[0], /activity-signal/);
   assert.match(sink.messages[0], /prefixed sentence/);
+  assert.match(sink.messages[0], /tasks watch/);
 });
 
 test('status output stays byte-identical in both modes when the journal holds no signal', async (t) => {

@@ -51,6 +51,7 @@ hôtes historiques, aucun `.acp` n'est installé et les ADR acceptées ne change
 ```json
 {
   "specFile": "spec.md",
+  "inputFiles": ["data/source-manifest.json"],
   "defaults": {
     "agent": "codex",
     "model": "gpt-6-luna",
@@ -84,13 +85,17 @@ au répertoire d’appel. `source` conserve la référence du ticket ; son texte
 appartient au `prompt`. Les prompts et invocations de skills sont transmis sans
 réécriture. Les champs, identifiants, dépendances, cycles et l’accès à la spec sont
 validés avant de créer un run, une branche ou un sandbox. La vérification finale
-est une tâche ordinaire facultative du lot.
+est une tâche ordinaire facultative du lot. `inputFiles` est facultatif ; les
+chemins déclarés doivent désigner des fichiers réguliers relatifs au dépôt et
+suivis dans le commit de base choisi, faute de quoi Slopify refuse le lancement
+avant de créer le run.
 
 ## Exécution et reprise
 
 ```bash
 slopify tasks run batch.json [--base <ref>] [--cwd <repo>] [--store <dir>] [--json]
 slopify tasks status <run-id> [--cwd <repo>] [--store <dir>] [--json]
+slopify tasks watch <run-id> [--cwd <repo>] [--store <dir>] [--interval <ms>] [--json]
 slopify tasks resume <run-id> [--cwd <repo>] [--store <dir>] [--json]
 slopify tasks resume-task <run-id> <task-id> [--cwd <repo>] [--store <dir>] [--json]
 slopify tasks conflict <run-id> [--cwd <repo>] [--store <dir>] [--json]
@@ -106,6 +111,11 @@ et réutilise les résultats réussis. `resume-task` relance la tâche sélectio
 Une tentative encore marquée `running` doit être arrêtée avant sa reprise explicite ;
 une reprise isolée attend si dix autres tâches sont encore en cours. Les conflits suspendent les
 nouveaux lancements jusqu’à une résolution explicite puis sa validation.
+
+`watch` lit l’état durable à intervalle régulier (5 secondes par défaut, réglable
+entre 100 ms et 60 s) et n’émet que les changements d’état ou Signaux d’activité
+nouveaux. Il s’arrête à la fin du run ; `Ctrl-C` arrête le suivi sans interrompre
+l’exécution.
 
 La base par défaut est `HEAD`. La branche dédiée `feature/slopify-<run-id>` est
 publiée dans le dépôt hôte ; sa branche de travail et ses changements non commités

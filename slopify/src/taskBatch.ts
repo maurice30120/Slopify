@@ -7,7 +7,7 @@ import * as path from 'node:path';
 import { createNodeSubprocessExecutor, type SubprocessExecutor } from '@acp-client/sandbox';
 import { DockerTaskExecutor } from './dockerTaskExecutor.js';
 import type { TaskExecutionResult, TaskSandboxResource } from './taskExecution.js';
-import { activityJournalPath, appendActivitySignal, readActivitySignals } from './activityJournal.js';
+import { activityJournalPath, appendActivitySignal, readActivitySignals, readAllActivitySignals } from './activityJournal.js';
 import type { ActivitySignal } from './activitySignal.js';
 import { composeActivitySignal, type ActivityTaskCandidate } from './activitySignalComposition.js';
 import { activityTaskPhrase } from './activityTaskPhrase.js';
@@ -180,6 +180,8 @@ export class TaskBatchService {
     } catch (error) {
       throw new TaskBatchValidationError([{ code: 'invalid_base', path: 'baseRef', message: `Cannot resolve the run base commit: ${error instanceof Error ? error.message : String(error)}` }]);
     }
+    const missingInputFiles = await this.validateInputFiles(batch.inputFiles ?? [], runBaseCommit);
+    if (missingInputFiles.length > 0) throw new TaskBatchValidationError(missingInputFiles);
     const runId = randomUUID();
     const runDirectory = path.join(this.storePath, runId);
     const contextDirectory = path.join(runDirectory, 'context');
@@ -216,6 +218,42 @@ export class TaskBatchService {
       catch { /* A reporting failure must not change an already persisted task outcome. */ }
     }
     finally { if (this.saves.get(snapshot.runId) === current) this.saves.delete(snapshot.runId); }
+  }
+
+  private async validateInputFiles(inputFiles: string[], baseCommit: string): Promise<TaskBatchDiagnostic[]> {
+    const diagnostics: TaskBatchDiagnostic[] = [];
+    for (const [index, inputFile] of inputFiles.entries()) {
+      let mode: string | undefined;
+      let isDirectory = false;
+      try {
+        const entries = (await execFileAsync('git', [
+          '--literal-pathspecs', '-C', this.repositoryPath, 'ls-tree', '-r', '-z', baseCommit, '--', inputFile,
+        ])).stdout.split('\0');
+        const entry = entries.find(value => {
+          const separator = value.indexOf('\t');
+          return separator >= 0 && value.slice(separator + 1) === inputFile;
+        });
+        if (entry) mode = entry.slice(0, entry.indexOf(' '));
+        else isDirectory = entries.some(value => {
+          const separator = value.indexOf('\t');
+          return separator >= 0 && value.slice(separator + 1).startsWith(`${inputFile}/`);
+        });
+      } catch { /* A path that Git cannot find is diagnosed below. */ }
+      if (!mode && !isDirectory) {
+        diagnostics.push({
+          code: 'missing_input_file',
+          path: `inputFiles[${index}]`,
+          message: `Input file "${inputFile}" is not present in run base ${baseCommit}; commit it before launching the batch.`,
+        });
+      } else if (isDirectory || (mode !== '100644' && mode !== '100755')) {
+        diagnostics.push({
+          code: 'invalid_input_file',
+          path: `inputFiles[${index}]`,
+          message: `Input file "${inputFile}" must be a committed regular file in run base ${baseCommit}; symlinks, directories, and submodules are not supported.`,
+        });
+      }
+    }
+    return diagnostics;
   }
 
   private async executeWaves(snapshot: TaskBatchSnapshot, signal?: AbortSignal): Promise<void> {
@@ -499,6 +537,11 @@ export class TaskBatchService {
    */
   async recentActivitySignals(runId: string): Promise<ActivitySignal[]> {
     return readActivitySignals(activityJournalPath(this.storePath, runId));
+  }
+
+  /** Lit tout le journal d’activité afin que `tasks watch` puisse rattraper chaque nouveau signal. */
+  async allActivitySignals(runId: string): Promise<ActivitySignal[]> {
+    return readAllActivitySignals(activityJournalPath(this.storePath, runId));
   }
 
   async status(runId: string): Promise<TaskBatchSnapshot> {
@@ -932,6 +975,8 @@ export interface BatchTask {
 
 export interface TaskBatch {
   specFile: string;
+  /** Fichiers d'entrée locaux, suivis dans le commit de base et lus par les tâches. */
+  inputFiles?: string[];
   defaults?: BatchTaskDefaults;
   tasks: BatchTask[];
 }
@@ -986,6 +1031,27 @@ function validateBatch(input: unknown): TaskBatch {
     throw new TaskBatchValidationError([{ code: 'invalid_batch', path: '$', message: 'Expected a batch object.' }]);
   }
   if (!nonempty(input.specFile)) report('invalid_spec_file', 'specFile', 'Expected a nonempty spec file path.');
+  let inputFiles: string[] | undefined;
+  if (input.inputFiles !== undefined) {
+    if (!Array.isArray(input.inputFiles)) report('invalid_input_files', 'inputFiles', 'Expected a list of repository-relative input file paths.');
+    else {
+      const seenInputFiles = new Set<string>();
+      inputFiles = [];
+      for (const [index, inputFile] of input.inputFiles.entries()) {
+        const at = `inputFiles[${index}]`;
+        if (!nonempty(inputFile) || !isSafeInputFilePath(inputFile)) {
+          report('invalid_input_file', at, 'Expected a safe repository-relative file path without parent-directory segments.');
+          continue;
+        }
+        const normalized = path.posix.normalize(inputFile);
+        if (seenInputFiles.has(normalized)) report('duplicate_input_file', at, `Duplicate input file "${normalized}".`);
+        else {
+          seenInputFiles.add(normalized);
+          inputFiles.push(normalized);
+        }
+      }
+    }
+  }
   let defaults: BatchTaskDefaults = {};
   if (input.defaults !== undefined) {
     if (!record(input.defaults)) report('invalid_defaults', 'defaults', 'Expected an object with optional agent, model and effort defaults.');
@@ -1046,6 +1112,7 @@ function validateBatch(input: unknown): TaskBatch {
   // SAFETY: l'entrée a été validée ci-dessus et est nécessairement un TaskBatch (validateBatch rejette tout le reste avant).
   const batch: TaskBatch = {
     specFile: input.specFile as string,
+    ...(inputFiles?.length ? { inputFiles } : {}),
     ...(Object.keys(defaults).length > 0 ? { defaults } : {}),
     tasks: input.tasks.map((task) => {
       const raw = task as Record<string, unknown>;
@@ -1082,6 +1149,13 @@ function validateBatch(input: unknown): TaskBatch {
   };
   for (const task of batch.tasks) visit(task.id);
   return batch;
+}
+
+function isSafeInputFilePath(value: string): boolean {
+  if (path.posix.isAbsolute(value) || path.win32.isAbsolute(value) || value.includes('\\') || value.includes('\0')) return false;
+  if (value.split('/').includes('..')) return false;
+  const normalized = path.posix.normalize(value);
+  return normalized !== '.' && normalized !== '..' && !normalized.startsWith('../') && !normalized.endsWith('/');
 }
 
 const TASK_EFFORTS: readonly TaskEffort[] = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
