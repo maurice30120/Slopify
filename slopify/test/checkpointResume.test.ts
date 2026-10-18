@@ -5,6 +5,7 @@ import * as path from 'node:path';
 import test from 'node:test';
 import type { SubprocessExecutor } from '@acp-client/sandbox';
 import { TaskBatchService, TaskBatchExecutionError, type TaskBatchSnapshot } from '../src/taskBatch.js';
+import { formatTaskBatchReport } from '../src/taskBatchReport.js';
 
 const git = (repo: string, ...args: string[]) => execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8' }).trim();
 
@@ -118,6 +119,10 @@ test('targeted resume rejects unusable checkpoints without rerunning or overwrit
       assert.ok(error instanceof TaskBatchExecutionError, `${name}: the CLI must report the durable outcome`);
       assert.match(error.message, /checkpoint is (invalid|incomplete)/, name);
       assert.equal(error.snapshot.tasks[0].attempts[0].checkpointIntegrity?.status, expected, name);
+      // Le rapport que la CLI imprime pour cette reprise refusée expose le contrôle d'intégrité (#111).
+      assert.match(formatTaskBatchReport(error.snapshot),
+        new RegExp(`Checkpoints: 0 valid \\(\\), (0 invalid \\(\\), )?1 ${expected} \\(work: `),
+        `${name}: the report must expose the ${expected} checkpoint integrity outcome`);
       return true;
     }, name);
     const state = JSON.parse(await readFile(path.join(f.directory, 'state.json'), 'utf8')) as TaskBatchSnapshot;

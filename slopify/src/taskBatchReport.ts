@@ -3,6 +3,9 @@ import type { TaskBatchSnapshot, TaskBatchDiagnostic, BatchTaskState } from './t
 import type { ActivitySignal } from './activitySignal.js';
 import type { TaskWorkerPoolConfig, TaskWorkerState, TaskWorkerStatus } from './taskWorkerPool.js';
 
+/** Durable task status tally; every manifest task is counted exactly once. */
+type BatchTaskCounts = Record<BatchTaskState['status'], number>;
+
 export interface BatchIssue extends TaskBatchDiagnostic {
   severity: 'info' | 'warning' | 'error';
   taskId?: string;
@@ -34,6 +37,32 @@ export interface BatchWorkerPoolView {
   workers: BatchWorkerView[];
 }
 
+/** Reliability summary of the batch (#111): failures, retries, stops and diagnostics. */
+export interface BatchReliabilityView {
+  /** Tasks whose current durable status is failed. */
+  failedTaskIds: string[];
+  /** Tasks stopped without a task decision, by an interruption. */
+  interruptedTaskIds: string[];
+  attempts: { total: number; retries: number; retriedTaskIds: string[] };
+  /** Occupancy snapshot of the frozen pool, deferring to the detailed worker lifecycle. */
+  workers?: { occupancy: Record<TaskWorkerStatus, number>; replacements: number; detail: 'see the Workers section of this report' };
+  /** Durable checkpoint integrity checks, split into valid, invalid and incomplete (#110). */
+  checkpoints: {
+    valid: Array<{ taskId: string; attemptId: string }>;
+    invalid: Array<{ taskId: string; attemptId: string; reason?: string }>;
+    incomplete: Array<{ taskId: string; attemptId: string; reason?: string }>;
+  };
+  /** Why the batch stopped, kept separate from task-local failures (#109). */
+  stop: {
+    kind: 'none' | 'integration_conflict' | 'docker_outage' | 'operator_interruption' | 'task_failures';
+    message: string;
+  };
+  /** Wall clock between durable creation and last update; diagnostic only, never a success criterion. */
+  wallClockMs?: number;
+  /** Manifest accounting (#111): every declared task stays counted, including the generated final review. */
+  manifest: { batchTasks: number; finalReview: number; total: number; counted: number };
+}
+
 /** A worker replaced during the batch counts every worker taken out of service before its creation. */
 function workerPoolView(snapshot: TaskBatchSnapshot): BatchWorkerPoolView | undefined {
   const config = snapshot.workerPoolConfig;
@@ -49,6 +78,114 @@ function workerPoolView(snapshot: TaskBatchSnapshot): BatchWorkerPoolView | unde
     workers: workers.map(({ workerId, agent, status, taskId, attemptId, replacements }) =>
       ({ workerId, agent, status, ...(taskId ? { taskId } : {}), ...(attemptId ? { attemptId } : {}), replacements })),
   };
+}
+
+/**
+ * Reliability summary of the batch (#111): failures, retries, worker occupancy,
+ * checkpoint integrity, batch-level stops, wall clock and manifest accounting.
+ */
+function reliabilityView(snapshot: TaskBatchSnapshot, counts: BatchTaskCounts,
+  workerPool?: BatchWorkerPoolView): BatchReliabilityView {
+  const failedTaskIds = snapshot.tasks.filter(task => task.status === 'failed').map(task => task.id);
+  const interruptedTaskIds = snapshot.tasks.filter(task => task.status === 'interrupted').map(task => task.id);
+  const attempts = snapshot.tasks.flatMap(task => task.attempts);
+  const retriedTaskIds = snapshot.tasks.filter(task => task.attempts.length > 1).map(task => task.id);
+  return {
+    failedTaskIds, interruptedTaskIds,
+    attempts: { total: attempts.length, retries: Math.max(0, attempts.length
+      - snapshot.tasks.filter(task => task.attempts.length > 0).length), retriedTaskIds },
+    ...(workerPool ? { workers: { occupancy: { ...workerPool.occupancy }, replacements: workerPool.replacements,
+      detail: 'see the Workers section of this report' as const } } : {}),
+    checkpoints: checkpointIntegrityView(snapshot),
+    stop: stopView(snapshot, failedTaskIds),
+    ...(wallClockMs(snapshot) !== undefined ? { wallClockMs: wallClockMs(snapshot) } : {}),
+    manifest: manifestView(snapshot, counts),
+  };
+
+/**
+ * Manifest accounting: the batch never shrinks its workload to look faster —
+ * every task of the frozen manifest plus the generated final review stays
+ * counted, and `counted` proves that no task status is hidden from the report.
+ */
+function manifestView(snapshot: TaskBatchSnapshot, counts: BatchTaskCounts): BatchReliabilityView['manifest'] {
+  const finalReview = snapshot.tasks.filter(task => task.source === 'final-review').length;
+  const counted = Object.values(counts).reduce((total, count) => total + count, 0);
+  return { batchTasks: snapshot.tasks.length - finalReview, finalReview, total: snapshot.tasks.length, counted };
+}
+}
+
+/** Wall clock from durable timestamps; undefined when legacy state lacks usable dates. */
+function wallClockMs(snapshot: TaskBatchSnapshot): number | undefined {
+  const created = Date.parse(snapshot.createdAt);
+  const updated = Date.parse(snapshot.updatedAt);
+  if (Number.isNaN(created) || Number.isNaN(updated) || updated < created) return undefined;
+  return updated - created;
+}
+
+/**
+ * Batch-level stop reason: an integration conflict or a shared Docker outage
+ * stopped the whole batch and must never be read as a task failure.
+ */
+function stopView(snapshot: TaskBatchSnapshot, failedTaskIds: string[]): BatchReliabilityView['stop'] {
+  const failures = `${failedTaskIds.length} task failure${failedTaskIds.length === 1 ? '' : 's'}`
+    + `${failedTaskIds.length ? ` (${failedTaskIds.join(', ')})` : ''}`;
+  if (snapshot.conflict) return { kind: 'integration_conflict',
+    message: `Batch stopped by an integration conflict in task ${snapshot.conflict.taskId}; explicit resolution required. `
+      + `This stop is not a task failure; ${failures}.` };
+  if (snapshot.suspension) return { kind: 'docker_outage',
+    message: `Batch suspended by a shared Docker control failure detected at ${snapshot.suspension.detectedAt}; `
+      + `this is a common outage, not a task failure; ${failures}.` };
+  if (snapshot.status === 'interrupted') return { kind: 'operator_interruption',
+    message: `Batch interrupted by an operator or coordinator stop; this is not a task failure; ${failures}.` };
+  if (snapshot.status === 'failed') return { kind: 'task_failures',
+    message: `Batch ended by task failures${failedTaskIds.length ? ` (${failedTaskIds.join(', ')})` : ''}; `
+      + `no conflict or shared outage stopped this batch.` };
+  return { kind: 'none',
+    message: failedTaskIds.length ? `No batch-level stop recorded; ${failures} ${failedTaskIds.length === 1 ? 'is' : 'are'} task-local.`
+      : 'No batch-level stop and no task failure recorded.' };
+}
+
+/** Every recorded integrity check of every attempt, keyed by its durable outcome. */
+function checkpointIntegrityView(snapshot: TaskBatchSnapshot): BatchReliabilityView['checkpoints'] {
+  const view: BatchReliabilityView['checkpoints'] = { valid: [], invalid: [], incomplete: [] };
+  for (const task of snapshot.tasks) {
+    for (const attempt of task.attempts) {
+      const integrity = attempt.checkpointIntegrity;
+      if (!integrity) continue;
+      const entry = { taskId: task.id, attemptId: attempt.attemptId, ...(integrity.reason ? { reason: integrity.reason } : {}) };
+      if (integrity.status === 'valid') view.valid.push({ taskId: task.id, attemptId: attempt.attemptId });
+      else view[integrity.status].push(entry);
+    }
+  }
+  return view;
+}
+
+/** Checkpoint integrity line; hidden while no resume has run any integrity check. */
+function formatCheckpointIntegrity(reliability: BatchReliabilityView): string[] {
+  const { valid, invalid, incomplete } = reliability.checkpoints;
+  if (valid.length + invalid.length + incomplete.length === 0) return [];
+  const detail = (entries: Array<{ taskId: string; reason?: string }>) =>
+    entries.map(entry => entry.reason ? `${entry.taskId}: ${entry.reason}` : entry.taskId).join(', ');
+  return [`Checkpoints: ${valid.length} valid (${detail(valid)}), `
+    + `${invalid.length} invalid (${detail(invalid)}), ${incomplete.length} incomplete (${detail(incomplete)})`];
+}
+
+/** One rendered reliability line; plural forms stay readable for 0, 1 and many. */
+/** Occupancy line of the reliability summary; the per-worker lifecycle lives in the Workers section. */
+function formatWorkerOccupancy(reliability: BatchReliabilityView): string[] {
+  if (!reliability.workers) return [];
+  const occupancy = Object.entries(reliability.workers.occupancy).map(([status, count]) => `${count} ${status}`).join(', ');
+  return [`Worker occupancy: ${occupancy}; detailed lifecycle: ${reliability.workers.detail}`];
+}
+
+function formatReliability(reliability: BatchReliabilityView): string {
+  const failed = `${reliability.failedTaskIds.length} failed task${reliability.failedTaskIds.length === 1 ? '' : 's'}`;
+  const interrupted = `${reliability.interruptedTaskIds.length} interrupted`;
+  const retries = `${reliability.attempts.retries} retr${reliability.attempts.retries === 1 ? 'y' : 'ies'}`;
+  const retried = reliability.attempts.retriedTaskIds.length ? ` (${reliability.attempts.retriedTaskIds.join(', ')})` : '';
+  return `Reliability: ${failed}${reliability.failedTaskIds.length ? ` (${reliability.failedTaskIds.join(', ')})` : ''}; `
+    + `${interrupted}${reliability.interruptedTaskIds.length ? ` (${reliability.interruptedTaskIds.join(', ')})` : ''}; `
+    + `${reliability.attempts.total} attempt${reliability.attempts.total === 1 ? '' : 's'}, ${retries}${retried}`;
 }
 
 /** One readable line per worker; ready, assigned and reset-checking workers stay distinct. */
@@ -96,7 +233,7 @@ export function isTerminalTaskBatchStatus(status: TaskBatchSnapshot['status']): 
 /** A read-only view of durable state; running means recorded, not verified process liveness. */
 export function taskBatchReport(snapshot: TaskBatchSnapshot, storePath?: string, activitySignals?: ActivitySignal[]) {
   const byId = new Map(snapshot.tasks.map(task => [task.id, task]));
-  const counts = { pending: 0, running: 0, completed: 0, succeeded: 0, failed: 0, interrupted: 0, blocked: 0, conflicted: 0 };
+  const counts: BatchTaskCounts = { pending: 0, running: 0, completed: 0, succeeded: 0, failed: 0, interrupted: 0, blocked: 0, conflicted: 0 };
   for (const task of snapshot.tasks) counts[task.status]++;
   const activeTaskIds = snapshot.tasks.filter(task => task.status === 'running').map(task => task.id);
   const readyTaskIds = snapshot.tasks.filter(task => task.status === 'pending'
@@ -171,7 +308,7 @@ export function taskBatchReport(snapshot: TaskBatchSnapshot, storePath?: string,
     });
   }
   const workerPool = workerPoolView(snapshot);
-  return { ...snapshot, progress, issues, nextActions,
+  return { ...snapshot, progress, issues, nextActions, reliability: reliabilityView(snapshot, counts, workerPool),
     ...(workerPool ? { workerPool } : {}), ...(activitySignals?.length ? { activitySignals } : {}) };
 }
 
@@ -281,6 +418,15 @@ export function formatTaskBatchReport(snapshot: TaskBatchSnapshot, storePath?: s
     `Run ${snapshot.runId}: ${snapshot.status} (${progress.phase})`,
     `Progress: ${progress.counts.succeeded}/${progress.total} integrated; ${progress.counts.running} running; ${progress.counts.completed} awaiting integration; ${progress.counts.pending} pending; ${progress.counts.failed} failed; ${progress.counts.interrupted} interrupted; ${progress.counts.blocked} blocked; ${progress.counts.conflicted} conflicted`,
     `Last durable update: ${snapshot.updatedAt}`,
+    formatReliability(report.reliability),
+    ...formatWorkerOccupancy(report.reliability),
+    ...formatCheckpointIntegrity(report.reliability),
+    `Stop reason: ${report.reliability.stop.message}`,
+    ...(report.reliability.wallClockMs !== undefined
+      ? [`Wall clock: ${report.reliability.wallClockMs} ms (diagnostic only; no time threshold can fail the batch)`] : []),
+    `Manifest: ${report.reliability.manifest.batchTasks} manifest task${report.reliability.manifest.batchTasks === 1 ? '' : 's'} `
+      + `+ ${report.reliability.manifest.finalReview} final review = ${report.reliability.manifest.total} task${report.reliability.manifest.total === 1 ? '' : 's'}, `
+      + `${report.reliability.manifest.counted} accounted; coverage is never hidden to look faster`,
     `Integration branch: ${snapshot.integrationBranch}`,
     `Integration commit: ${snapshot.integrationCommit ?? snapshot.runBaseCommit}`,
     ...formatActivitySignalWindow(activitySignals ?? []),

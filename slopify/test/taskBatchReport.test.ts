@@ -177,3 +177,152 @@ test('task details name the worker and the per-attempt worktree behind each sand
   assert.equal(text.split('Worker: gen/1').length - 1, 2, 'both attempts of the reused worker name it');
   assert.ok(!text.includes('Worktree: undefined'));
 });
+
+
+test('the reliability summary counts task failures and the attempt and retry history', () => {
+  const flaky = task('flaky', 'succeeded');
+  flaky.attempts.push({ attemptId: 'att-1', taskBaseCommit: 'base', status: 'failed', exitCode: 1 },
+    { attemptId: 'att-2', taskBaseCommit: 'base', status: 'succeeded', exitCode: 0 });
+  const broken = task('broken', 'failed');
+  broken.attempts.push({ attemptId: 'att-3', taskBaseCommit: 'base', status: 'failed', exitCode: 2 });
+  const stopped = task('stopped', 'interrupted');
+  stopped.attempts.push({ attemptId: 'att-4', taskBaseCommit: 'base', status: 'interrupted' });
+  const fresh = task('fresh', 'pending');
+  const snapshot = state([flaky, broken, stopped, fresh]);
+  const original = structuredClone(snapshot);
+  const report = taskBatchReport(snapshot);
+  assert.deepEqual(report.reliability.failedTaskIds, ['broken']);
+  assert.deepEqual(report.reliability.interruptedTaskIds, ['stopped']);
+  assert.deepEqual(report.reliability.attempts, { total: 4, retries: 1, retriedTaskIds: ['flaky'] });
+  const text = formatTaskBatchReport(snapshot);
+  assert.ok(text.includes('Reliability: 1 failed task (broken); 1 interrupted (stopped); 4 attempts, 1 retry (flaky)'),
+    'the reliability line is rendered');
+  assert.deepEqual(snapshot, original, 'reporting never changes durable state');
+});
+
+
+test('reliability summarises worker occupancy and points to the detailed worker lifecycle', () => {
+  const active = task('active', 'running');
+  active.attempts.push({ attemptId: 'att-active', taskBaseCommit: 'base', status: 'running' });
+  const snapshot = state([active]);
+  snapshot.workerPoolConfig = { size: 2, mounts: [], lifecycle: 'reuse' };
+  snapshot.workers = [
+    { workerId: 'gen/1', sandboxName: 'slopify-worker-1', agent: 'codex', status: 'available', replacements: 0 },
+    { workerId: 'gen/2', sandboxName: 'slopify-worker-2', agent: 'codex', status: 'assigned', taskId: 'active', attemptId: 'att-active', replacements: 1 },
+  ];
+  const report = taskBatchReport(snapshot);
+  assert.deepEqual(report.reliability.workers, {
+    occupancy: { available: 1, assigned: 1, cleaning: 0, verifying: 0, retained: 0, retired: 0 },
+    replacements: 1,
+    detail: 'see the Workers section of this report',
+  });
+  assert.ok(formatTaskBatchReport(snapshot).includes(
+    'Worker occupancy: 1 available, 1 assigned, 0 cleaning, 0 verifying, 0 retained, 0 retired; '
+    + 'detailed lifecycle: see the Workers section of this report'),
+    'the occupancy summary references the detailed lifecycle');
+  const legacy = state([task('done', 'succeeded')]);
+  assert.equal(taskBatchReport(legacy).reliability.workers, undefined);
+  assert.ok(!formatTaskBatchReport(legacy).includes('Worker occupancy:'));
+});
+
+
+test('reliability exposes checkpoint integrity checks and keeps valid, invalid and incomplete distinct', () => {
+  const valid = task('valid', 'succeeded');
+  valid.attempts.push({ attemptId: 'att-valid', taskBaseCommit: 'base', status: 'succeeded', exitCode: 0,
+    checkpointIntegrity: { status: 'valid', checkedAt: '2026-10-18T09:00:00Z', commit: 'c1', bundlePath: '/store/b1' } });
+  const invalid = task('invalid', 'failed');
+  invalid.attempts.push({ attemptId: 'att-invalid', taskBaseCommit: 'base', status: 'succeeded', exitCode: 0,
+    checkpointIntegrity: { status: 'invalid', checkedAt: '2026-10-18T09:00:01Z', reason: 'Checkpoint commit is not advertised by the bundle.', commit: 'c2', bundlePath: '/store/b2' } });
+  const incomplete = task('incomplete', 'failed');
+  incomplete.attempts.push({ attemptId: 'att-incomplete', taskBaseCommit: 'base', status: 'succeeded', exitCode: 0,
+    checkpointIntegrity: { status: 'incomplete', checkedAt: '2026-10-18T09:00:02Z', reason: 'Checkpoint bundle is not readable: gone', commit: 'c3', bundlePath: '/store/b3' } });
+  const unchecked = task('unchecked', 'failed');
+  unchecked.attempts.push({ attemptId: 'att-unchecked', taskBaseCommit: 'base', status: 'failed', exitCode: 1 });
+  const snapshot = state([valid, invalid, incomplete, unchecked]);
+  const report = taskBatchReport(snapshot);
+  assert.deepEqual(report.reliability.checkpoints, {
+    valid: [{ taskId: 'valid', attemptId: 'att-valid' }],
+    invalid: [{ taskId: 'invalid', attemptId: 'att-invalid', reason: 'Checkpoint commit is not advertised by the bundle.' }],
+    incomplete: [{ taskId: 'incomplete', attemptId: 'att-incomplete', reason: 'Checkpoint bundle is not readable: gone' }],
+  });
+  const text = formatTaskBatchReport(snapshot);
+  for (const part of [
+    'Checkpoints: 1 valid (valid), 1 invalid (invalid: Checkpoint commit is not advertised by the bundle.), '
+      + '1 incomplete (incomplete: Checkpoint bundle is not readable: gone)',
+    'att-unchecked',
+  ]) assert.ok(text.includes(part), part);
+  const untouched = state([task('fresh', 'pending')]);
+  assert.deepEqual(taskBatchReport(untouched).reliability.checkpoints, { valid: [], invalid: [], incomplete: [] });
+  assert.ok(!formatTaskBatchReport(untouched).includes('Checkpoints:'));
+});
+
+
+test('batch-level stops for conflict or shared docker outage stay distinct from task failures', () => {
+  const failed = task('broken', 'failed');
+  failed.attempts.push({ attemptId: 'att-broken', taskBaseCommit: 'base', status: 'failed', exitCode: 2 });
+
+  const suspended = state([failed]);
+  suspended.status = 'interrupted';
+  suspended.suspension = { kind: 'docker_unavailable', detectedAt: '2026-10-18T09:30:00Z',
+    failedCommand: { command: 'sbx', args: ['exec', 'worker'], exitCode: 1 },
+    healthCheck: { exitCode: 7, stdout: '', stderr: 'docker down' }, stops: [] };
+  const outage = taskBatchReport(suspended);
+  assert.equal(outage.reliability.stop.kind, 'docker_outage');
+  assert.match(outage.reliability.stop.message, /shared Docker control failure/);
+  assert.match(outage.reliability.stop.message, /not a task failure/);
+  assert.match(outage.reliability.stop.message, /1 task failure \(broken\)/);
+  assert.match(formatTaskBatchReport(suspended), /Stop reason: .*2026-10-18T09:30:00Z/);
+
+  const conflicted = state([task('conflicted', 'conflicted'), failed]);
+  conflicted.status = 'conflicted';
+  conflicted.conflict = { taskId: 'conflicted', attemptId: 'att-conflict', taskBaseCommit: 'base',
+    currentCommit: 'current', incomingCommit: 'incoming', files: ['src/a.ts'], output: 'conflict' };
+  const conflictReport = taskBatchReport(conflicted);
+  assert.equal(conflictReport.reliability.stop.kind, 'integration_conflict');
+  assert.match(conflictReport.reliability.stop.message, /integration conflict in task conflicted/);
+  assert.match(conflictReport.reliability.stop.message, /not a task failure/);
+
+  const taskOnly = state([failed]);
+  taskOnly.status = 'failed';
+  const taskOnlyReport = taskBatchReport(taskOnly);
+  assert.equal(taskOnlyReport.reliability.stop.kind, 'task_failures');
+  assert.match(taskOnlyReport.reliability.stop.message, /Batch ended by task failures \(broken\)/);
+  assert.match(taskOnlyReport.reliability.stop.message, /no conflict or shared outage/);
+
+  const running = taskBatchReport(state([task('ok', 'succeeded')]));
+  assert.equal(running.reliability.stop.kind, 'none');
+  assert.match(running.reliability.stop.message, /No batch-level stop/);
+});
+
+
+test('wall clock is a diagnostic measure that never gates the batch outcome', () => {
+  const snapshot = state([task('done', 'succeeded')]);
+  snapshot.createdAt = '2026-10-18T10:00:00Z';
+  snapshot.updatedAt = '2026-10-18T10:00:45Z';
+  snapshot.status = 'succeeded';
+  const report = taskBatchReport(snapshot);
+  assert.equal(report.reliability.wallClockMs, 45000);
+  assert.ok(formatTaskBatchReport(snapshot)
+    .includes('Wall clock: 45000 ms (diagnostic only; no time threshold can fail the batch)'),
+    'the wall clock is rendered as a diagnostic without a threshold');
+  const legacy = state([task('old', 'succeeded')]);
+  assert.equal(taskBatchReport(legacy).reliability.wallClockMs, undefined);
+  assert.ok(!formatTaskBatchReport(legacy).includes('Wall clock:'));
+});
+
+
+test('manifest accounting keeps every manifest task and the final review counted', () => {
+  const first = task('first', 'succeeded');
+  const second = task('second', 'failed');
+  const review = { ...task('final-review', 'pending', ['first', 'second']), source: 'final-review' };
+  const snapshot = state([first, second, review]);
+  const report = taskBatchReport(snapshot);
+  assert.deepEqual(report.reliability.manifest, { batchTasks: 2, finalReview: 1, total: 3, counted: 3 });
+  assert.ok(formatTaskBatchReport(snapshot).includes(
+    'Manifest: 2 manifest tasks + 1 final review = 3 tasks, 3 accounted; coverage is never hidden to look faster'),
+    'the manifest accounting line is rendered');
+  const missing = state([first, second, { ...review, source: 'other' }]);
+  const uncounted = taskBatchReport(missing);
+  assert.equal(uncounted.reliability.manifest.counted, uncounted.reliability.manifest.total,
+    'every task status is counted even without a final review');
+});
