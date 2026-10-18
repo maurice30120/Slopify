@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { configureRecreatedWorkers } from './recreatedWorkerFixture.js';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { mkdtemp, mkdir, readFile, writeFile, rm, stat } from 'node:fs/promises';
@@ -15,6 +16,7 @@ async function fixture(t: { after(fn: () => Promise<void>): void }, executor?: S
   t.after(() => rm(root, { recursive: true, force: true }));
   const repo = path.join(root, 'repo');
   execFileSync('git', ['init', '-q', repo]);
+  await configureRecreatedWorkers(repo);
   execFileSync('git', ['-C', repo, 'config', 'core.autocrlf', 'false']);
   execFileSync('git', ['-C', repo, 'config', 'user.name', 'Test']);
   execFileSync('git', ['-C', repo, 'config', 'user.email', 'test@example.invalid']);
@@ -55,14 +57,20 @@ async function createIntegrationWorkspace(service: TaskBatchService, snapshot: T
   return workspacePath;
 }
 
-// Mock executor that handles git commands but fails on sbx
+// Keep the run preflight healthy; simulate a local task creation failure.
 const mockExecutor: SubprocessExecutor = async request => {
   if (request.command === 'git') {
     const r = spawnSync('git', request.args, { cwd: request.cwd, encoding: 'utf8' });
     return { exitCode: r.status ?? 1, stdout: r.stdout ?? '', stderr: r.stderr ?? '' };
   }
-  // Fail on sbx to simulate no Docker
   if (request.command === 'sbx') {
+    const args = request.args;
+    const ok = (stdout = '') => ({ exitCode: 0, stdout, stderr: '' });
+    if (args[0] === 'version') return ok('sbx 0.48.0');
+    if (args.includes('--help')) return ok('--clone --skills --json policy init');
+    if (args[0] === 'policy') return ok('{"initialized":true}');
+    if (args[0] === 'skills') return ok(JSON.stringify({ store: '/official', skills: ['implement', 'tdd', 'code-review'] }));
+    if (args[0] === 'ls') return ok('[]');
     return { exitCode: 1, stdout: '', stderr: 'Docker unavailable in test' };
   }
   return { exitCode: 1, stdout: '', stderr: 'Unknown command' };
