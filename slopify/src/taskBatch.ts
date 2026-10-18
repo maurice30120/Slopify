@@ -754,6 +754,28 @@ export class TaskBatchService {
       throw new Error('Frozen context files (spec or batch) not found. Cannot resume without frozen context.');
     }
 
+    // Chaque checkpoint réutilisable est validé avant toute décision de reprise :
+    // un checkpoint invalide ou incomplet n'est jamais traité comme réussi ni
+    // écrasé ; sa tâche reste échouée, ses preuves et ses descendants bloqués
+    // sont conservés, et rien n'est relancé sans inspection explicite.
+    const unusable: string[] = [];
+    for (const task of snapshot.tasks) {
+      if (!['failed', 'interrupted', 'blocked', 'completed'].includes(task.status)) continue;
+      const attempt = task.attempts.at(-1);
+      if (!attempt?.checkpoint || attempt.exitCode !== 0) continue;
+      attempt.checkpointIntegrity = await this.validateCheckpointIntegrity(snapshot, attempt);
+      if (attempt.checkpointIntegrity.status === 'valid') continue;
+      task.status = 'failed';
+      unusable.push(task.id);
+    }
+    if (unusable.length > 0) {
+      await this.save(snapshot);
+      const detail = unusable.map(id => {
+        const integrity = snapshot.tasks.find(task => task.id === id)!.attempts.at(-1)!.checkpointIntegrity!;
+        return `Task "${id}" checkpoint is ${integrity.status}: ${integrity.reason}`;
+      }).join(' ');
+      throw new TaskBatchExecutionError(snapshot, new Error(`${detail} Nothing was rerun or overwritten; inspect the retained attempts.`));
+    }
     // Réinitialise les tâches échouées ou interrompues à pending pour autoriser leur réexécution.
     for (const task of snapshot.tasks) {
       if (task.status === 'failed' || task.status === 'interrupted' || task.status === 'blocked') {
@@ -838,7 +860,9 @@ export class TaskBatchService {
       durableAttempt.checkpointIntegrity = await this.validateCheckpointIntegrity(snapshot, durableAttempt);
       if (durableAttempt.checkpointIntegrity.status !== 'valid') {
         await this.save(snapshot);
-        throw new Error(`Task "${taskId}" checkpoint is ${durableAttempt.checkpointIntegrity.status}: ${durableAttempt.checkpointIntegrity.reason} Nothing was rerun or overwritten; inspect the retained attempt "${durableAttempt.attemptId}".`);
+        // L'état durable (tentative conservée, intégrité enregistrée) doit rester
+        // rapportable par la CLI : l'erreur porte le snapshot persisté.
+        throw new TaskBatchExecutionError(snapshot, new Error(`Task "${taskId}" checkpoint is ${durableAttempt.checkpointIntegrity.status}: ${durableAttempt.checkpointIntegrity.reason} Nothing was rerun or overwritten; inspect the retained attempt "${durableAttempt.attemptId}".`));
       }
       snapshot.status = 'running';
       await this.save(snapshot);
