@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdtemp, mkdir, writeFile, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import test from 'node:test';
 import type { SubprocessExecutor } from '@acp-client/sandbox';
@@ -27,7 +28,7 @@ interface Fixture {
 }
 
 async function fixture(t: { after(fn: () => Promise<void>): void }, mutate?: (f: Fixture) => Promise<void>): Promise<Fixture> {
-  const root = await mkdtemp('/private/tmp/slopify-checkpoint-resume-');
+  const root = await mkdtemp(path.join(tmpdir(), 'slopify-checkpoint-resume-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const repo = path.join(root, 'host');
   execFileSync('git', ['init', '-q', repo]);
