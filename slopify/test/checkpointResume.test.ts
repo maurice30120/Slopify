@@ -7,7 +7,25 @@ import type { SubprocessExecutor } from '@acp-client/sandbox';
 import { TaskBatchService, type TaskBatchSnapshot } from '../src/taskBatch.js';
 
 const git = (repo: string, ...args: string[]) => execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8' }).trim();
-async function fixture(t: { after(fn: () => Promise<void>): void }) {
+
+interface Fixture {
+  root: string;
+  repo: string;
+  directory: string;
+  integration: string;
+  commit: string;
+  bundlePath: string;
+  reportPath: string;
+  attemptDirectory: string;
+  service: TaskBatchService;
+  snapshot: TaskBatchSnapshot;
+  save(snapshot?: TaskBatchSnapshot): Promise<void>;
+  calls: string[][];
+  execute: SubprocessExecutor;
+  storePath: string;
+}
+
+async function fixture(t: { after(fn: () => Promise<void>): void }, mutate?: (f: Fixture) => Promise<void>): Promise<Fixture> {
   const root = await mkdtemp('/private/tmp/slopify-checkpoint-resume-');
   t.after(() => rm(root, { recursive: true, force: true }));
   const repo = path.join(root, 'host');
@@ -46,8 +64,10 @@ async function fixture(t: { after(fn: () => Promise<void>): void }) {
   snapshot.tasks[0].status = 'failed';
   snapshot.tasks[0].attempts = [{ attemptId: 'original', taskBaseCommit: snapshot.runBaseCommit, status: 'succeeded', exitCode: 0, checkpoint: { commit, bundlePath }, reportPath }];
   const save = (value: TaskBatchSnapshot = snapshot) => writeFile(path.join(directory, 'state.json'), JSON.stringify(value));
+  const f: Fixture = { root, repo, directory, integration, commit, bundlePath, reportPath, attemptDirectory, service, snapshot, save, calls, execute, storePath };
+  if (mutate) await mutate(f);
   await save();
-  return { root, repo, directory, integration, commit, bundlePath, reportPath, attemptDirectory, service, snapshot, save, calls, execute, storePath };
+  return f;
 }
 
 test('targeted resume integrates a durable successful checkpoint without running a new agent', async t => {
@@ -58,4 +78,52 @@ test('targeted resume integrates a durable successful checkpoint without running
   assert.equal(state.tasks[0].attempts[0].checkpointIntegrity?.status, 'valid');
   assert.equal(git(f.repo, 'show', `${state.integrationBranch}:result.txt`), 'checkpoint');
   assert.deepEqual(f.calls, []);
+});
+
+/** Chaque corruption est validée après l'import de l'objet attendu, comme en reprise réelle. */
+const corruptions: Array<[name: string, expected: 'invalid' | 'incomplete', mutate: (f: Fixture) => Promise<void>]> = [
+  ['missing bundle', 'incomplete', async f => { await rm(f.bundlePath); }],
+  ['header-only bundle', 'invalid', async f => {
+    const bytes = await readFile(f.bundlePath);
+    await writeFile(f.bundlePath, bytes.subarray(0, bytes.indexOf(Buffer.from('PACK'))));
+  }],
+  ['truncated pack', 'invalid', async f => {
+    const bytes = await readFile(f.bundlePath);
+    await writeFile(f.bundlePath, bytes.subarray(0, bytes.length - 64));
+  }],
+  ['corrupted pack checksum', 'invalid', async f => {
+    const bytes = await readFile(f.bundlePath);
+    bytes[bytes.length - 1] ^= 0xff;
+    await writeFile(f.bundlePath, bytes);
+  }],
+  ['unadvertised checkpoint commit', 'invalid', async f => {
+    await writeFile(path.join(f.integration, 'later.txt'), 'later'); git(f.integration, 'add', '.'); git(f.integration, 'commit', '-qm', 'later');
+    git(f.integration, 'bundle', 'create', f.bundlePath, 'HEAD');
+  }],
+  ['foreign ancestry', 'invalid', async f => {
+    const tree = git(f.integration, 'rev-parse', 'HEAD^{tree}');
+    const orphan = git(f.integration, 'commit-tree', tree, '-m', 'orphan');
+    git(f.integration, 'update-ref', 'refs/heads/foreign-checkpoint', orphan);
+    git(f.integration, 'bundle', 'create', f.bundlePath, 'refs/heads/foreign-checkpoint');
+    f.snapshot.tasks[0].attempts[0].checkpoint = { commit: orphan, bundlePath: f.bundlePath };
+  }],
+];
+
+test('targeted resume rejects unusable checkpoints without rerunning or overwriting evidence', async t => {
+  for (const [name, expected, mutate] of corruptions) {
+    const f = await fixture(t, mutate);
+    const bundleBefore = await readFile(f.bundlePath).catch(() => null);
+    const reportBefore = await readFile(f.reportPath, 'utf8');
+    await assert.rejects(f.service.resumeTask(f.snapshot.runId, 'work'), { message: /checkpoint is (invalid|incomplete)/ }, name);
+    const state = JSON.parse(await readFile(path.join(f.directory, 'state.json'), 'utf8')) as TaskBatchSnapshot;
+    assert.equal(state.tasks[0].status, 'failed', name);
+    assert.equal(state.tasks[0].attempts.length, 1, name);
+    const integrity = state.tasks[0].attempts[0].checkpointIntegrity;
+    assert.equal(integrity?.status, expected, `${name}: ${integrity?.reason}`);
+    assert.ok(integrity?.reason, name);
+    const bundleAfter = await readFile(f.bundlePath).catch(() => null);
+    assert.ok(bundleBefore === null ? bundleAfter === null : bundleAfter?.equals(bundleBefore), `${name}: bundle bytes changed`);
+    assert.equal(await readFile(f.reportPath, 'utf8'), reportBefore, name);
+    assert.deepEqual(f.calls, [], name);
+  }
 });
