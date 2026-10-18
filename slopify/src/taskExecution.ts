@@ -4,6 +4,9 @@ import type { TaskAgent, TaskBatchDiagnostic, TaskEffort } from './taskBatch.js'
 export interface TaskSandboxResource {
   sandboxName: string;
   sandboxId?: string;
+  workerId?: string;
+  taskContainerName?: string;
+  worktreePath?: string;
   inspectCommand: string[];
   diagnosticsDirectory?: string;
 }
