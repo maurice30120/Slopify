@@ -14,7 +14,7 @@ async function fixture(t: {after(fn:()=>Promise<void>):void}) {
   const repo=path.join(root,'repo');await mkdir(repo);git(repo,'init','-q');git(repo,'config','user.name','Test');git(repo,'config','user.email','test@example.invalid');
   await writeFile(path.join(repo,'base'),'base');git(repo,'add','.');git(repo,'commit','-qm','base');
   const head=git(repo,'rev-parse','HEAD');const spec=path.join(root,'spec.md');await writeFile(spec,'spec');
-  const containers=new Map<string,string>();const calls:string[][]=[];const workers:string[]=[];let failHealth=false;
+  const containers=new Map<string,string>();const calls:string[][]=[];const workers:string[]=[];let failHealth=false;let failTask=false;
   const ok=(stdout='')=>({exitCode:0,stdout,stderr:''});
   const execute:SubprocessExecutor=async request=>{
     if(request.command==='git'){const r=spawnSync('git',request.args,{cwd:request.cwd,encoding:'utf8'});return {exitCode:r.status??1,stdout:r.stdout??'',stderr:r.stderr??''};}
@@ -42,9 +42,9 @@ async function fixture(t: {after(fn:()=>Promise<void>):void}) {
     }
     throw new Error('Unhandled '+a.join(' '));
   };
-  const executor=new DockerTaskExecutor({executor:execute,pool:{size:1,mounts:[],lifecycle:'reuse'},adapters:[{agent:'codex',async prepare(){return {createTarget:'codex'};},async run(context){const result=await context.command(['exec',context.sandboxName,'implement-test']);return {exitCode:result.exitCode,report:'done',diagnostics:[]};}}]});
+  const executor=new DockerTaskExecutor({executor:execute,pool:{size:1,mounts:[],lifecycle:'reuse'},adapters:[{agent:'codex',async prepare(){return {createTarget:'codex'};},async run(context){const result=await context.command(['exec',context.sandboxName,'implement-test']);return {exitCode:failTask?1:result.exitCode,report:failTask?'task failed':'done',diagnostics:[]};}}]});
   const request=async(id:string):Promise<TaskExecutionRequest>=>{const workspace=path.join(root,id);git(root,'clone','-q',repo,workspace);return {runId:'run',taskId:id,attemptId:id,agent:'codex',workspacePath:workspace,specFile:spec,prompt:id,taskBaseCommit:head,runBaseCommit:head,resultDirectory:path.join(root,'outputs',id)};};
-  return {root,repo,head,workers,calls,executor,request,set failHealth(value:boolean){failHealth=value;}};
+  return {root,repo,head,workers,calls,executor,request,set failHealth(value:boolean){failHealth=value;},set failTask(value:boolean){failTask=value;}};
 }
 
 test('successful tasks reuse one worker with distinct worktrees and durable checkpoints',async t=>{
@@ -52,4 +52,34 @@ test('successful tasks reuse one worker with distinct worktrees and durable chec
   const second=await f.executor.execute(await f.request('second'));assert.equal(second.exitCode,0,JSON.stringify(second.diagnostics));
   assert.equal(f.workers.length,1);assert.equal(first.resource!.sandboxName,second.resource!.sandboxName);assert.notEqual(first.resource!.taskContainerName,second.resource!.taskContainerName);
   assert.notEqual(first.checkpoint!.bundlePath,second.checkpoint!.bundlePath);assert.ok((await readFile(first.checkpoint!.bundlePath)).length>0);assert.equal(git(f.repo,'rev-parse','HEAD'),f.head);
+});
+
+
+test('an unhealthy reset retires the worker while preserving a completed checkpoint',async t=>{
+  const f=await fixture(t);const first=await f.executor.execute(await f.request('first'));assert.equal(first.exitCode,0);
+  f.failHealth=true;await assert.rejects(f.executor.cleanup(first.resource!),/unhealthy/);f.failHealth=false;
+  const second=await f.executor.execute(await f.request('second'));assert.equal(second.exitCode,0,JSON.stringify(second.diagnostics));assert.notEqual(first.resource!.sandboxName,second.resource!.sandboxName);
+  assert.equal(f.workers.length,2);assert.ok((await readFile(first.checkpoint!.bundlePath)).length>0);
+});
+
+test('a failed task retains its complete worker and an independent task uses a fresh one',async t=>{
+  const f=await fixture(t);f.failTask=true;const failed=await f.executor.execute(await f.request('failed'));assert.equal(failed.exitCode,1);assert.ok(failed.resource);assert.equal(failed.checkpoint,undefined);
+  const before=await readFile(failed.reportPath!,'utf8');await assert.rejects(f.executor.cleanup(failed.resource!),/retained for inspection/);
+  f.failTask=false;const next=await f.executor.execute(await f.request('independent'));assert.equal(next.exitCode,0,JSON.stringify(next.diagnostics));assert.notEqual(next.resource!.sandboxName,failed.resource!.sandboxName);
+  assert.equal(await readFile(failed.reportPath!,'utf8'),before);assert.equal(f.calls.some(args=>args[0]==='rm'&&args.includes(failed.resource!.sandboxName)),false);
+});
+
+test('one worker remains exclusive until its checkpoint and cleanup finish',async t=>{
+  const f=await fixture(t);const first=await f.executor.execute(await f.request('first'));let completed=false;
+  const second=f.executor.execute(await f.request('second')).then(result=>{completed=true;return result;});await new Promise<void>(resolve=>setImmediate(resolve));assert.equal(completed,false);
+  assert.equal(f.calls.filter(args=>args.includes('implement-test')).length,1);await f.executor.cleanup(first.resource!);const result=await second;assert.equal(result.exitCode,0);assert.equal(f.workers.length,1);
+});
+
+
+test('batch shutdown removes available workers and preserves retained failures',async t=>{
+  const f=await fixture(t);const succeeded=await f.executor.execute(await f.request('succeeded'));await f.executor.cleanup(succeeded.resource!);
+  f.failTask=true;const failed=await f.executor.execute(await f.request('failed'));await f.executor.close();
+  assert.equal(f.calls.some(args=>args[0]==='rm'&&args.includes(failed.resource!.sandboxName)),false);
+  const g=await fixture(t);const clean=await g.executor.execute(await g.request('clean'));await g.executor.cleanup(clean.resource!);await g.executor.close();
+  assert.equal(g.calls.some(args=>args[0]==='rm'&&args.includes(clean.resource!.sandboxName)),true);
 });

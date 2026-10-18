@@ -93,6 +93,7 @@ export class DockerTaskExecutor implements TaskExecutor {
       const sandboxName='slopify-'+createHash('sha256').update(`${request.runId}/${request.taskId}/${request.attemptId}`).digest('hex').slice(0,24);
       await this.prepareRun(request);
       const inventory=this.skillsInventory!;
+      if(lease)lease.skillsStore=inventory.store;
       const containerContextPath=path.join(request.resultDirectory,'context');
       await mkdir(containerContextPath,{recursive:true});
       await copyFile(request.specFile,path.join(containerContextPath,'spec.md'));
@@ -102,7 +103,7 @@ export class DockerTaskExecutor implements TaskExecutor {
         'Use the official implement skill and its referenced resources. The ticket prompt is unchanged.',
         'TDD interfaces in the ticket are approved. Follow one red/green behavior at a time, targeted validation, full suite, then commit. Independent per-ticket Standards/Spec reviews are not required; the batch performs one final combined review of the integration branch.',
         'Read all applicable AGENTS.md and repository standards before implementation.',
-        'Actual live raw execution traces: '+stdoutPath+' and '+stderrPath+'. Observed harness commands: '+eventsPath+'. Keep them intact as evidence for the final combined review.',
+        (lease?'Host-side raw execution traces (outside the task container): ':'Actual live raw execution traces: ')+stdoutPath+' and '+stderrPath+'. Observed harness commands: '+eventsPath+'. Keep them intact as evidence for the final combined review.',
         'Codex native parent and reviewer execution rollouts are also in $HOME/.codex/sessions; preserve and inspect them for delegation evidence. Treat reports as declarations; missing process/delegation evidence must be reported as missing. End with factual validations, commits and blockers.',
         'Uncommitted user changes are excluded from this private checkout.',
         'End your final assistant message with exactly one standalone line: SLOPIFY_RESULT={"status":"succeeded"} or SLOPIFY_RESULT={"status":"failed","reason":"concrete remaining blocker"}.',
@@ -129,7 +130,7 @@ export class DockerTaskExecutor implements TaskExecutor {
       if(bundled.exitCode!==0)throw new Error('Cannot persist the checkpoint bundle: '+bundled.stderr);
       checkpoint={commit:result.checkpoint.commit,bundlePath};
       const receipt=path.join(request.resultDirectory,'result.json');
-      await writeFile(receipt+'.tmp',JSON.stringify({runId:request.runId,taskId:request.taskId,attemptId:request.attemptId,taskBaseCommit:request.taskBaseCommit,exitCode:0,checkpoint,resource,stdoutPath,stderrPath,reportPath,diagnostics},null,2),{mode:0o600});
+      await writeFile(receipt+'.tmp',JSON.stringify({runId:request.runId,taskId:request.taskId,attemptId:request.attemptId,taskBaseCommit:request.taskBaseCommit,completedAt:new Date().toISOString(),exitCode:0,checkpoint,resource,stdoutPath,stderrPath,reportPath,diagnostics},null,2),{mode:0o600});
       await rename(receipt+'.tmp',receipt);
       return {exitCode:0,checkpoint,stdoutPath,stderrPath,reportPath,resource,diagnostics};
     } catch(error) {
@@ -146,8 +147,9 @@ export class DockerTaskExecutor implements TaskExecutor {
     }
   }
 /** Termine cette étape du cycle de vie et libère les ressources qui lui appartiennent. */
+  async close():Promise<void> {await this.pool?.close();}
   async cleanup(resource:TaskSandboxResource):Promise<void> {
-    if(resource.taskContainerName && await this.pool?.cleanup(resource)) return;
+    if(resource.workerId && await this.pool?.cleanup(resource)) return;
     const result=await this.executor({command:'sbx',args:['rm','--force',resource.sandboxName],cwd:resource.diagnosticsDirectory??process.cwd(),stdin:'ignore'});
     if(resource.diagnosticsDirectory)appendFileSync(path.join(resource.diagnosticsDirectory,'commands.jsonl'),JSON.stringify({type:'cleanup',args:['rm','--force',resource.sandboxName],exitCode:result.exitCode,stdout:result.stdout,stderr:result.stderr})+'\n');
     if(result.exitCode!==0)throw new Error(result.stderr||'Sandbox cleanup failed.');
