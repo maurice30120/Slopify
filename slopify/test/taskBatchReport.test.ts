@@ -191,13 +191,36 @@ test('the reliability summary counts task failures and the attempt and retry his
   const snapshot = state([flaky, broken, stopped, fresh]);
   const original = structuredClone(snapshot);
   const report = taskBatchReport(snapshot);
-  assert.deepEqual(report.reliability, {
-    failedTaskIds: ['broken'],
-    interruptedTaskIds: ['stopped'],
-    attempts: { total: 4, retries: 1, retriedTaskIds: ['flaky'] },
-  });
+  assert.deepEqual(report.reliability.failedTaskIds, ['broken']);
+  assert.deepEqual(report.reliability.interruptedTaskIds, ['stopped']);
+  assert.deepEqual(report.reliability.attempts, { total: 4, retries: 1, retriedTaskIds: ['flaky'] });
   const text = formatTaskBatchReport(snapshot);
   assert.ok(text.includes('Reliability: 1 failed task (broken); 1 interrupted (stopped); 4 attempts, 1 retry (flaky)'),
     'the reliability line is rendered');
   assert.deepEqual(snapshot, original, 'reporting never changes durable state');
+});
+
+
+test('reliability summarises worker occupancy and points to the detailed worker lifecycle', () => {
+  const active = task('active', 'running');
+  active.attempts.push({ attemptId: 'att-active', taskBaseCommit: 'base', status: 'running' });
+  const snapshot = state([active]);
+  snapshot.workerPoolConfig = { size: 2, mounts: [], lifecycle: 'reuse' };
+  snapshot.workers = [
+    { workerId: 'gen/1', sandboxName: 'slopify-worker-1', agent: 'codex', status: 'available', replacements: 0 },
+    { workerId: 'gen/2', sandboxName: 'slopify-worker-2', agent: 'codex', status: 'assigned', taskId: 'active', attemptId: 'att-active', replacements: 1 },
+  ];
+  const report = taskBatchReport(snapshot);
+  assert.deepEqual(report.reliability.workers, {
+    occupancy: { available: 1, assigned: 1, cleaning: 0, verifying: 0, retained: 0, retired: 0 },
+    replacements: 1,
+    detail: 'see the Workers section of this report',
+  });
+  assert.ok(formatTaskBatchReport(snapshot).includes(
+    'Worker occupancy: 1 available, 1 assigned, 0 cleaning, 0 verifying, 0 retained, 0 retired; '
+    + 'detailed lifecycle: see the Workers section of this report'),
+    'the occupancy summary references the detailed lifecycle');
+  const legacy = state([task('done', 'succeeded')]);
+  assert.equal(taskBatchReport(legacy).reliability.workers, undefined);
+  assert.ok(!formatTaskBatchReport(legacy).includes('Worker occupancy:'));
 });

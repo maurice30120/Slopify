@@ -41,6 +41,8 @@ export interface BatchReliabilityView {
   /** Tasks stopped without a task decision, by an interruption. */
   interruptedTaskIds: string[];
   attempts: { total: number; retries: number; retriedTaskIds: string[] };
+  /** Occupancy snapshot of the frozen pool, deferring to the detailed worker lifecycle. */
+  workers?: { occupancy: Record<TaskWorkerStatus, number>; replacements: number; detail: 'see the Workers section of this report' };
 }
 
 /** A worker replaced during the batch counts every worker taken out of service before its creation. */
@@ -60,8 +62,11 @@ function workerPoolView(snapshot: TaskBatchSnapshot): BatchWorkerPoolView | unde
   };
 }
 
-/** Failures and attempt history of the batch, straight from durable state. */
-function reliabilityView(snapshot: TaskBatchSnapshot): BatchReliabilityView {
+/**
+ * Reliability summary of the batch (#111): failures, retries, worker occupancy,
+ * checkpoint integrity, batch-level stops, wall clock and manifest accounting.
+ */
+function reliabilityView(snapshot: TaskBatchSnapshot, workerPool?: BatchWorkerPoolView): BatchReliabilityView {
   const failedTaskIds = snapshot.tasks.filter(task => task.status === 'failed').map(task => task.id);
   const interruptedTaskIds = snapshot.tasks.filter(task => task.status === 'interrupted').map(task => task.id);
   const attempts = snapshot.tasks.flatMap(task => task.attempts);
@@ -70,10 +75,19 @@ function reliabilityView(snapshot: TaskBatchSnapshot): BatchReliabilityView {
     failedTaskIds, interruptedTaskIds,
     attempts: { total: attempts.length, retries: Math.max(0, attempts.length
       - snapshot.tasks.filter(task => task.attempts.length > 0).length), retriedTaskIds },
+    ...(workerPool ? { workers: { occupancy: { ...workerPool.occupancy }, replacements: workerPool.replacements,
+      detail: 'see the Workers section of this report' as const } } : {}),
   };
 }
 
 /** One rendered reliability line; plural forms stay readable for 0, 1 and many. */
+/** Occupancy line of the reliability summary; the per-worker lifecycle lives in the Workers section. */
+function formatWorkerOccupancy(reliability: BatchReliabilityView): string[] {
+  if (!reliability.workers) return [];
+  const occupancy = Object.entries(reliability.workers.occupancy).map(([status, count]) => `${count} ${status}`).join(', ');
+  return [`Worker occupancy: ${occupancy}; detailed lifecycle: ${reliability.workers.detail}`];
+}
+
 function formatReliability(reliability: BatchReliabilityView): string {
   const failed = `${reliability.failedTaskIds.length} failed task${reliability.failedTaskIds.length === 1 ? '' : 's'}`;
   const interrupted = `${reliability.interruptedTaskIds.length} interrupted`;
@@ -204,7 +218,7 @@ export function taskBatchReport(snapshot: TaskBatchSnapshot, storePath?: string,
     });
   }
   const workerPool = workerPoolView(snapshot);
-  return { ...snapshot, progress, issues, nextActions, reliability: reliabilityView(snapshot),
+  return { ...snapshot, progress, issues, nextActions, reliability: reliabilityView(snapshot, workerPool),
     ...(workerPool ? { workerPool } : {}), ...(activitySignals?.length ? { activitySignals } : {}) };
 }
 
@@ -315,6 +329,7 @@ export function formatTaskBatchReport(snapshot: TaskBatchSnapshot, storePath?: s
     `Progress: ${progress.counts.succeeded}/${progress.total} integrated; ${progress.counts.running} running; ${progress.counts.completed} awaiting integration; ${progress.counts.pending} pending; ${progress.counts.failed} failed; ${progress.counts.interrupted} interrupted; ${progress.counts.blocked} blocked; ${progress.counts.conflicted} conflicted`,
     `Last durable update: ${snapshot.updatedAt}`,
     formatReliability(report.reliability),
+    ...formatWorkerOccupancy(report.reliability),
     `Integration branch: ${snapshot.integrationBranch}`,
     `Integration commit: ${snapshot.integrationCommit ?? snapshot.runBaseCommit}`,
     ...formatActivitySignalWindow(activitySignals ?? []),
