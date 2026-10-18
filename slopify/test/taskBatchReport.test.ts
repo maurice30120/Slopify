@@ -295,19 +295,30 @@ test('batch-level stops for conflict or shared docker outage stay distinct from 
 });
 
 
-test('wall clock is a diagnostic measure that never gates the batch outcome', () => {
-  const snapshot = state([task('done', 'succeeded')]);
+test('wall clock stays a diagnostic, labelled as time since batch creation, beside active execution', () => {
+  const done = task('done', 'succeeded');
+  done.attempts.push({ attemptId: 'att', taskBaseCommit: 'base', status: 'succeeded',
+    startedAt: '2026-10-18T10:00:10Z', finishedAt: '2026-10-18T10:00:30Z' });
+  const snapshot = state([done]);
   snapshot.createdAt = '2026-10-18T10:00:00Z';
   snapshot.updatedAt = '2026-10-18T10:00:45Z';
   snapshot.status = 'succeeded';
   const report = taskBatchReport(snapshot);
   assert.equal(report.reliability.wallClockMs, 45000);
-  assert.ok(formatTaskBatchReport(snapshot)
-    .includes('Wall clock: 45000 ms (diagnostic only; no time threshold can fail the batch)'),
-    'the wall clock is rendered as a diagnostic without a threshold');
+  assert.equal(report.reliability.activeExecutionMs, 20000,
+    'the execution time of recorded attempts is exposed as a diagnostic');
+  const text = formatTaskBatchReport(snapshot);
+  assert.ok(text.includes('Wall clock: 45000 ms since batch creation (diagnostic only; '
+      + 'includes idle time between interruptions and resumes; no time threshold can fail the batch)'),
+    'the wall clock is labelled as time since creation, dead time included');
+  assert.ok(text.includes('Active execution: 20000 ms across recorded attempts (diagnostic only; '
+      + 'no time threshold can fail the batch)'),
+    'the active execution time is rendered as a diagnostic');
   const legacy = state([task('old', 'succeeded')]);
   assert.equal(taskBatchReport(legacy).reliability.wallClockMs, undefined);
+  assert.equal(taskBatchReport(legacy).reliability.activeExecutionMs, undefined);
   assert.ok(!formatTaskBatchReport(legacy).includes('Wall clock:'));
+  assert.ok(!formatTaskBatchReport(legacy).includes('Active execution:'));
 });
 
 

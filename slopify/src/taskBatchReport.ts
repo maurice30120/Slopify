@@ -79,8 +79,10 @@ export interface BatchReliabilityView {
     kind: 'none' | 'integration_conflict' | 'docker_outage' | 'operator_interruption' | 'task_failures';
     message: string;
   };
-  /** Wall clock between durable creation and last update; diagnostic only, never a success criterion. */
+  /** Wall clock since batch creation, dead time between interruptions and resumes included; diagnostic only, never a threshold. */
   wallClockMs?: number;
+  /** Cumulative execution time of the recorded attempts (each counted once, overlaps included); diagnostic only, never a threshold. */
+  activeExecutionMs?: number;
   /** Manifest accounting (#111): every declared task stays counted, including the generated final review. */
   manifest: { batchTasks: number; finalReview: number; total: number; counted: number };
 }
@@ -113,6 +115,9 @@ function reliabilityView(snapshot: TaskBatchSnapshot, counts: BatchTaskCounts,
   const interruptedTaskIds = snapshot.tasks.filter(task => task.status === 'interrupted').map(task => task.id);
   const attempts = snapshot.tasks.flatMap(task => task.attempts);
   const retriedTaskIds = snapshot.tasks.filter(task => task.attempts.length > 1).map(task => task.id);
+  const retained = retainedForInspectionView(snapshot);
+  const wall = wallClockMs(snapshot);
+  const active = activeExecutionMs(snapshot);
   return {
     failedTaskIds, interruptedTaskIds,
     attempts: { total: attempts.length, retries: Math.max(0, attempts.length
@@ -120,9 +125,10 @@ function reliabilityView(snapshot: TaskBatchSnapshot, counts: BatchTaskCounts,
     ...(workerPool ? { workers: { occupancy: { ...workerPool.occupancy }, replacements: workerPool.replacements,
       detail: 'see the Workers section of this report' as const } } : {}),
     checkpoints: checkpointIntegrityView(snapshot),
-    ...(retainedForInspectionView(snapshot) ? { retainedForInspection: retainedForInspectionView(snapshot) } : {}),
+    ...(retained ? { retainedForInspection: retained } : {}),
     stop: stopView(snapshot, failedTaskIds),
-    ...(wallClockMs(snapshot) !== undefined ? { wallClockMs: wallClockMs(snapshot) } : {}),
+    ...(wall !== undefined ? { wallClockMs: wall } : {}),
+    ...(active !== undefined ? { activeExecutionMs: active } : {}),
     manifest: manifestView(snapshot, counts),
   };
 
@@ -175,6 +181,19 @@ function wallClockMs(snapshot: TaskBatchSnapshot): number | undefined {
   const updated = Date.parse(snapshot.updatedAt);
   if (Number.isNaN(created) || Number.isNaN(updated) || updated < created) return undefined;
   return updated - created;
+}
+
+/** Cumulative execution time of recorded attempts; undefined when legacy state lacks usable dates. */
+function activeExecutionMs(snapshot: TaskBatchSnapshot): number | undefined {
+  let total: number | undefined;
+  for (const attempt of snapshot.tasks.flatMap(task => task.attempts)) {
+    if (!attempt.startedAt) continue;
+    const started = Date.parse(attempt.startedAt);
+    const finished = Date.parse(attempt.finishedAt ?? snapshot.updatedAt);
+    if (Number.isNaN(started) || Number.isNaN(finished) || finished < started) continue;
+    total = (total ?? 0) + finished - started;
+  }
+  return total;
 }
 
 /**
@@ -479,7 +498,11 @@ export function formatTaskBatchReport(snapshot: TaskBatchSnapshot, storePath?: s
     ...formatRetainedForInspection(report.reliability),
     `Stop reason: ${report.reliability.stop.message}`,
     ...(report.reliability.wallClockMs !== undefined
-      ? [`Wall clock: ${report.reliability.wallClockMs} ms (diagnostic only; no time threshold can fail the batch)`] : []),
+      ? [`Wall clock: ${report.reliability.wallClockMs} ms since batch creation (diagnostic only; `
+        + `includes idle time between interruptions and resumes; no time threshold can fail the batch)`] : []),
+    ...(report.reliability.activeExecutionMs !== undefined
+      ? [`Active execution: ${report.reliability.activeExecutionMs} ms across recorded attempts (diagnostic only; `
+        + `no time threshold can fail the batch)`] : []),
     `Manifest: ${report.reliability.manifest.batchTasks} manifest task${report.reliability.manifest.batchTasks === 1 ? '' : 's'} `
       + `+ ${report.reliability.manifest.finalReview} final review = ${report.reliability.manifest.total} task${report.reliability.manifest.total === 1 ? '' : 's'}, `
       + `${report.reliability.manifest.counted} accounted; coverage is never hidden to look faster`,
