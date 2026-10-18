@@ -267,3 +267,19 @@ test('durable updates publish isolated snapshots before execution and observer f
   assert.equal(saved.tasks[0].status, 'pending');
   assert.equal((await service.status(saved.runId)).tasks[0].status, 'pending');
 });
+
+
+test('a run freezes its YAML worker configuration and limits admission to the configured pool size', async t => {
+  const f = await fixture(t);
+  await writeFile(path.join(f.root, 'spec.md'), '# Worker configuration');
+  await writeFile(f.batchFile, JSON.stringify(batch()));
+  await mkdir(path.join(f.repo, '.slopify'));
+  const configuration = path.join(f.repo, '.slopify', 'runtime.yaml');
+  await writeFile(configuration, 'workers:\n  size: 2\n  mounts: []\n  lifecycle: recreate\n');
+  const state = await f.service.run(f.batchFile, { execute: false });
+  const frozen = JSON.parse(JSON.stringify(state));
+  assert.deepEqual(frozen.workerPoolConfig, { size: 2, mounts: [], lifecycle: 'recreate' });
+  assert.equal(state.maxConcurrentTasks, 2);
+  await writeFile(configuration, 'workers:\n  size: 1\n  lifecycle: reuse\n');
+  assert.deepEqual(JSON.parse(JSON.stringify(await f.service.status(state.runId))).workerPoolConfig, frozen.workerPoolConfig);
+});

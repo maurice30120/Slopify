@@ -4,6 +4,7 @@ import { mkdtemp, mkdir, writeFile, readFile, readdir, rm } from 'node:fs/promis
 import * as path from 'node:path';
 import { tmpdir } from 'node:os';
 import test from 'node:test';
+import { configureRecreatedWorkers } from './recreatedWorkerFixture.js';
 import type { SubprocessExecutor } from '@acp-client/sandbox';
 import { TaskBatchService, type BatchTask, type TaskBatchSnapshot, type TaskBatchServiceOptions } from '../src/taskBatch.js';
 
@@ -26,6 +27,7 @@ async function fixture(t: { after(fn: () => Promise<void>): void }, tasks: Batch
   t.after(() => rm(root, { recursive: true, force: true }));
   const repo = path.join(root, 'host');
   execFileSync('git', ['init', '-q', repo]);
+  await configureRecreatedWorkers(repo);
   git(repo, 'config', 'user.name', 'Test');
   git(repo, 'config', 'user.email', 'test@example.invalid');
   await writeFile(path.join(repo, 'base.txt'), 'committed base');

@@ -7,6 +7,8 @@ import * as path from 'node:path';
 import { createNodeSubprocessExecutor, type SubprocessExecutor } from '@acp-client/sandbox';
 import { DockerTaskExecutor } from './dockerTaskExecutor.js';
 import { DockerRunHealth, type DockerRunSuspension } from './dockerRunHealth.js';
+import { loadTaskRuntimeConfig } from './taskRuntimeConfig.js';
+import type { TaskWorkerPoolConfig, TaskWorkerState } from './taskWorkerPool.js';
 import type { TaskExecutionResult, TaskSandboxResource } from './taskExecution.js';
 import { activityJournalPath, appendActivitySignal, readActivitySignals, readAllActivitySignals } from './activityJournal.js';
 import type { ActivitySignal } from './activitySignal.js';
@@ -93,6 +95,9 @@ export interface TaskBatchSnapshot {
   version: 1;
   /** Capacité figée à la création du lot ; absent dans les anciens états. */
   maxConcurrentTasks?: number;
+  /** Frozen at creation; absent only in legacy stored runs. */
+  workerPoolConfig?: TaskWorkerPoolConfig;
+  workers?: TaskWorkerState[];
   runId: string;
   repositoryPath: string;
   status: 'ready' | 'running' | 'succeeded' | 'failed' | 'interrupted' | 'conflicted';
@@ -196,6 +201,10 @@ export class TaskBatchService {
     }
     const missingInputFiles = await this.validateInputFiles(batch.inputFiles ?? [], runBaseCommit);
     if (missingInputFiles.length > 0) throw new TaskBatchValidationError(missingInputFiles);
+    let workerPoolConfig: TaskWorkerPoolConfig;
+    try { workerPoolConfig = await loadTaskRuntimeConfig(this.repositoryPath); }
+    catch (error) { throw new TaskBatchValidationError([{ code: 'invalid_runtime_config', path: '.slopify/runtime.yaml',
+      message: error instanceof Error ? error.message : String(error) }]); }
     const runId = randomUUID();
     const runDirectory = path.join(this.storePath, runId);
     const contextDirectory = path.join(runDirectory, 'context');
@@ -206,7 +215,7 @@ export class TaskBatchService {
     await writeFile(frozenBatchFile, JSON.stringify({ ...batch, specFile: 'spec.md' }, null, 2), { mode: 0o600 });
     const now = new Date().toISOString();
     const snapshot: TaskBatchSnapshot = {
-      version: 1, maxConcurrentTasks: this.maxConcurrentTasks, runId, repositoryPath: this.repositoryPath, status: 'ready', runBaseCommit,
+      version: 1, maxConcurrentTasks: Math.min(this.maxConcurrentTasks, workerPoolConfig.size), workerPoolConfig, workers: [], runId, repositoryPath: this.repositoryPath, status: 'ready', runBaseCommit,
       integrationBranch: `feature/slopify-${runId}`, createdAt: now, updatedAt: now,
       context: { specFile: frozenSpecFile, specText, batchFile: frozenBatchFile },
       tasks: [...batch.tasks.map((task) => ({ ...task, status: 'pending' as const, attempts: [] as BatchTaskAttempt[] })), finalReviewTask(batch, runBaseCommit)], diagnostics: [],
@@ -301,7 +310,23 @@ export class TaskBatchService {
       await this.save(snapshot);
       await stopSuspendedResources();
     }, signal);
-    return { executor: new DockerTaskExecutor({ executor: health.execute }), health, stopSuspendedResources };
+    const executor = new DockerTaskExecutor({ executor: health.execute,
+      ...(snapshot.workerPoolConfig ? { pool: snapshot.workerPoolConfig } : {}),
+      onWorkers: async states => {
+        const workers = new Map((snapshot.workers ?? []).map(worker => [worker.workerId, worker]));
+        for (const worker of states) workers.set(worker.workerId, worker);
+        snapshot.workers = [...workers.values()];
+        await this.save(snapshot);
+      },
+    });
+    const close = async () => {
+      try { await executor.close(); }
+      catch (error) {
+        snapshot.diagnostics.push({ code: 'worker_shutdown_failed', message: String(error) });
+        await this.save(snapshot);
+      } finally { health.close(); }
+    };
+    return { executor, health, stopSuspendedResources, close };
   }
 
   private async executeSchedule(snapshot: TaskBatchSnapshot, signal?: AbortSignal): Promise<void> {
@@ -392,7 +417,7 @@ export class TaskBatchService {
       await this.save(snapshot);
     } finally {
       await runtime.stopSuspendedResources();
-      runtime.health.close();
+      await runtime.close();
     }
   }
 
@@ -774,7 +799,7 @@ export class TaskBatchService {
         throw new TaskBatchExecutionError(snapshot, error);
       } finally {
         await runtime.stopSuspendedResources();
-        runtime.health.close();
+        await runtime.close();
       }
     });
 
