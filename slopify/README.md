@@ -2,9 +2,11 @@
 
 Slopify reçoit une spec et un lot JSON préparés dans une conversation externe,
 puis exécute les tâches avec Pi ou Codex dans des sandboxes Docker distincts.
-Les dix premières tâches prêtes dans l’ordre du JSON forment une vague.
-Toutes partent du même commit intégré. Slopify attend leur fin, intègre les
-réussites dans l’ordre du JSON, puis calcule la vague suivante.
+Chaque place libre prend la première tâche prête dans l’ordre du JSON, sans
+attendre les tâches sœurs. Les checkpoints disponibles s’intègrent un à un ;
+l’ordre du JSON départage ceux prêts dans le même tour. Une dépendance ne se
+débloque qu’après intégration. Chaque tâche garde sa base de démarrage épinglée ;
+les suivantes partent du dernier commit intégré.
 
 ## Installation
 
@@ -104,12 +106,12 @@ slopify tasks resolution <run-id> [--cwd <repo>] [--store <dir>] [--json]
 slopify tasks validate-resolution <run-id> <resolution-id> [--cwd <repo>] [--store <dir>] [--json]
 ```
 
-Le plafond est fixe : dix tâches par vague, y compris après reprise. Un échec
+Le plafond est de dix tâches actives par lot, y compris après reprise. Un échec
 bloque seulement ses descendants ; les tâches indépendantes continuent, sans
 relance automatique. `resume` relance explicitement les échecs et interruptions,
 et réutilise les résultats réussis. `resume-task` relance la tâche sélectionnée.
 Une tentative encore marquée `running` doit être arrêtée avant sa reprise explicite ;
-une reprise isolée attend si dix autres tâches sont encore en cours. Les conflits suspendent les
+une reprise isolée est refusée si toute la capacité est occupée. Les conflits suspendent les
 nouveaux lancements jusqu’à une résolution explicite puis sa validation.
 
 `watch` lit l’état durable à intervalle régulier (5 secondes par défaut, réglable
