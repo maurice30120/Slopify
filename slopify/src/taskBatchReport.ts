@@ -3,6 +3,9 @@ import type { TaskBatchSnapshot, TaskBatchDiagnostic, BatchTaskState } from './t
 import type { ActivitySignal } from './activitySignal.js';
 import type { TaskWorkerPoolConfig, TaskWorkerState, TaskWorkerStatus } from './taskWorkerPool.js';
 
+/** Durable task status tally; every manifest task is counted exactly once. */
+type BatchTaskCounts = Record<BatchTaskState['status'], number>;
+
 export interface BatchIssue extends TaskBatchDiagnostic {
   severity: 'info' | 'warning' | 'error';
   taskId?: string;
@@ -56,6 +59,8 @@ export interface BatchReliabilityView {
   };
   /** Wall clock between durable creation and last update; diagnostic only, never a success criterion. */
   wallClockMs?: number;
+  /** Manifest accounting (#111): every declared task stays counted, including the generated final review. */
+  manifest: { batchTasks: number; finalReview: number; total: number; counted: number };
 }
 
 /** A worker replaced during the batch counts every worker taken out of service before its creation. */
@@ -79,7 +84,8 @@ function workerPoolView(snapshot: TaskBatchSnapshot): BatchWorkerPoolView | unde
  * Reliability summary of the batch (#111): failures, retries, worker occupancy,
  * checkpoint integrity, batch-level stops, wall clock and manifest accounting.
  */
-function reliabilityView(snapshot: TaskBatchSnapshot, workerPool?: BatchWorkerPoolView): BatchReliabilityView {
+function reliabilityView(snapshot: TaskBatchSnapshot, counts: BatchTaskCounts,
+  workerPool?: BatchWorkerPoolView): BatchReliabilityView {
   const failedTaskIds = snapshot.tasks.filter(task => task.status === 'failed').map(task => task.id);
   const interruptedTaskIds = snapshot.tasks.filter(task => task.status === 'interrupted').map(task => task.id);
   const attempts = snapshot.tasks.flatMap(task => task.attempts);
@@ -93,7 +99,19 @@ function reliabilityView(snapshot: TaskBatchSnapshot, workerPool?: BatchWorkerPo
     checkpoints: checkpointIntegrityView(snapshot),
     stop: stopView(snapshot, failedTaskIds),
     ...(wallClockMs(snapshot) !== undefined ? { wallClockMs: wallClockMs(snapshot) } : {}),
+    manifest: manifestView(snapshot, counts),
   };
+
+/**
+ * Manifest accounting: the batch never shrinks its workload to look faster —
+ * every task of the frozen manifest plus the generated final review stays
+ * counted, and `counted` proves that no task status is hidden from the report.
+ */
+function manifestView(snapshot: TaskBatchSnapshot, counts: BatchTaskCounts): BatchReliabilityView['manifest'] {
+  const finalReview = snapshot.tasks.filter(task => task.source === 'final-review').length;
+  const counted = Object.values(counts).reduce((total, count) => total + count, 0);
+  return { batchTasks: snapshot.tasks.length - finalReview, finalReview, total: snapshot.tasks.length, counted };
+}
 }
 
 /** Wall clock from durable timestamps; undefined when legacy state lacks usable dates. */
@@ -215,7 +233,7 @@ export function isTerminalTaskBatchStatus(status: TaskBatchSnapshot['status']): 
 /** A read-only view of durable state; running means recorded, not verified process liveness. */
 export function taskBatchReport(snapshot: TaskBatchSnapshot, storePath?: string, activitySignals?: ActivitySignal[]) {
   const byId = new Map(snapshot.tasks.map(task => [task.id, task]));
-  const counts = { pending: 0, running: 0, completed: 0, succeeded: 0, failed: 0, interrupted: 0, blocked: 0, conflicted: 0 };
+  const counts: BatchTaskCounts = { pending: 0, running: 0, completed: 0, succeeded: 0, failed: 0, interrupted: 0, blocked: 0, conflicted: 0 };
   for (const task of snapshot.tasks) counts[task.status]++;
   const activeTaskIds = snapshot.tasks.filter(task => task.status === 'running').map(task => task.id);
   const readyTaskIds = snapshot.tasks.filter(task => task.status === 'pending'
@@ -290,7 +308,7 @@ export function taskBatchReport(snapshot: TaskBatchSnapshot, storePath?: string,
     });
   }
   const workerPool = workerPoolView(snapshot);
-  return { ...snapshot, progress, issues, nextActions, reliability: reliabilityView(snapshot, workerPool),
+  return { ...snapshot, progress, issues, nextActions, reliability: reliabilityView(snapshot, counts, workerPool),
     ...(workerPool ? { workerPool } : {}), ...(activitySignals?.length ? { activitySignals } : {}) };
 }
 
@@ -406,6 +424,9 @@ export function formatTaskBatchReport(snapshot: TaskBatchSnapshot, storePath?: s
     `Stop reason: ${report.reliability.stop.message}`,
     ...(report.reliability.wallClockMs !== undefined
       ? [`Wall clock: ${report.reliability.wallClockMs} ms (diagnostic only; no time threshold can fail the batch)`] : []),
+    `Manifest: ${report.reliability.manifest.batchTasks} manifest task${report.reliability.manifest.batchTasks === 1 ? '' : 's'} `
+      + `+ ${report.reliability.manifest.finalReview} final review = ${report.reliability.manifest.total} task${report.reliability.manifest.total === 1 ? '' : 's'}, `
+      + `${report.reliability.manifest.counted} accounted; coverage is never hidden to look faster`,
     `Integration branch: ${snapshot.integrationBranch}`,
     `Integration commit: ${snapshot.integrationCommit ?? snapshot.runBaseCommit}`,
     ...formatActivitySignalWindow(activitySignals ?? []),

@@ -309,3 +309,20 @@ test('wall clock is a diagnostic measure that never gates the batch outcome', ()
   assert.equal(taskBatchReport(legacy).reliability.wallClockMs, undefined);
   assert.ok(!formatTaskBatchReport(legacy).includes('Wall clock:'));
 });
+
+
+test('manifest accounting keeps every manifest task and the final review counted', () => {
+  const first = task('first', 'succeeded');
+  const second = task('second', 'failed');
+  const review = { ...task('final-review', 'pending', ['first', 'second']), source: 'final-review' };
+  const snapshot = state([first, second, review]);
+  const report = taskBatchReport(snapshot);
+  assert.deepEqual(report.reliability.manifest, { batchTasks: 2, finalReview: 1, total: 3, counted: 3 });
+  assert.ok(formatTaskBatchReport(snapshot).includes(
+    'Manifest: 2 manifest tasks + 1 final review = 3 tasks, 3 accounted; coverage is never hidden to look faster'),
+    'the manifest accounting line is rendered');
+  const missing = state([first, second, { ...review, source: 'other' }]);
+  const uncounted = taskBatchReport(missing);
+  assert.equal(uncounted.reliability.manifest.counted, uncounted.reliability.manifest.total,
+    'every task status is counted even without a final review');
+});
