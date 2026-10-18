@@ -68,7 +68,7 @@ export class DockerTaskExecutor implements TaskExecutor {
 /** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
       appendFileSync(eventsPath,JSON.stringify({type:'start',command:subprocess.command,args:subprocess.args,time:new Date().toISOString()})+'\n');
       const seen={stdout:false,stderr:false};
-      const runCommand=lease ? (command:SubprocessRequest)=>this.pool!.transport(lease!,command) : this.executor;
+      const runCommand=lease ? (command:SubprocessRequest)=>this.pool!.rewriteThroughWorker(lease!,command) : this.executor;
       const result=await runCommand({...subprocess,onOutput:(stream,chunk)=>{
         seen[stream]=true;appendFileSync(stream==='stdout'?stdoutPath:stderrPath,chunk);
         subprocess.onOutput?.(stream,chunk);
