@@ -43,6 +43,7 @@ export const taskBatchHelp = [
   'Execution exit codes: 0 succeeded, 2 failed/interrupted/conflicted, 1 invalid input or command.',
   'Status and final output include progress, issues, evidence paths and next actions.',
   'Status and final output also expose worker pool occupancy, the replacement count and per-worker task links.',
+  'Status and final output include a reliability summary: failures, retries, worker occupancy, checkpoint integrity, stop reason, wall clock and full manifest accounting.',
   'Watch streams only meaningful state changes; Ctrl-C stops watching without stopping the run.',
   'During execution progress is written to stderr (JSON lines with --json); stdout keeps one final result.',
   'Periodic activity signals also go to stderr: JSON events of type "activity-signal" with --json, one prefixed sentence per line in text mode.',
