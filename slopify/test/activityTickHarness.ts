@@ -4,6 +4,7 @@
  * d'exécution et par la démonstration de bout en bout. */
 
 import assert from 'node:assert/strict';
+import { configureRecreatedWorkers } from './recreatedWorkerFixture.js';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -75,6 +76,7 @@ export async function prepareSlopifyFixture(
   t.after(() => rm(root, { recursive: true, force: true }));
   const repo = path.join(root, 'host');
   execFileSync('git', ['init', '-q', repo]);
+  await configureRecreatedWorkers(repo);
   git(repo, 'config', 'user.name', 'Test');
   git(repo, 'config', 'user.email', 'test@example.invalid');
   await writeFile(path.join(repo, 'base.txt'), 'committed base');

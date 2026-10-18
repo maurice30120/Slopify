@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { configureRecreatedWorkers } from './recreatedWorkerFixture.js';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdtemp, mkdir, writeFile, readFile, readdir, rm } from 'node:fs/promises';
 import * as path from 'node:path';
@@ -13,6 +14,7 @@ async function fixture(t: {after(fn:()=>Promise<void>):void}, failure: boolean |
   t.after(()=>rm(root,{recursive:true,force:true}));
   const repo = path.join(root,'host');
   execFileSync('git',['init','-q',repo]);
+  await configureRecreatedWorkers(repo);
   git(repo,'config','user.name','Test');git(repo,'config','user.email','test@example.invalid');
   await writeFile(path.join(repo,'base.txt'),'committed base');git(repo,'add','.');git(repo,'commit','-qm','base');
   const head = git(repo,'rev-parse','HEAD');
