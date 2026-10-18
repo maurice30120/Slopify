@@ -7,9 +7,11 @@ import test from 'node:test';
 import { DockerTaskExecutor } from '../src/dockerTaskExecutor.js';
 import type { SubprocessExecutor } from '@acp-client/sandbox';
 import type { TaskExecutionRequest } from '../src/taskExecution.js';
+import type { TaskAgentAdapter } from '../src/dockerTaskExecutor.js';
+import type { TaskWorkerPoolConfig, TaskWorkerState } from '../src/taskWorkerPool.js';
 
 function git(cwd: string, ...args: string[]) {return execFileSync('git',args,{cwd,encoding:'utf8'}).trim();}
-async function fixture(t: {after(fn:()=>Promise<void>):void}) {
+async function fixture(t: {after(fn:()=>Promise<void>):void}, options: {adapters?: TaskAgentAdapter[]; pool?: TaskWorkerPoolConfig} = {}) {
   const root=await mkdtemp(path.join(tmpdir(),'slopify-pool-'));t.after(()=>rm(root,{recursive:true,force:true}));
   const repo=path.join(root,'repo');await mkdir(repo);git(repo,'init','-q');git(repo,'config','user.name','Test');git(repo,'config','user.email','test@example.invalid');
   await writeFile(path.join(repo,'base'),'base');git(repo,'add','.');git(repo,'commit','-qm','base');
@@ -42,9 +44,12 @@ async function fixture(t: {after(fn:()=>Promise<void>):void}) {
     }
     throw new Error('Unhandled '+a.join(' '));
   };
-  const executor=new DockerTaskExecutor({executor:execute,pool:{size:1,mounts:[],lifecycle:'reuse'},adapters:[{agent:'codex',async prepare(){return {createTarget:'codex'};},async run(context){const result=await context.command(['exec',context.sandboxName,'implement-test']);return {exitCode:failTask?1:result.exitCode,report:failTask?'task failed':'done',diagnostics:[]};}}]});
-  const request=async(id:string):Promise<TaskExecutionRequest>=>{const workspace=path.join(root,id);git(root,'clone','-q',repo,workspace);return {runId:'run',taskId:id,attemptId:id,agent:'codex',workspacePath:workspace,specFile:spec,prompt:id,taskBaseCommit:head,runBaseCommit:head,resultDirectory:path.join(root,'outputs',id)};};
-  return {root,repo,head,workers,calls,executor,request,set failHealth(value:boolean){failHealth=value;},set failTask(value:boolean){failTask=value;}};
+  const piAdapter: TaskAgentAdapter = { agent: 'pi', async prepare() { return { createTarget: 'pi' }; },
+    async run(context) { const result = await context.command(['exec', context.sandboxName, 'pi-test']); return { exitCode: result.exitCode, report: 'pi done', diagnostics: [] }; } };
+  const emits: TaskWorkerState[][] = [];
+  const executor=new DockerTaskExecutor({executor:execute,pool:options.pool??{size:1,mounts:[],lifecycle:'reuse'},onWorkers:workers=>{emits.push(workers.map(({workerId,sandboxName,agent,status,taskId,attemptId,replacements})=>({workerId,sandboxName,agent,status,...(taskId?{taskId}:{}),...(attemptId?{attemptId}:{}),replacements})));},adapters:[{agent:'codex',async prepare(){return {createTarget:'codex'};},async run(context){const result=await context.command(['exec',context.sandboxName,'implement-test']);return {exitCode:failTask?1:result.exitCode,report:failTask?'task failed':'done',diagnostics:[]};}},...(options.adapters??[piAdapter])]});
+  const request=async(id:string,agent:'codex'|'pi'='codex'):Promise<TaskExecutionRequest>=>{const workspace=path.join(root,id);git(root,'clone','-q',repo,workspace);return {runId:'run',taskId:id,attemptId:id,agent,workspacePath:workspace,specFile:spec,prompt:id,taskBaseCommit:head,runBaseCommit:head,resultDirectory:path.join(root,'outputs',id)};};
+  return {root,repo,head,workers,calls,emits,executor,request,set failHealth(value:boolean){failHealth=value;},set failTask(value:boolean){failTask=value;}};
 }
 
 test('successful tasks reuse one worker with distinct worktrees and durable checkpoints',async t=>{
@@ -82,4 +87,62 @@ test('batch shutdown removes available workers and preserves retained failures',
   assert.equal(f.calls.some(args=>args[0]==='rm'&&args.includes(failed.resource!.sandboxName)),false);
   const g=await fixture(t);const clean=await g.executor.execute(await g.request('clean'));await g.executor.cleanup(clean.resource!);await g.executor.close();
   assert.equal(g.calls.some(args=>args[0]==='rm'&&args.includes(clean.resource!.sandboxName)),true);
+});
+
+test('a replacement worker stays verifying until its health probes pass and is never available before',async t=>{
+  const f=await fixture(t);
+  const first=await f.executor.execute(await f.request('first'));
+  assert.equal(first.exitCode,0,JSON.stringify(first.diagnostics));
+  const worker=f.emits.flat().find(state=>state.taskId==='first')!;
+  assert.ok(worker,'the worker pool reports the fresh worker');
+  const states=f.emits.flat().filter(state=>state.workerId===worker.workerId).map(state=>state.status);
+  assert.equal(states[0],'verifying','a fresh replacement starts as verifying, never directly available');
+  assert.ok(states.includes('assigned'),'the worker is only assigned once its probes passed');
+  assert.ok(!states.slice(0,states.indexOf('assigned')+1).includes('available'),'never declared available before verification');
+});
+
+test('an unverified replacement that fails its probes is never available nor assigned',async t=>{
+  const f=await fixture(t);
+  f.failHealth=true;
+  const failed=await f.executor.execute(await f.request('broken'));
+  assert.equal(failed.exitCode,1);
+  const states=f.emits.flat().map(state=>state.status);
+  assert.ok(!states.includes('available'),'a worker failing verification is never declared available');
+  assert.ok(!states.includes('assigned'),'a worker failing verification is never assigned');
+  assert.ok(states.includes('retained'),'the failed provisioning keeps the worker for inspection');
+});
+
+test('swapping an idle worker for another agent is not a replacement',async t=>{
+  const f=await fixture(t);
+  const codexTask=await f.executor.execute(await f.request('codex-task'));
+  assert.equal(codexTask.exitCode,0,JSON.stringify(codexTask.diagnostics));
+  await f.executor.cleanup(codexTask.resource!);
+  const piTask=await f.executor.execute(await f.request('pi-task','pi'));
+  assert.equal(piTask.exitCode,0,JSON.stringify(piTask.diagnostics));
+  const swapped=f.emits.flat().filter(state=>state.agent==='pi');
+  assert.ok(swapped.length>0);
+  assert.ok(swapped.every(state=>state.replacements===0),'an agent-frontier swap of an idle worker is not a replacement');
+});
+
+test('replacements count only failed workers actually replaced, never frontier swaps',async t=>{
+  const f=await fixture(t);
+  const healthy=await f.executor.execute(await f.request('healthy'));
+  assert.equal(healthy.exitCode,0,JSON.stringify(healthy.diagnostics));
+  await f.executor.cleanup(healthy.resource!);
+  const pi=await f.executor.execute(await f.request('pi','pi'));
+  assert.equal(pi.exitCode,0,JSON.stringify(pi.diagnostics));
+  await f.executor.cleanup(pi.resource!);
+  f.failTask=true;
+  const broken=await f.executor.execute(await f.request('broken'));
+  assert.equal(broken.exitCode,1);
+  const final=f.emits.at(-1)!;
+  const swappedIn=final.find(state=>state.agent==='codex'&&state.status!=='available');
+  assert.ok(swappedIn,'a new codex worker replaces the frontier');
+  assert.equal(swappedIn.replacements,0,'retiring an idle worker of another agent is not a replacement');
+  f.failTask=false;
+  const recovered=await f.executor.execute(await f.request('recovered'));
+  assert.equal(recovered.exitCode,0,JSON.stringify(recovered.diagnostics));
+  const closing=f.emits.at(-1)!;
+  const replacement=closing.find(state=>state.taskId==='recovered')!;
+  assert.equal(replacement.replacements,1,'exactly the retained failure is counted as replaced');
 });

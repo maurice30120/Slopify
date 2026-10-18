@@ -18,18 +18,24 @@ export interface TaskWorkerState {
   status: TaskWorkerStatus;
   taskId?: string;
   attemptId?: string;
+  /** Remplacements réels constatés à la création de ce worker : workers sortis du service à cause d'un échec ET déjà remplacés à cet instant. */
   replacements: number;
 }
-interface Worker extends TaskWorkerState { created: boolean; assetsVolume: string; image: string; sharedMounts: string[]; }
+interface Worker extends TaskWorkerState { created: boolean; assetsVolume: string; image: string; sharedMounts: string[]; outOfServiceByFailure?: boolean; replaced?: boolean; }
 export interface WorkerLease { worker: Worker; container: string; contextVolume: string; seed: string; stage: string; request: TaskExecutionRequest; skillsStore?:string; }
 const quote=(value:string)=>"'"+value.replaceAll("'", "'\\''")+"'";
 
-/** A worker retains only immutable images/assets. Every task runs in a fresh Docker container. */
+/** A worker retains only immutable images/assets. Every task runs in a fresh Docker container.
+ * A replacement is a worker driven out of service by a failure (a retained attempt or a failed
+ * reset) whose capacity was restored by a new worker; agent-frontier swaps of idle workers and
+ * planned lifecycle recycling never count as replacements. */
 export class TaskWorkerPool {
   private runId?: string;
   private sequence=0;
   private readonly generation=randomUUID();
   private readonly workers:Worker[]=[];
+  /** Total des remplacements réels : workers sortis du service à cause d'un échec ET remplacés par un nouveau worker. */
+  private replacementCount=0;
   private readonly leases=new Map<string,WorkerLease>();
   private readonly waiters:Array<()=>void>=[];
   constructor(private readonly execute:SubprocessExecutor, readonly config:TaskWorkerPoolConfig,
@@ -47,11 +53,14 @@ export class TaskWorkerPool {
       const live=this.workers.filter(w=>!['retired','retained'].includes(w.status));
       if(!worker && live.length<this.config.size){
         const workerId=String(++this.sequence);const digest=createHash('sha256').update(request.runId+'/'+this.generation+'/'+workerId).digest('hex').slice(0,20);
-        worker={workerId:this.generation+'/'+workerId,sandboxName:'slopify-worker-'+digest,agent:request.agent,status:'available',sharedMounts:[],replacements:this.workers.filter(w=>['retired','retained'].includes(w.status)).length,created:false,assetsVolume:'slopify-assets-'+digest,image:this.config.image??(request.agent==='pi'?'docker.io/sbx/pi-image:latest':'docker/sandbox-templates:codex-docker')};this.workers.push(worker);
+        // A replacement worker is only trusted after verification: it starts as verifying and is never available before its probes pass (#107).
+        const unreplaced=this.workers.filter(w=>w.outOfServiceByFailure&&!w.replaced);
+        if(unreplaced.length>0){unreplaced[0].replaced=true;this.replacementCount++;}
+        worker={workerId:this.generation+'/'+workerId,sandboxName:'slopify-worker-'+digest,agent:request.agent,status:'verifying',sharedMounts:[],replacements:this.replacementCount,created:false,assetsVolume:'slopify-assets-'+digest,image:this.config.image??(request.agent==='pi'?'docker.io/sbx/pi-image:latest':'docker/sandbox-templates:codex-docker')};this.workers.push(worker);
       }
       // A mixed-agent frontier can replace an idle worker of the other agent.
       if(!worker){const idle=live.find(w=>w.status==='available');if(idle){idle.status='retired';await this.control(idle,request,['rm','--force',idle.sandboxName]);continue;}}
-      if(worker){worker.status='assigned';worker.taskId=request.taskId;worker.attemptId=request.attemptId;
+      if(worker){worker.status=worker.created?'assigned':'verifying';worker.taskId=request.taskId;worker.attemptId=request.attemptId;
         const digest=createHash('sha256').update(request.runId+'/'+request.attemptId+'/'+request.resultDirectory).digest('hex').slice(0,24);
         const lease={worker,container:'slopify-task-'+digest,contextVolume:'slopify-context-'+digest,seed:'slopify-seed-'+digest,stage:'/tmp/slopify-'+digest,request};this.leases.set(request.attemptId,lease);await this.emit();return lease;
       }
@@ -70,7 +79,7 @@ export class TaskWorkerPool {
   async transport(lease:WorkerLease,request:SubprocessRequest):Promise<SubprocessResult> {
     const a=request.args;
     if(this.config.lifecycle==='recreate'){
-      if(request.command==='sbx'&&a[0]==='create'&&!a.includes('--help')){lease.worker.sandboxName=a[a.indexOf('--name')+1];const result=await this.execute({...request,args:[...a,...this.config.mounts]});if(result.exitCode===0)lease.worker.created=true;await this.emit();return result;}
+      if(request.command==='sbx'&&a[0]==='create'&&!a.includes('--help')){lease.worker.sandboxName=a[a.indexOf('--name')+1];const result=await this.execute({...request,args:[...a,...this.config.mounts]});if(result.exitCode===0){lease.worker.created=true;if(lease.worker.status==='verifying')lease.worker.status='assigned';}await this.emit();return result;}
       return this.execute(request);
     }
     if(request.command==='git'&&a[0]==='fetch'&&a[2]?.startsWith('sandbox-')){
@@ -102,6 +111,8 @@ export class TaskWorkerPool {
       await this.outer(lease,['docker','info']);
       // Host networking is needed by the injected credential proxy. Refuse an exposed Docker TCP daemon.
       await this.outer(lease,['sh','-ec','command -v ss >/dev/null; listeners=$(ss -ltnH); ! printf \"%s\\n\" \"$listeners\" | grep -Eq ":(2375|2376)[[:space:]]"']);
+      // Verification passed: only now may the fresh worker count as assigned capacity (#107).
+      if(worker.status==='verifying'){worker.status='assigned';await this.emit();}
       await this.outer(lease,['docker','pull',worker.image]);
       await this.outer(lease,['docker','volume','create',worker.assetsVolume]);
       await this.outer(lease,['docker','create','--name',lease.seed,'--mount','type=volume,source='+worker.assetsVolume+',target=/assets','--entrypoint','sleep',worker.image,'infinity']);
@@ -128,7 +139,7 @@ export class TaskWorkerPool {
     await this.outer(lease,['docker','exec','-w',request.workspacePath,lease.container,'git','checkout','--detach',request.taskBaseCommit]);
   }
   resource(lease:WorkerLease,resource:TaskSandboxResource):TaskSandboxResource{if(this.config.lifecycle==='recreate')return {...resource,workerId:lease.worker.workerId,worktreePath:lease.request.workspacePath};return {...resource,workerId:lease.worker.workerId,sandboxName:lease.worker.sandboxName,taskContainerName:lease.container,worktreePath:lease.request.workspacePath,inspectCommand:['sbx','exec',lease.worker.sandboxName,'docker','exec','-it','-w',lease.request.workspacePath,lease.container,'sh']};}
-  async retain(lease:WorkerLease){lease.worker.status='retained';await this.emit();this.wake();}
+  async retain(lease:WorkerLease){lease.worker.status='retained';lease.worker.outOfServiceByFailure=true;await this.emit();this.wake();}
   private wake(){for(const wake of this.waiters.splice(0))wake();}
   async close():Promise<void>{
     for(const worker of this.workers){
@@ -153,6 +164,6 @@ export class TaskWorkerPool {
       await this.outer(lease,['sh','-ec','test ! -e '+quote(lease.stage)]);await this.outer(lease,['docker','info']);
       worker.status='available';
       delete worker.taskId;delete worker.attemptId;this.leases.delete(lease.request.attemptId);await this.emit();this.wake();return true;
-    }catch(error){worker.status='retired';await this.emit();this.wake();throw error;}
+    }catch(error){worker.status='retired';worker.outOfServiceByFailure=true;await this.emit();this.wake();throw error;}
   }
 }

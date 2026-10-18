@@ -33,8 +33,28 @@ export interface BatchWorkerPoolView {
   size: number;
   lifecycle: TaskWorkerPoolConfig['lifecycle'];
   occupancy: Record<TaskWorkerStatus, number>;
+  /** Occupancy by status is the source of truth; replacements only count failure-driven turnover that a new worker restored. */
   replacements: number;
   workers: BatchWorkerView[];
+}
+
+/**
+ * Real replacements of the batch (#108): a worker driven out of service by a failure
+ * (a retained attempt or a failed reset) whose capacity was restored by a new worker.
+ * Agent-frontier swaps of idle workers and planned lifecycle recycling never count.
+ * Each pool generation carries its own cumulative total on its last created worker,
+ * so replacements sum across resumed sessions; occupancy by status stays the truth.
+ */
+function replacementTotal(workers: BatchWorkerView[]): number {
+  const byGeneration = new Map<string, number>();
+  for (const worker of workers) {
+    const separator = worker.workerId.lastIndexOf('/');
+    const generation = separator < 0 ? worker.workerId : worker.workerId.slice(0, separator);
+    byGeneration.set(generation, Math.max(byGeneration.get(generation) ?? 0, worker.replacements));
+  }
+  let total = 0;
+  for (const count of byGeneration.values()) total += count;
+  return total;
 }
 
 /** Reliability summary of the batch (#111): failures, retries, stops and diagnostics. */
@@ -70,13 +90,14 @@ function workerPoolView(snapshot: TaskBatchSnapshot): BatchWorkerPoolView | unde
   const workers = snapshot.workers ?? [];
   const occupancy: Record<TaskWorkerStatus, number> = { available: 0, assigned: 0, cleaning: 0, verifying: 0, retained: 0, retired: 0 };
   for (const worker of workers) occupancy[worker.status] += 1;
+  const views: BatchWorkerView[] = workers.map(({ workerId, agent, status, taskId, attemptId, replacements }) =>
+    ({ workerId, agent, status, ...(taskId ? { taskId } : {}), ...(attemptId ? { attemptId } : {}), replacements }));
   return {
     size: config.size,
     lifecycle: config.lifecycle,
     occupancy,
-    replacements: Math.max(0, ...workers.map(worker => worker.replacements)),
-    workers: workers.map(({ workerId, agent, status, taskId, attemptId, replacements }) =>
-      ({ workerId, agent, status, ...(taskId ? { taskId } : {}), ...(attemptId ? { attemptId } : {}), replacements })),
+    replacements: replacementTotal(views),
+    workers: views,
   };
 }
 
