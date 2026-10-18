@@ -33,6 +33,21 @@ export interface TaskWorkerState {
 interface Worker extends TaskWorkerState { created: boolean; assetsVolume: string; image: string; sharedMounts: string[]; outOfServiceByFailure?: boolean; replaced?: boolean; }
 export interface WorkerLease { worker: Worker; container: string; contextVolume: string; seed: string; stage: string; request: TaskExecutionRequest; skillsStore?:string; }
 const quote=(value:string)=>"'"+value.replaceAll("'", "'\\''")+"'";
+/** Refuses an exposed Docker TCP daemon (ports 2375 and 2376) from inside the worker sandbox.
+ * Probes ss first, then /proc/net/tcp and /proc/net/tcp6; fails closed when no listener source is readable. */
+export const workerTcpGuardScript = `if command -v ss >/dev/null 2>&1
+then
+  listeners=$(ss -ltnH) || exit 1
+  ! printf '%s\\n' "$listeners" | grep -Eq ':(2375|2376)[[:space:]]'
+  exit
+fi
+if test $# -eq 0
+then set -- /proc/net/tcp /proc/net/tcp6
+fi
+for file in "$@"
+do test -r "$file" || exit 1
+done
+awk '$4 == "0A" { split($2, address, ":"); port = toupper(address[2]); if (port == "0947" || port == "0948") exposed = 1 } END { exit exposed ? 1 : 0 }' "$@"`;
 
 /** A worker retains only immutable images/assets. Every task runs in a fresh Docker container.
  * A replacement is a worker driven out of service by a failure (a retained attempt or a failed
@@ -124,7 +139,7 @@ export class TaskWorkerPool {
       await this.control(worker,request,['run','-d','--name',worker.sandboxName]);
       await this.execInWorker(lease,['docker','info']);
       // Host networking is needed by the injected credential proxy. Refuse an exposed Docker TCP daemon.
-      await this.execInWorker(lease,['sh','-ec','command -v ss >/dev/null; listeners=$(ss -ltnH); ! printf \"%s\\n\" \"$listeners\" | grep -Eq ":(2375|2376)[[:space:]]"']);
+      await this.execInWorker(lease,['sh','-ec',workerTcpGuardScript]);
       // Verification passed: only now may the fresh worker count as assigned capacity (#107).
       if(worker.status==='verifying'){worker.status='assigned';await this.emit();}
       await this.execInWorker(lease,['docker','pull',worker.image]);

@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdtemp, mkdir, writeFile, readFile, rm, cp, stat } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, rm, cp, stat, chmod, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import test from 'node:test';
 import { DockerTaskExecutor } from '../src/dockerTaskExecutor.js';
+import { workerTcpGuardScript } from '../src/taskWorkerPool.js';
 import type { SubprocessExecutor } from '@acp-client/sandbox';
 import type { TaskExecutionRequest } from '../src/taskExecution.js';
 import type { TaskAgentAdapter } from '../src/dockerTaskExecutor.js';
@@ -190,4 +191,27 @@ test('a worker bootstrap failure retains a usable outer inspection command',asyn
   const f=await fixture(t);f.failHealth=true;const result=await f.executor.execute(await f.request('first'));assert.equal(result.exitCode,1);assert.ok(result.resource);
   assert.match(result.resource.sandboxName,/^slopify-worker-/);
   assert.deepEqual(result.resource.inspectCommand,['sbx','exec',result.resource.sandboxName,'sh']);
+});
+
+
+test('the worker TCP guard probes ss first and rejects an exposed Docker daemon',async t=>{
+  const root=await mkdtemp(path.join(tmpdir(),'slopify-guard-'));t.after(()=>rm(root,{recursive:true,force:true}));
+  const ssStub=async(name:string,script:string)=>{const dir=path.join(root,name);await mkdir(dir,{recursive:true});await writeFile(path.join(dir,'ss'),script);await chmod(path.join(dir,'ss'),0o755);return dir;};
+  const guard=(ssDir:string)=>{const r=spawnSync('sh',['-ec',workerTcpGuardScript],{env:{...process.env,PATH:ssDir+path.delimiter+(process.env.PATH??'')},encoding:'utf8'});return r.status??1;};
+  assert.equal(guard(await ssStub('clean','#!/bin/sh\nexit 0\n')),0);
+  assert.notEqual(guard(await ssStub('exposed','#!/bin/sh\nprintf "LISTEN 0 0 0.0.0.0:2376 0.0.0.0:* users:((dockerd))"\n')),0);
+  assert.notEqual(guard(await ssStub('broken','#!/bin/sh\nexit 3\n')),0);
+});
+
+test('the worker TCP guard falls back to proc listener files and fails closed without a readable probe',async t=>{
+  const root=await mkdtemp(path.join(tmpdir(),'slopify-guard-'));t.after(()=>rm(root,{recursive:true,force:true}));
+  const restricted=path.join(root,'noss');await mkdir(restricted,{recursive:true});
+  for(const tool of['grep','awk']){const r=spawnSync('sh',['-ec','command -v '+tool],{encoding:'utf8'});assert.equal(r.status,0,'expected to find '+tool);await symlink(r.stdout.trim(),path.join(restricted,tool));}
+  const guard=(args:string[])=>{const r=spawnSync('/bin/sh',['-ec',workerTcpGuardScript,'worker-tcp-guard',...args],{env:{...process.env,PATH:restricted},encoding:'utf8'});return r.status??1;};
+  const header='  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retr\n';
+  const file=async(name:string,line:string)=>{const p=path.join(root,'proc-'+name);await writeFile(p,header+line);return p;};
+  assert.notEqual(guard([await file('exposed','   0: 0100007F:0947 00000000:0000 0A 00000000:00000000 00:00000000     00000\n')]),0);
+  assert.equal(guard([await file('established','   0: 0100007F:0948 00000000:0000 01 00000000:00000000 00:00000000     00000\n')]),0);
+  assert.equal(guard([await file('clean','   0: 0100007F:1F90 00000000:0000 0A 00000000:00000000 00:00000000     00000\n')]),0);
+  assert.notEqual(guard([path.join(root,'absent')]),0);
 });
