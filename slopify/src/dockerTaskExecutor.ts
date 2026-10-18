@@ -87,11 +87,11 @@ export class DockerTaskExecutor implements TaskExecutor {
     let resource:TaskSandboxResource|undefined;
     let checkpoint:TaskExecutionResult['checkpoint'];
     try {
-      lease=await this.pool?.acquire(request);
       const adapter=this.adapters.get(request.agent);
       if(!adapter)throw new Error(`Agent ${request.agent} is unavailable.`);
       const sandboxName='slopify-'+createHash('sha256').update(`${request.runId}/${request.taskId}/${request.attemptId}`).digest('hex').slice(0,24);
       await this.prepareRun(request);
+      lease=await this.pool?.acquire(request);
       const inventory=this.skillsInventory!;
       if(lease)lease.skillsStore=inventory.store;
       const containerContextPath=path.join(request.resultDirectory,'context');
@@ -136,7 +136,7 @@ export class DockerTaskExecutor implements TaskExecutor {
     } catch(error) {
       if(lease){
         await this.pool!.retain(lease);
-        if(!resource && lease.worker.created){resource=this.pool!.resource(lease,{sandboxName:lease.worker.sandboxName,inspectCommand:['sbx','exec',lease.worker.sandboxName,'sh'],diagnosticsDirectory:request.resultDirectory});await request.onResource?.(resource);}
+        if(!resource && lease.worker.created){resource={workerId:lease.worker.workerId,sandboxName:lease.worker.sandboxName,worktreePath:lease.request.workspacePath,inspectCommand:['sbx','exec',lease.worker.sandboxName,'sh'],diagnosticsDirectory:request.resultDirectory};await request.onResource?.(resource);}
       }
       const message=error instanceof Error?error.message:String(error);
       diagnostics.push({code:request.signal?.aborted?'interrupted':'execution_failed',message});

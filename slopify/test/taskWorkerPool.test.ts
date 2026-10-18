@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdtemp, mkdir, writeFile, readFile, rm, cp } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, rm, cp, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import test from 'node:test';
@@ -16,13 +16,13 @@ async function fixture(t: {after(fn:()=>Promise<void>):void}, options: {adapters
   const repo=path.join(root,'repo');await mkdir(repo);git(repo,'init','-q');git(repo,'config','user.name','Test');git(repo,'config','user.email','test@example.invalid');
   await writeFile(path.join(repo,'base'),'base');git(repo,'add','.');git(repo,'commit','-qm','base');
   const head=git(repo,'rev-parse','HEAD');const spec=path.join(root,'spec.md');await writeFile(spec,'spec');
-  const containers=new Map<string,string>();const calls:string[][]=[];const workers:string[]=[];let failHealth=false;let failTask=false;
+  const containers=new Map<string,string>();const calls:string[][]=[];const workers:string[]=[];let failHealth=false;let failTask=false;let failPrepare=false;
   const ok=(stdout='')=>({exitCode:0,stdout,stderr:''});
   const execute:SubprocessExecutor=async request=>{
     if(request.command==='git'){const r=spawnSync('git',request.args,{cwd:request.cwd,encoding:'utf8'});return {exitCode:r.status??1,stdout:r.stdout??'',stderr:r.stderr??''};}
     const a=request.args;calls.push(a);
     if(a[0]==='version')return ok('sbx 0.48.0');if(a.includes('--help'))return ok('--clone --skills --json policy init');
-    if(a[0]==='policy')return ok('{"initialized":true}');if(a[0]==='skills')return ok(JSON.stringify({store:'/official',skills:['implement','tdd','code-review']}));if(a[0]==='ls')return ok('[]');
+    if(a[0]==='policy')return ok('{"initialized":true}');if(a[0]==='skills')return ok(JSON.stringify(failPrepare?{store:'/official',skills:[]}:{store:'/official',skills:['implement','tdd','code-review']}));if(a[0]==='ls')return ok('[]');
     if(a[0]==='create'){workers.push(a[a.indexOf('--name')+1]);return ok();}
     if(a[0]==='rm'||a[0]==='run')return ok();
     if(a[0]==='cp'){const source=a[1].includes(':')?a[1].split(':').slice(1).join(':'):a[1];const target=a[2].includes(':')?a[2].split(':').slice(1).join(':'):a[2];await mkdir(path.dirname(target),{recursive:true});await cp(source,target,{recursive:true,force:true});return ok();}
@@ -49,7 +49,7 @@ async function fixture(t: {after(fn:()=>Promise<void>):void}, options: {adapters
   const emits: TaskWorkerState[][] = [];
   const executor=new DockerTaskExecutor({executor:execute,pool:options.pool??{size:1,mounts:[],lifecycle:'reuse'},onWorkers:workers=>{emits.push(workers.map(({workerId,sandboxName,agent,status,taskId,attemptId,replacements})=>({workerId,sandboxName,agent,status,...(taskId?{taskId}:{}),...(attemptId?{attemptId}:{}),replacements})));},adapters:[{agent:'codex',async prepare(){return {createTarget:'codex'};},async run(context){const result=await context.command(['exec',context.sandboxName,'implement-test']);return {exitCode:failTask?1:result.exitCode,report:failTask?'task failed':'done',diagnostics:[]};}},...(options.adapters??[piAdapter])]});
   const request=async(id:string,agent:'codex'|'pi'='codex'):Promise<TaskExecutionRequest>=>{const workspace=path.join(root,id);git(root,'clone','-q',repo,workspace);return {runId:'run',taskId:id,attemptId:id,agent,workspacePath:workspace,specFile:spec,prompt:id,taskBaseCommit:head,runBaseCommit:head,resultDirectory:path.join(root,'outputs',id)};};
-  return {root,repo,head,workers,calls,emits,executor,request,set failHealth(value:boolean){failHealth=value;},set failTask(value:boolean){failTask=value;}};
+  return {root,repo,head,workers,calls,emits,executor,request,set failHealth(value:boolean){failHealth=value;},set failPrepare(value:boolean){failPrepare=value;},set failTask(value:boolean){failTask=value;}};
 }
 
 test('successful tasks reuse one worker with distinct worktrees and durable checkpoints',async t=>{
@@ -145,4 +145,49 @@ test('replacements count only failed workers actually replaced, never frontier s
   const closing=f.emits.at(-1)!;
   const replacement=closing.find(state=>state.taskId==='recovered')!;
   assert.equal(replacement.replacements,1,'exactly the retained failure is counted as replaced');
+});
+
+test('a failed shared preparation admits no worker and never burns pool capacity',async t=>{
+  const f=await fixture(t);f.failPrepare=true;
+  const failed=await f.executor.execute(await f.request('broken'));
+  assert.equal(failed.exitCode,1);assert.equal(failed.resource,undefined);
+  assert.equal(f.emits.length,0,'no worker state was ever emitted for a preparation failure');
+  f.failPrepare=false;
+  const recovered=await f.executor.execute(await f.request('recovered'));
+  assert.equal(recovered.exitCode,0,JSON.stringify(recovered.diagnostics));
+  const worker=f.emits.flat().find(state=>state.taskId==='recovered')!;
+  assert.equal(worker.replacements,0,'a preparation failure is not a worker replacement');
+});
+
+test('batch shutdown retains a worker still assigned to a suspended attempt',async t=>{
+  const f=await fixture(t);const done=await f.executor.execute(await f.request('first'));assert.equal(done.exitCode,0,JSON.stringify(done.diagnostics));
+  await f.executor.close();
+  const final=f.emits.at(-1)!;const worker=final.find(state=>state.taskId==='first')!;
+  assert.equal(worker.status,'retained','a suspended assignment stays inspectable instead of lingering as assigned');
+  assert.equal(f.calls.some(args=>args[0]==='rm'&&args.includes(done.resource!.sandboxName)),false);
+});
+
+test('worker evidence records the actual commands that ran through the worker',async t=>{
+  const f=await fixture(t);const done=await f.executor.execute(await f.request('first'));assert.equal(done.exitCode,0,JSON.stringify(done.diagnostics));
+  const evidence=(await readFile(path.join(f.root,'outputs','first','worker-commands.jsonl'),'utf8')).trim().split('\n').map(line=>JSON.parse(line) as {type:string;command?:string;args?:string[];exitCode?:number});
+  assert.ok(evidence.some(record=>record.type==='start'&&record.args?.includes('implement-test')),'the actual agent command is audited');
+  assert.ok(evidence.some(record=>record.type==='start'&&record.command==='git'),'host git commands routed through the worker are audited');
+});
+
+test('a pooled worker create receives a bootstrap directory before its readonly shared mounts',async t=>{
+  const sharedRoot=await mkdtemp(path.join(tmpdir(),'slopify-shared-'));const shared=path.join(sharedRoot,'official');await mkdir(shared);await writeFile(path.join(shared,'skill.md'),'skill');t.after(()=>rm(sharedRoot,{recursive:true,force:true}));
+  const f=await fixture(t,{pool:{size:1,mounts:[shared+':ro'],lifecycle:'reuse'}});
+  const done=await f.executor.execute(await f.request('first'));assert.equal(done.exitCode,0,JSON.stringify(done.diagnostics));
+  const bootstrap=path.join(f.root,'outputs','first','worker-bootstrap');
+  const create=f.calls.find(args=>args[0]==='create'&&args.includes(f.workers[0]))!;
+  const index=create.indexOf(bootstrap);
+  assert.ok(index>0,'the bootstrap directory is passed to sbx create');
+  assert.equal(create[index+1],shared+':ro','the shared mount follows the bootstrap directory');
+  assert.equal((await stat(bootstrap)).mode&0o777,0o777,'the bootstrap directory is writable by the worker');
+});
+
+test('a worker bootstrap failure retains a usable outer inspection command',async t=>{
+  const f=await fixture(t);f.failHealth=true;const result=await f.executor.execute(await f.request('first'));assert.equal(result.exitCode,1);assert.ok(result.resource);
+  assert.match(result.resource.sandboxName,/^slopify-worker-/);
+  assert.deepEqual(result.resource.inspectCommand,['sbx','exec',result.resource.sandboxName,'sh']);
 });
