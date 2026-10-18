@@ -108,7 +108,7 @@ export interface TaskBatchSnapshot {
   version: 1;
   /** Capacité figée à la création du lot ; absent dans les anciens états. */
   maxConcurrentTasks?: number;
-  /** Frozen at creation; absent only in legacy stored runs. */
+  /** Figée à la création du lot ; absente seulement dans les anciens états persistés. */
   workerPoolConfig?: TaskWorkerPoolConfig;
   workers?: TaskWorkerState[];
   runId: string;
@@ -127,7 +127,7 @@ export interface TaskBatchSnapshot {
   resolution?: TaskBatchResolution;
 }
 
-/** An execution stopped after durable state was available; CLI can report its outcome. */
+/** Une exécution arrêtée alors que l'état durable était déjà disponible ; la CLI peut rendre compte de son résultat. */
 export class TaskBatchExecutionError extends Error {
   constructor(readonly snapshot: TaskBatchSnapshot, cause: unknown) {
     super(cause instanceof Error ? cause.message : String(cause), { cause });
@@ -250,7 +250,7 @@ export class TaskBatchService {
     try {
       await current;
       try { this.onUpdate?.(JSON.parse(contents)); }
-      catch { /* A reporting failure must not change an already persisted task outcome. */ }
+      catch { /* Un échec de reporting ne doit jamais modifier un résultat de tâche déjà persisté. */ }
     }
     finally { if (this.saves.get(snapshot.runId) === current) this.saves.delete(snapshot.runId); }
   }
@@ -273,7 +273,7 @@ export class TaskBatchService {
           const separator = value.indexOf('\t');
           return separator >= 0 && value.slice(separator + 1).startsWith(`${inputFile}/`);
         });
-      } catch { /* A path that Git cannot find is diagnosed below. */ }
+      } catch { /* Un chemin introuvable pour Git est diagnostiqué ci-dessous. */ }
       if (!mode && !isDirectory) {
         diagnostics.push({
           code: 'missing_input_file',
@@ -291,7 +291,7 @@ export class TaskBatchService {
     return diagnostics;
   }
 
-  /** One invocation owns its health decision and stops external work without deleting inspectable sandboxes. */
+  /** Une invocation possède sa décision de santé et arrête le travail externe sans supprimer les sandboxes inspectables. */
   private createExecutionRuntime(snapshot: TaskBatchSnapshot, signal?: AbortSignal) {
     delete snapshot.suspension;
     const subprocess = this.subprocessExecutor ?? createNodeSubprocessExecutor();
@@ -1192,7 +1192,7 @@ export type TaskEffort = 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh
 
 export interface BatchTaskDefaults {
   agent?: TaskAgent;
-  /** Defaults for Codex tasks; Pi keeps its configured model and effort. */
+  /** Valeurs par défaut des tâches Codex ; Pi garde son modèle et son effort configurés. */
   model?: string;
   effort?: TaskEffort;
 }
