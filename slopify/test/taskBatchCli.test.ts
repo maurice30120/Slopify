@@ -400,3 +400,43 @@ test('status replays the journal signals of the run as one readable line per sig
   ]);
   assert.deepEqual(sink.errors, []);
 });
+
+test('tasks status exposes the worker pool occupancy and replacements in both modes', async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), 'slopify-workers-status-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const runId = 'run-1';
+  const state: TaskBatchSnapshot = { ...durableRun(runId), status: 'failed',
+    workerPoolConfig: { size: 2, mounts: [], lifecycle: 'reuse' },
+    workers: [
+      { workerId: 'gen/1', sandboxName: 'slopify-worker-1', agent: 'codex', status: 'retired', taskId: 'ok', attemptId: 'att-1', replacements: 0 },
+      { workerId: 'gen/2', sandboxName: 'slopify-worker-2', agent: 'codex', status: 'retained', taskId: 'broken', attemptId: 'att-2', replacements: 1 },
+      { workerId: 'gen/3', sandboxName: 'slopify-worker-3', agent: 'codex', status: 'available', replacements: 1 },
+    ] };
+  await mkdir(path.join(root, runId), { recursive: true });
+  await writeFile(path.join(root, runId, 'state.json'), JSON.stringify(state));
+  const sink = output();
+  assert.equal(await runTaskBatchCli(['status', runId, '--store', root, '--json'], sink, '/repo'), 0);
+  const result = JSON.parse(sink.messages[0]);
+  assert.deepEqual(result.workerPool, {
+    size: 2, lifecycle: 'reuse',
+    occupancy: { available: 1, assigned: 0, cleaning: 0, verifying: 0, retained: 1, retired: 1 },
+    replacements: 1,
+    workers: [
+      { workerId: 'gen/1', agent: 'codex', status: 'retired', taskId: 'ok', attemptId: 'att-1', replacements: 0 },
+      { workerId: 'gen/2', agent: 'codex', status: 'retained', taskId: 'broken', attemptId: 'att-2', replacements: 1 },
+      { workerId: 'gen/3', agent: 'codex', status: 'available', replacements: 1 },
+    ],
+  });
+  const text = output();
+  assert.equal(await runTaskBatchCli(['status', runId, '--store', root], text, '/repo'), 0);
+  assert.match(text.messages[0], /Workers: 2 configured, lifecycle reuse; occupancy: 1 available, 0 assigned, 0 cleaning, 0 verifying, 1 retained, 1 retired; 1 replacement during this run/);
+  assert.match(text.messages[0], /gen\/2 \(codex\): retained for inspection, task broken \(attempt att-2\)/);
+  assert.deepEqual(text.errors, []);
+});
+
+test('the tasks help documents the worker pool visibility of status output', async () => {
+  const sink = output();
+  assert.equal(await runTaskBatchCli(['--help'], sink, '/repo', () => { throw new Error('Service must not be constructed'); }), 0);
+  assert.match(sink.messages[0], /worker pool occupancy/);
+  assert.match(sink.messages[0], /replacement/);
+});

@@ -7,6 +7,7 @@ import test from 'node:test';
 import { configureRecreatedWorkers } from './recreatedWorkerFixture.js';
 import type { SubprocessExecutor } from '@acp-client/sandbox';
 import { TaskBatchService, type BatchTask, type TaskBatchSnapshot, type TaskBatchServiceOptions } from '../src/taskBatch.js';
+import { taskBatchReport, formatTaskBatchReport } from '../src/taskBatchReport.js';
 
 function git(repo: string, ...args: string[]) {
   return execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8' }).trim();
@@ -606,4 +607,54 @@ test('an integration conflict drains an active sibling and preserves its uninteg
   assert.throws(() => git(f.repo, 'show', `${state.integrationBranch}:slow.txt`));
   await assert.rejects(service.resume(state.runId), /unresolved conflict/);
   assert.equal((await service.status(state.runId)).tasks[2].attempts.length, 1);
+});
+
+test('a batch records the worker lifecycle with occupancy, retention and replacements', { timeout: 15000 }, async t => {
+  const firstRunning = gate(); const releaseFirst = gate();
+  t.after(() => { releaseFirst.release(); return Promise.resolve(); });
+  const f = await fixture(t, [task('first', 'codex'), task('broken', 'codex')], async (id, sandbox) => {
+    if (id === 'first') { await writeFile(path.join(sandbox, 'first.txt'), 'ok'); firstRunning.release(); await releaseFirst.promise; return 0; }
+    return 1;
+  });
+  await writeFile(path.join(f.repo, '.slopify', 'runtime.yaml'), 'workers:\n  size: 1\n  lifecycle: recreate\n  mounts: []\n');
+  const running = f.service.run(f.batchFile);
+  assert.equal(await Promise.race([firstRunning.promise.then(() => 'started'), running.then(() => 'returned')]), 'started');
+  const runId = (await readdir(path.join(f.root, 'runs')))[0];
+  const during = await f.service.status(runId);
+  const activeAttempt = during.tasks[0].attempts[0];
+  assert.ok(activeAttempt, 'the gated task has a durable attempt');
+  const assigned = during.workers?.filter(worker => worker.status === 'assigned') ?? [];
+  assert.equal(assigned.length, 1, 'the running task occupies exactly one worker');
+  assert.equal(assigned[0].taskId, 'first');
+  assert.equal(assigned[0].attemptId, activeAttempt.attemptId);
+  const midReport = taskBatchReport(during);
+  assert.equal(midReport.workerPool?.occupancy.assigned, 1);
+  assert.equal(midReport.workerPool?.replacements, 0);
+  assert.match(formatTaskBatchReport(during), /assigned to task first \(attempt /);
+  releaseFirst.release();
+  const state = await running;
+  assert.equal(state.status, 'failed');
+  const workers = state.workers ?? [];
+  assert.equal(workers.length, 2, 'the failed task forced a replacement worker');
+  assert.equal(workers[0].status, 'retired');
+  assert.equal(workers[0].taskId, 'first');
+  assert.equal(workers[0].attemptId, state.tasks[0].attempts[0].attemptId);
+  assert.equal(workers[1].status, 'retained');
+  assert.equal(workers[1].taskId, 'broken');
+  assert.equal(workers[1].attemptId, state.tasks[1].attempts[0].attemptId);
+  assert.equal(workers[1].replacements, 1);
+  const report = taskBatchReport(state);
+  assert.deepEqual(report.workerPool?.occupancy, { available: 0, assigned: 0, cleaning: 0, verifying: 0, retained: 1, retired: 1 });
+  assert.equal(report.workerPool?.replacements, 1);
+  const text = formatTaskBatchReport(state);
+  assert.match(text, /1 replacement during this run/);
+  assert.match(text, /retained for inspection, task broken \(attempt /);
+  assert.ok(text.includes(`Worker: ${workers[1].workerId}`), 'the failed attempt names its worker');
+  const firstWorktree = state.tasks[0].attempts[0].resource!.worktreePath!;
+  const brokenWorktree = state.tasks[1].attempts[0].resource!.worktreePath!;
+  assert.ok(firstWorktree.includes(state.tasks[0].attempts[0].attemptId));
+  assert.ok(brokenWorktree.includes(state.tasks[1].attempts[0].attemptId));
+  assert.notEqual(firstWorktree, brokenWorktree, 'worktrees stay identified per task, not per worker');
+  assert.ok(text.includes(`Worktree: ${brokenWorktree}`));
+  assert.ok(text.includes(`Checkpoint bundle: ${state.tasks[0].attempts[0].checkpoint!.bundlePath}`));
 });
