@@ -45,7 +45,7 @@ async function fixture(
   t: { after(fn: () => Promise<void>): void },
   tasks: BatchTask[],
   agent: (id: string, sandbox: string, emit: (text: string) => void, cwd: string) => Promise<number>,
-  hooks: { onSbx?: (args: string[]) => Promise<void>; onActivitySignal?: (signal: ActivitySignal) => void } = {},
+  hooks: { onSbx?: (args: string[]) => Promise<void>; onActivitySignal?: (signal: ActivitySignal) => void; onUpdate?: (snapshot: TaskBatchSnapshot) => void } = {},
 ): Promise<TickFixture> {
   const { root, repo, head, skills, batchFile } = await prepareSlopifyFixture('slopify-activity-tick-', t, tasks);
   const sandboxes = new Map<string, string>();
@@ -58,7 +58,7 @@ async function fixture(
   const storePath = path.join(root, 'runs');
   const service = new TaskBatchService({
     repositoryPath: repo, storePath, subprocessExecutor: execute,
-    onUpdate: snapshot => { updates.push(snapshot); },
+    onUpdate: snapshot => { updates.push(snapshot); hooks.onUpdate?.(snapshot); },
     onActivitySignal: signal => {
       signals.push(signal);
       hooks.onActivitySignal?.(signal);
@@ -251,13 +251,18 @@ test('tasks resume-task émet des signaux pendant sa tentative isolée', { timeo
 });
 
 test('tasks resolve-conflict émet des signaux pendant la reprise des vagues', { timeout: 30000 }, async t => {
-  const cStarted = gate(); const cHold = gate();
-  t.after(() => { cHold.release(); });
+  const cStarted = gate(); const cHold = gate(); const conflictDetected = gate();
+  t.after(() => { cHold.release(); conflictDetected.release(); });
   const f = await fixture(t, [
-    task('task-a', 'pi'), task('task-b', 'codex'), task('task-c', 'pi', ['task-a']),
+    task('task-a', 'pi'), task('task-b', 'codex'), task('drained', 'pi'), task('task-c', 'pi', ['drained']),
   ], async (id, sandbox, emit) => {
     if (id === 'task-a' || id === 'task-b') {
       await writeFile(path.join(sandbox, 'base.txt'), `${id} modified content`);
+      return 0;
+    }
+    if (id === 'drained') {
+      await conflictDetected.promise;
+      await writeFile(path.join(sandbox, 'drained.txt'), 'retained during conflict');
       return 0;
     }
     if (id === 'task-c') {
@@ -269,7 +274,7 @@ test('tasks resolve-conflict émet des signaux pendant la reprise des vagues', {
     }
     await writeFile(path.join(sandbox, 'review.txt'), 'review');
     return 0;
-  });
+  }, { onUpdate: snapshot => { if (snapshot.conflict) conflictDetected.release(); } });
   const conflicted = await f.service.run(f.batchFile);
   assert.equal(conflicted.status, 'conflicted');
   assert.equal(f.signals.length, 0, 'aucun tick levé avant la commande de résolution');
@@ -286,13 +291,18 @@ test('tasks resolve-conflict émet des signaux pendant la reprise des vagues', {
 });
 
 test('tasks validate-resolution émet des signaux pendant la reprise des vagues', { timeout: 30000 }, async t => {
-  const cStarted = gate(); const cHold = gate();
-  t.after(() => { cHold.release(); });
+  const cStarted = gate(); const cHold = gate(); const conflictDetected = gate();
+  t.after(() => { cHold.release(); conflictDetected.release(); });
   const f = await fixture(t, [
-    task('task-a', 'pi'), task('task-b', 'codex'), task('task-c', 'pi', ['task-a']),
+    task('task-a', 'pi'), task('task-b', 'codex'), task('drained', 'pi'), task('task-c', 'pi', ['drained']),
   ], async (id, sandbox, emit) => {
     if (id === 'task-a' || id === 'task-b') {
       await writeFile(path.join(sandbox, 'base.txt'), `${id} modified content`);
+      return 0;
+    }
+    if (id === 'drained') {
+      await conflictDetected.promise;
+      await writeFile(path.join(sandbox, 'drained.txt'), 'retained during conflict');
       return 0;
     }
     if (id === 'task-c') {
@@ -304,7 +314,7 @@ test('tasks validate-resolution émet des signaux pendant la reprise des vagues'
     }
     await writeFile(path.join(sandbox, 'review.txt'), 'review');
     return 0;
-  });
+  }, { onUpdate: snapshot => { if (snapshot.conflict) conflictDetected.release(); } });
   const conflicted = await f.service.run(f.batchFile);
   assert.equal(conflicted.status, 'conflicted');
   const manual = await f.service.resolveConflict(conflicted.runId, { resolutionStrategy: 'manual' });

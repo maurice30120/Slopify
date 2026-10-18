@@ -5,7 +5,7 @@ import * as path from 'node:path';
 import { tmpdir } from 'node:os';
 import test from 'node:test';
 import type { SubprocessExecutor } from '@acp-client/sandbox';
-import { TaskBatchService, type BatchTask, type TaskBatchSnapshot } from '../src/taskBatch.js';
+import { TaskBatchService, type BatchTask, type TaskBatchSnapshot, type TaskBatchServiceOptions } from '../src/taskBatch.js';
 
 function git(repo: string, ...args: string[]) {
   return execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8' }).trim();
@@ -21,7 +21,7 @@ const task = (id: string, agent: 'pi' | 'codex', dependsOn: string[] = []): Batc
 
 /** Substitute sbx alone: all clones, commits, checkpoints and published branches are real Git. */
 async function fixture(t: { after(fn: () => Promise<void>): void }, tasks: BatchTask[],
-  agent: (id: string, sandbox: string) => Promise<number>) {
+  agent: (id: string, sandbox: string) => Promise<number>, options: Pick<TaskBatchServiceOptions, 'maxConcurrentTasks'> = {}) {
   const root = await mkdtemp(path.join(tmpdir(), 'slopify-waves-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const repo = path.join(root, 'host');
@@ -101,20 +101,19 @@ async function fixture(t: { after(fn: () => Promise<void>): void }, tasks: Batch
     throw new Error(`Unhandled sbx ${a.join(' ')}`);
   };
   const updates: TaskBatchSnapshot[] = [];
-  const service = new TaskBatchService({ repositoryPath: repo, storePath: path.join(root, 'runs'), subprocessExecutor: execute, onUpdate: snapshot => { updates.push(snapshot); } });
-  return { root, repo, head, dirty, batchFile, service, launched, removed, sandboxes, updates };
+  const service = new TaskBatchService({ repositoryPath: repo, storePath: path.join(root, 'runs'), subprocessExecutor: execute, ...options, onUpdate: snapshot => { updates.push(snapshot); } });
+  return { root, repo, head, dirty, batchFile, service, execute, launched, removed, sandboxes, updates };
 }
 
-test('a mixed wave overlaps, waits for every task and gives its descendant the combined published result', { timeout: 15000 }, async t => {
+test('a completed checkpoint unlocks its descendant while an unrelated sibling keeps its pinned base', { timeout: 15000 }, async t => {
   const bothStarted = gate(); const finishSlow = gate(); const fastFinished = gate();
   const bases = new Map<string, string>();
   let running = 0; let maximum = 0;
-  const f = await fixture(t, [task('slow', 'pi'), task('fast', 'codex'), task('combined', 'codex', ['slow', 'fast'])], async (id, sandbox) => {
+  const f = await fixture(t, [task('slow', 'pi'), task('fast', 'codex'), task('combined', 'codex', ['fast'])], async (id, sandbox) => {
     bases.set(id, git(sandbox, 'rev-parse', 'HEAD'));
     if (id === 'combined') {
-      assert.equal(await readFile(path.join(sandbox, 'slow.txt'), 'utf8'), 'Pi result');
       assert.equal(await readFile(path.join(sandbox, 'fast.txt'), 'utf8'), 'Codex result');
-      await writeFile(path.join(sandbox, 'combined.txt'), 'verified both');
+      await writeFile(path.join(sandbox, 'combined.txt'), 'verified fast');
       return 0;
     }
     running++; maximum = Math.max(maximum, running);
@@ -138,16 +137,19 @@ test('a mixed wave overlaps, waits for every task and gives its descendant the c
     await new Promise(resolve => setTimeout(resolve, 5));
     during = await f.service.status(runId);
   }
-  assert.equal(during.tasks[1].status, 'completed');
-  assert.equal(git(f.repo, 'rev-parse', during.integrationBranch), f.head, 'no partial wave is integrated');
-  assert.deepEqual([...f.launched].sort(), ['fast', 'slow']);
+  for (let tries = 0; !f.launched.includes('combined') && tries < 1000; tries++) {
+    await new Promise(resolve => setTimeout(resolve, 5));
+  }
+  assert.ok(f.launched.includes('combined'), 'fast descendant starts before the slow sibling finishes');
+  assert.equal(during.tasks[0].attempts[0].taskBaseCommit, f.head);
   finishSlow.release();
   const state = await result;
   assert.equal(state.status, 'succeeded');
   assert.equal(maximum, 2);
   assert.equal(bases.get('slow'), f.head); assert.equal(bases.get('fast'), f.head);
   assert.equal(bases.get('combined'), state.tasks[1].attempts[0].integratedCommit);
-  assert.equal(git(f.repo, 'show', `${state.integrationBranch}:combined.txt`), 'verified both');
+  assert.equal(state.tasks[0].attempts[0].taskBaseCommit, f.head);
+  assert.equal(git(f.repo, 'show', `${state.integrationBranch}:combined.txt`), 'verified fast');
   assert.equal(git(f.repo, 'rev-parse', 'HEAD'), f.head);
   assert.equal(git(f.repo, 'status', '--porcelain=v1'), f.dirty);
   assert.equal(await readFile(path.join(f.repo, 'base.txt'), 'utf8'), 'dirty user content');
@@ -158,8 +160,8 @@ test('a mixed wave overlaps, waits for every task and gives its descendant the c
     assert.ok(item.attempts[0].checkpoint?.commit);
     assert.match(await readFile(item.attempts[0].reportPath!, 'utf8'), /report/);
   }
-  const messages = git(f.repo, 'log', '--format=%B', `${f.head}..${state.tasks[1].attempts[0].integratedCommit}`);
-  assert.match(messages, /Slopify-Task: fast/);
+  const messages = git(f.repo, 'log', '--format=%B', `${f.head}..${state.integrationCommit}`);
+  assert.match(messages, /Slopify-Task: slow/);
 });
 
 test('a failed task blocks only its descendants while an independent later wave still integrates', async t => {
@@ -186,7 +188,7 @@ test('a failed task blocks only its descendants while an independent later wave 
   assert.deepEqual((await f.service.status(state.runId)).tasks.map(v => v.status), state.tasks.map(v => v.status));
 });
 
-test('same wave tasks share the same base commit', { timeout: 15000 }, async t => {
+test('tasks admitted together share the same pinned base commit', { timeout: 15000 }, async t => {
   const bases = new Map<string, string>();
   const f = await fixture(t, [task('a', 'pi'), task('b', 'codex'), task('c', 'pi')], async (id, sandbox) => {
     bases.set(id, git(sandbox, 'rev-parse', 'HEAD'));
@@ -276,7 +278,7 @@ test('no implicit retry or agent change on failure', { timeout: 15000 }, async t
   assert.equal(state.tasks[1].agent, 'codex');
 });
 
-test('cross-wave tasks start from the integrated commit of the previous wave', { timeout: 15000 }, async t => {
+test('a task with several prerequisites starts from their combined integrated commit', { timeout: 15000 }, async t => {
   const bases = new Map<string, string>();
   const f = await fixture(t, [
     task('wave1-a', 'pi'),
@@ -294,17 +296,21 @@ test('cross-wave tasks start from the integrated commit of the previous wave', {
   assert.equal(bases.get('wave1-b'), f.head);
   // Wave 2 task starts from the integrated commit of wave 1
   assert.notEqual(bases.get('wave2-c'), f.head);
-  assert.equal(bases.get('wave2-c'), state.tasks[1].attempts[0].integratedCommit);
+  const latestPrerequisite = state.tasks.find(v => v.id === 'wave2-c')!.attempts[0].taskBaseCommit;
+  assert.equal(bases.get('wave2-c'), latestPrerequisite);
+  for (const name of ['wave1-a', 'wave1-b']) {
+    assert.equal(git(f.repo, 'show', `${latestPrerequisite}:${name}.txt`), `${name} result`);
+  }
 });
 
 for (const resume of [false, true]) {
-  test(`twelve ready mixed-agent tasks execute in waves of ten${resume ? ' after explicit resume' : ''}`, { timeout: 30000 }, async t => {
-    const tenStarted = gate(); const finishSlow = gate(); const nineFinished = gate();
+  test(`twelve ready mixed-agent tasks refill available capacity without waiting for the slow sibling${resume ? ' after explicit resume' : ''}`, { timeout: 30000 }, async t => {
+    const tenStarted = gate(); const finishSlow = gate(); const laterStarted = gate();
     t.after(async () => { tenStarted.release(); finishSlow.release(); });
     const ids = Array.from({ length: 12 }, (_, index) => `task-${index}`);
     const bases = new Map<string, string>();
     let executing = !resume;
-    let active = 0; let maximum = 0; let finished = 0;
+    let active = 0; let maximum = 0; let later = 0;
     const tasks = ids.map((id, index) => task(id, index % 2 ? 'codex' : 'pi', resume ? ['seed'] : []));
     if (resume) tasks.unshift(task('seed', 'codex'));
     const f = await fixture(t, tasks, async (id, sandbox) => {
@@ -316,14 +322,12 @@ for (const resume of [false, true]) {
         if (active === 10) tenStarted.release();
         await tenStarted.promise;
         if (id === ids[0]) await finishSlow.promise;
-      } else {
-        for (const earlier of ids.slice(0, 10)) {
-          assert.equal(await readFile(path.join(sandbox, `${earlier}.txt`), 'utf8'), earlier);
-        }
+      } else if (id !== 'final-review') {
+        later++;
+        if (later === 2) laterStarted.release();
       }
       await writeFile(path.join(sandbox, `${id}.txt`), id);
-      active--; finished++;
-      if (finished === 9) nineFinished.release();
+      active--;
       return 0;
     });
     let result: ReturnType<TaskBatchService['run']>;
@@ -338,11 +342,12 @@ for (const resume of [false, true]) {
       result = f.service.resume(failed.runId);
     } else result = f.service.run(f.batchFile);
     assert.equal(await Promise.race([tenStarted.promise.then(() => 'started'), result.then(() => 'returned')]), 'started');
-    await nineFinished.promise;
-    assert.deepEqual([...f.launched].sort(), ids.slice(0, 10));
+    const startedLater = await Promise.race([laterStarted.promise.then(() => true), new Promise<boolean>(resolve => setTimeout(() => resolve(false), 2500))]);
+    assert.equal(startedLater, true, 'both remaining tasks start while the first task is still active');
+    assert.deepEqual(f.launched.filter(id => ids.includes(id)).sort(), [...ids].sort());
     const runId = (await readdir(path.join(f.root, 'runs')))[0];
     const during = await f.service.status(runId);
-    assert.equal(git(f.repo, 'rev-parse', during.integrationBranch), firstBase);
+    assert.equal(during.tasks.find(v => v.id === ids[0])!.status, 'running');
     assert.ok(during.tasks.filter(task => task.status === 'running').length <= 10);
     finishSlow.release();
     const state = await result;
@@ -359,14 +364,83 @@ for (const resume of [false, true]) {
     assert.equal(finalReview.status, 'succeeded');
     assert.equal(finalReview.attempts.length, 1);
     for (const id of ids.slice(0, 10)) assert.equal(bases.get(id), firstBase);
-    for (const id of ids.slice(10)) assert.equal(bases.get(id), work[9].attempts.at(-1)!.integratedCommit);
-    for (const [index, task] of work.entries()) {
-      assert.equal(task.attempts.length, resume ? 2 : 1);
-      const commit = task.attempts.at(-1)!.integratedCommit!;
-      const parent = git(f.repo, 'rev-parse', `${commit}^1`);
-      if (index > 0) assert.equal(parent, work[index - 1].attempts.at(-1)!.integratedCommit);
+    for (const item of work) {
+      assert.equal(item.attempts.length, resume ? 2 : 1);
+      const attempt = item.attempts.at(-1)!;
+      assert.equal(attempt.taskBaseCommit, bases.get(item.id));
+      assert.ok(attempt.startedAt);
+      assert.ok(attempt.finishedAt);
+      assert.equal(git(f.repo, 'show', `${state.integrationBranch}:${item.id}.txt`), item.id);
     }
+    const admitted = f.updates.flatMap(update => update.tasks.filter(item => ids.includes(item.id) && item.status === 'running').map(item => item.id));
+    assert.deepEqual([...new Set(admitted)], ids, 'admission follows JSON order');
     if (resume) assert.equal(state.tasks[0].attempts.length, 1, 'successful seed never re-executes');
     assert.equal(f.sandboxes.size, resume ? 26 : 13, 'each attempt has a distinct sandbox');
   });
 }
+
+
+test('configured capacity survives an explicit resume and admits the first ready task immediately', { timeout: 15000 }, async t => {
+  const initialStarted = gate(); const finishSlow = gate(); const finishFast = gate(); const thirdStarted = gate();
+  t.after(async () => { initialStarted.release(); finishSlow.release(); finishFast.release(); });
+  let enabled = false; let active = 0; let maximum = 0;
+  const f = await fixture(t, [task('slow', 'pi'), task('fast', 'codex'), task('third', 'pi')], async (id, sandbox) => {
+    if (!enabled) return 1;
+    active++; maximum = Math.max(maximum, active);
+    if (id === 'slow' || id === 'fast') {
+      if (active === 2) initialStarted.release();
+      await initialStarted.promise;
+      await (id === 'slow' ? finishSlow.promise : finishFast.promise);
+    } else if (id === 'third') thirdStarted.release();
+    await writeFile(path.join(sandbox, `${id}.txt`), id);
+    active--;
+    return 0;
+  }, { maxConcurrentTasks: 2 });
+  const failed = await f.service.run(f.batchFile);
+  assert.equal(failed.maxConcurrentTasks, 2);
+  enabled = true;
+  // A newly constructed service defaults to ten; the saved lot keeps its configured capacity.
+  const resumed = new TaskBatchService({ repositoryPath: f.repo, storePath: path.join(f.root, 'runs'), subprocessExecutor: f.execute, onUpdate: update => { f.updates.push(update); } });
+  const result = resumed.resume(failed.runId);
+  await initialStarted.promise;
+  assert.equal(f.launched.filter(id => id === 'third').length, 1, 'third only ran in the failed execution so far');
+  finishFast.release();
+  assert.equal(await Promise.race([thirdStarted.promise.then(() => true), new Promise<boolean>(resolve => setTimeout(() => resolve(false), 2500))]), true);
+  finishSlow.release();
+  const state = await result;
+  assert.equal(state.status, 'succeeded');
+  assert.equal(maximum, 2);
+  assert.equal((await resumed.status(state.runId)).maxConcurrentTasks, 2);
+  assert.ok(f.updates.every(update => update.tasks.filter(item => item.status === 'running').length <= 2));
+});
+
+
+test('checkpoints ready together integrate serially in JSON order without rerunning their agents', { timeout: 15000 }, async t => {
+  const f = await fixture(t, [task('first', 'pi'), task('second', 'codex')], async (id, sandbox) => {
+    await writeFile(path.join(sandbox, `${id}.txt`), id);
+    return 0;
+  });
+  const produced = await f.service.run(f.batchFile);
+  // Fixture a recovered coordinator with both durable checkpoints waiting at the same scheduling turn.
+  const integration = path.join(f.root, 'runs', produced.runId, 'integration');
+  git(integration, 'update-ref', `refs/heads/${produced.integrationBranch}`, f.head);
+  git(f.repo, 'update-ref', `refs/heads/${produced.integrationBranch}`, f.head);
+  produced.integrationCommit = f.head;
+  produced.status = 'failed';
+  for (const item of produced.tasks.slice(0, 2)) {
+    item.status = 'completed';
+    delete item.attempts[0].integratedCommit;
+  }
+  produced.tasks[2].status = 'pending';
+  produced.tasks[2].attempts = [];
+  await writeFile(path.join(f.root, 'runs', produced.runId, 'state.json'), JSON.stringify(produced));
+  f.launched.length = 0;
+  const resumed = await f.service.resume(produced.runId);
+  assert.equal(resumed.status, 'succeeded');
+  assert.deepEqual(f.launched, ['final-review']);
+  const [first, second] = resumed.tasks;
+  assert.equal(first.attempts[0].integratedCommit, first.attempts[0].checkpoint!.commit);
+  assert.equal(git(f.repo, 'rev-parse', `${second.attempts[0].integratedCommit}^1`), first.attempts[0].integratedCommit);
+  assert.equal(git(f.repo, 'show', `${resumed.integrationBranch}:first.txt`), 'first');
+  assert.equal(git(f.repo, 'show', `${resumed.integrationBranch}:second.txt`), 'second');
+});

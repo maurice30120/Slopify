@@ -31,6 +31,8 @@ export interface TaskBatchServiceOptions {
   repositoryPath: string;
   storePath?: string;
   subprocessExecutor?: SubprocessExecutor;
+  /** Capacité du lot, entre une et dix tâches actives ; dix par défaut. */
+  maxConcurrentTasks?: number;
   /** Reçoit une copie après chaque sauvegarde durable, pour l'avancement de la CLI. */
   onUpdate?: (snapshot: TaskBatchSnapshot) => void;
   /** Seam du Signal d'activité (ADR 0013) : reçoit chaque signal complet composé par le tick minute. */
@@ -51,6 +53,8 @@ export interface BatchTaskAttempt extends Partial<TaskExecutionResult> {
   attemptId: string;
   taskBaseCommit: string;
   status: 'running' | 'succeeded' | 'failed' | 'interrupted';
+  startedAt?: string;
+  finishedAt?: string;
   resourceState?: 'active' | 'retained' | 'removed';
   integratedCommit?: string;
 }
@@ -86,6 +90,8 @@ export interface TaskBatchResolution {
 
 export interface TaskBatchSnapshot {
   version: 1;
+  /** Capacité figée à la création du lot ; absent dans les anciens états. */
+  maxConcurrentTasks?: number;
   runId: string;
   repositoryPath: string;
   status: 'ready' | 'running' | 'succeeded' | 'failed' | 'interrupted' | 'conflicted';
@@ -110,7 +116,7 @@ export class TaskBatchExecutionError extends Error {
 }
 
 const execFileAsync = promisify(execFile);
-const WAVE_SIZE = 10;
+const DEFAULT_MAX_CONCURRENT_TASKS = 10;
 /** Intervalle du tick d'activité par défaut : une minute (ADR 0013). */
 const ACTIVITY_TICK_INTERVAL_MS = 60_000;
 
@@ -132,15 +138,21 @@ export class TaskBatchService {
   readonly repositoryPath: string;
   readonly storePath: string;
   private readonly subprocessExecutor: SubprocessExecutor;
+  private readonly maxConcurrentTasks: number;
   private readonly onUpdate?: TaskBatchServiceOptions['onUpdate'];
   private readonly onActivitySignal?: TaskBatchServiceOptions['onActivitySignal'];
   private readonly activityTickIntervalMs: number;
   private readonly activityClock: ActivityTickClock;
-  /** Tâche en cours d'intégration de vague, observée par le tick (phrase d'intégration). */
+  /** Tâche en cours d'intégration, observée par le tick (phrase d'intégration). */
   private activityIntegrationTaskId?: string;
   private readonly saves = new Map<string, Promise<void>>();
 
   constructor(options: TaskBatchServiceOptions) {
+    const capacity = options.maxConcurrentTasks ?? DEFAULT_MAX_CONCURRENT_TASKS;
+    if (!Number.isInteger(capacity) || capacity < 1 || capacity > 10) {
+      throw new RangeError('maxConcurrentTasks must be an integer between 1 and 10.');
+    }
+    this.maxConcurrentTasks = capacity;
     this.repositoryPath = path.resolve(options.repositoryPath);
     this.onUpdate = options.onUpdate;
     this.subprocessExecutor = options.subprocessExecutor ?? createNodeSubprocessExecutor();
@@ -192,13 +204,13 @@ export class TaskBatchService {
     await writeFile(frozenBatchFile, JSON.stringify({ ...batch, specFile: 'spec.md' }, null, 2), { mode: 0o600 });
     const now = new Date().toISOString();
     const snapshot: TaskBatchSnapshot = {
-      version: 1, runId, repositoryPath: this.repositoryPath, status: 'ready', runBaseCommit,
+      version: 1, maxConcurrentTasks: this.maxConcurrentTasks, runId, repositoryPath: this.repositoryPath, status: 'ready', runBaseCommit,
       integrationBranch: `feature/slopify-${runId}`, createdAt: now, updatedAt: now,
       context: { specFile: frozenSpecFile, specText, batchFile: frozenBatchFile },
       tasks: [...batch.tasks.map((task) => ({ ...task, status: 'pending' as const, attempts: [] as BatchTaskAttempt[] })), finalReviewTask(batch, runBaseCommit)], diagnostics: [],
     };
     await this.save(snapshot);
-    if (options.execute !== false) await this.executeWaves(snapshot, options.signal);
+    if (options.execute !== false) await this.executeSchedule(snapshot, options.signal);
     return snapshot;
   }
 
@@ -256,11 +268,11 @@ export class TaskBatchService {
     return diagnostics;
   }
 
-  private async executeWaves(snapshot: TaskBatchSnapshot, signal?: AbortSignal): Promise<void> {
-    await this.withActivityTick(snapshot, signal, () => this.runWaves(snapshot, signal));
+  private async executeSchedule(snapshot: TaskBatchSnapshot, signal?: AbortSignal): Promise<void> {
+    await this.withActivityTick(snapshot, signal, () => this.runSchedule(snapshot, signal));
   }
 
-  private async runWaves(snapshot: TaskBatchSnapshot, signal?: AbortSignal): Promise<void> {
+  private async runSchedule(snapshot: TaskBatchSnapshot, signal?: AbortSignal): Promise<void> {
     const runDirectory = path.join(this.storePath, snapshot.runId);
     const workspacePath = path.join(runDirectory, 'integration');
     const executor = new DockerTaskExecutor({ executor: this.subprocessExecutor });
@@ -293,31 +305,41 @@ export class TaskBatchService {
       snapshot.diagnostics.push({ code: 'host_changes_excluded', message: 'Uncommitted user changes are excluded; the private checkout starts from ' + snapshot.runBaseCommit + '.' });
       await this.save(snapshot);
 
-      // Un checkpoint peut être durable avant l'enregistrement de son intégration. Le réutiliser
-      // lors d'une reprise explicite évite de réexécuter l'agent.
-      for (const task of snapshot.tasks) {
-        if (task.status !== 'completed') continue;
-        await this.integrateTask(snapshot, task, workspacePath, executor);
-        if (snapshot.conflict) return;
-      }
-
-      while (!signal?.aborted) {
-        this.blockDescendants(snapshot);
-        const byId = new Map(snapshot.tasks.map(task => [task.id, task]));
-        const wave = snapshot.tasks.filter(task => task.status === 'pending'
-          && task.dependsOn.every(id => byId.get(id)!.status === 'succeeded')).slice(0, WAVE_SIZE);
-        if (wave.length === 0) break;
-        const taskBaseCommit = snapshot.integrationCommit!;
-        // Chaque tentative possède son clone et ses refs de checkpoint. Les nœuds frères ne partagent que leur base figée.
-        await Promise.all(wave.map(task => this.executeTask(snapshot, task, taskBaseCommit, workspacePath, executor, signal)));
-        // L'ordre des déclarations reste stable même si les agents externes terminent dans un ordre différent.
-        for (const task of wave) {
-          if (task.status !== 'completed') continue;
-          await this.integrateTask(snapshot, task, workspacePath, executor);
-          if (snapshot.conflict) return;
+      const active = new Map<string, Promise<void>>();
+      let integration: Promise<void> | undefined;
+      try {
+        while (true) {
+          this.blockDescendants(snapshot);
+          if (!signal?.aborted && !snapshot.conflict) {
+            const byId = new Map(snapshot.tasks.map(task => [task.id, task]));
+            for (const task of snapshot.tasks) {
+              if (active.size >= (snapshot.maxConcurrentTasks ?? this.maxConcurrentTasks)) break;
+              if (task.status !== 'pending' || !task.dependsOn.every(id => byId.get(id)!.status === 'succeeded')) continue;
+              // La base appartient à la tentative : les intégrations suivantes ne la modifient jamais.
+              const execution = this.executeTask(snapshot, task, snapshot.integrationCommit!, workspacePath, executor, signal)
+                .finally(() => { active.delete(task.id); });
+              active.set(task.id, execution);
+            }
+          }
+          if (!integration && !snapshot.conflict) {
+            // Les checkpoints disponibles dans ce tour sont départagés par l'ordre du manifeste.
+            // Cela réutilise aussi les résultats durables d'une reprise explicite.
+            const ready = snapshot.tasks.find(task => task.status === 'completed');
+            if (ready) {
+              integration = this.integrateTask(snapshot, ready, workspacePath, executor)
+                .then(async () => {
+                  await execFileAsync('git', ['-C', workspacePath, 'checkout', '--detach', snapshot.integrationCommit!]);
+                })
+                .finally(() => { integration = undefined; });
+            }
+          }
+          const events = [...active.values(), ...(integration ? [integration] : [])];
+          if (events.length === 0) break;
+          await Promise.race(events);
         }
-        await execFileAsync('git', ['-C', workspacePath, 'checkout', '--detach', snapshot.integrationCommit!]);
-        await this.save(snapshot);
+      } finally {
+        // Un conflit ferme l'admission et l'intégrateur, mais laisse les tentatives actives produire leurs preuves.
+        await Promise.allSettled([...active.values(), ...(integration ? [integration] : [])]);
       }
       await this.finishExecution(snapshot, signal);
     } catch (error) {
@@ -443,7 +465,7 @@ export class TaskBatchService {
     const runDirectory = path.join(this.storePath, snapshot.runId);
     const workspacePath = path.join(runDirectory, 'workspaces', attemptId);
     const resultDirectory = path.join(runDirectory, 'attempts', attemptId);
-    const attempt: BatchTaskAttempt = { attemptId, taskBaseCommit, status: 'running' };
+    const attempt: BatchTaskAttempt = { attemptId, taskBaseCommit, status: 'running', startedAt: new Date().toISOString() };
     task.attempts.push(attempt); task.status = 'running';
     await this.save(snapshot);
     try {
@@ -467,6 +489,7 @@ export class TaskBatchService {
       attempt.resourceState = attempt.resource ? 'retained' : undefined;
       attempt.diagnostics = [...attempt.diagnostics ?? [], { code: 'execution_failed', message: String(error) }];
     }
+    attempt.finishedAt = new Date().toISOString();
     await this.save(snapshot);
   }
 
@@ -607,7 +630,7 @@ export class TaskBatchService {
     snapshot.status = 'running';
     await this.save(snapshot);
 
-    await this.executeWaves(snapshot, options.signal);
+    await this.executeSchedule(snapshot, options.signal);
 
     return snapshot;
   }
@@ -622,8 +645,8 @@ export class TaskBatchService {
   async resumeTask(runId: string, taskId: string, options: { signal?: AbortSignal } = {}): Promise<TaskBatchSnapshot> {
     const snapshot = await this.status(runId);
     if (snapshot.conflict) throw new TaskBatchExecutionError(snapshot, 'Run has an unresolved conflict. Use tasks resolve-conflict first.');
-    if (snapshot.tasks.filter(task => task.id !== taskId && task.status === 'running').length >= WAVE_SIZE) {
-      throw new Error('Ten other tasks are still running. Wait for the current wave before resuming a task.');
+    if (snapshot.tasks.filter(task => task.id !== taskId && task.status === 'running').length >= (snapshot.maxConcurrentTasks ?? this.maxConcurrentTasks)) {
+      throw new Error('Task capacity is full. Wait for an active task before resuming a task.');
     }
 
     // Recherche la tâche concernée.
@@ -810,7 +833,7 @@ export class TaskBatchService {
       }
 
       await this.save(snapshot);
-      await this.executeWaves(snapshot, options.signal);
+      await this.executeSchedule(snapshot, options.signal);
 
     } catch (error) {
       snapshot.diagnostics.push({
@@ -835,7 +858,7 @@ export class TaskBatchService {
    * La résolution doit descendre de la base du conflit avant de rejoindre la branche d'intégration.
    * @param runId Identifiant durable du lot en conflit.
    * @param resolutionId Identifiant de la résolution à valider.
-   * @returns Le snapshot après validation et reprise des vagues en attente.
+   * @returns Le snapshot après validation et reprise des tâches en attente.
    */
   async validateResolution(
     runId: string,
@@ -917,8 +940,8 @@ export class TaskBatchService {
 
       await this.save(snapshot);
 
-      // Reprend l'exécution des vagues pour intégrer les résultats en attente.
-      await this.executeWaves(snapshot, options.signal);
+      // Reprend l'exécution des tâches pour intégrer les résultats en attente.
+      await this.executeSchedule(snapshot, options.signal);
 
       // Nettoie la sandbox de résolution après l'intégration réussie.
       try {

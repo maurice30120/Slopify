@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import test from 'node:test';
-import { TaskBatchService, type BatchTask, type TaskBatchServiceOptions } from '../src/taskBatch.js';
+import { TaskBatchService, type BatchTask, type TaskBatchServiceOptions, type TaskBatchSnapshot } from '../src/taskBatch.js';
 import { runTaskBatchCli } from '../src/taskBatchCli.js';
 import { activityJournalPath, readAllActivitySignals } from '../src/activityJournal.js';
 import { ACTIVITY_SIGNAL_EVENT_TYPE, parseActivitySignal, type ActivitySignal } from '../src/activitySignal.js';
@@ -37,6 +37,7 @@ async function demoFixture(
   t: { after(fn: () => Promise<void>): void },
   tasks: BatchTask[],
   agent: (id: string, sandbox: string, emit: (text: string) => void, cwd: string) => Promise<number>,
+  hooks: { onUpdate?: (snapshot: TaskBatchSnapshot) => void } = {},
 ): Promise<DemoFixture> {
   const { root, repo, skills, batchFile } = await prepareSlopifyFixture('slopify-t85-demo-', t, tasks);
   const sandboxes = new Map<string, string>();
@@ -50,6 +51,7 @@ async function demoFixture(
       writeError: message => { sink.errors.push(message); },
     }, root, (options: TaskBatchServiceOptions) => new TaskBatchService({
       ...options, subprocessExecutor: execute, activityTickIntervalMs: 60_000, activityTickClock: clock,
+      onUpdate: snapshot => { options.onUpdate?.(snapshot); hooks.onUpdate?.(snapshot); },
     }));
     return { sink, promise };
   };
@@ -304,13 +306,18 @@ test('tasks resume-task : la tentative isolée émet ses signaux sur stderr de b
 });
 
 test('tasks resolve-conflict : la résolution émet ses signaux sur stderr de bout en bout et les journalise', { timeout: 120000 }, async t => {
-  const cStarted = gate(); const cHold = gate();
-  t.after(() => { cHold.release(); });
+  const cStarted = gate(); const cHold = gate(); const conflictDetected = gate();
+  t.after(() => { cHold.release(); conflictDetected.release(); });
   const f = await demoFixture(t, [
-    task('task-a', 'pi'), task('task-b', 'codex'), task('task-c', 'pi', ['task-a']),
+    task('task-a', 'pi'), task('task-b', 'codex'), task('drained', 'pi'), task('task-c', 'pi', ['drained']),
   ], async (id, sandbox, emit) => {
     if (id === 'task-a' || id === 'task-b') {
       await writeFile(path.join(sandbox, 'base.txt'), `${id} modified content`);
+      return 0;
+    }
+    if (id === 'drained') {
+      await conflictDetected.promise;
+      await writeFile(path.join(sandbox, 'drained.txt'), 'retained during conflict');
       return 0;
     }
     if (id === 'task-c') {
@@ -322,7 +329,7 @@ test('tasks resolve-conflict : la résolution émet ses signaux sur stderr de bo
     }
     await writeFile(path.join(sandbox, 'review.txt'), 'review');
     return 0;
-  });
+  }, { onUpdate: snapshot => { if (snapshot.conflict) conflictDetected.release(); } });
   const location = ['--cwd', f.repo, '--store', f.storePath];
   const conflictedRun = f.cli(['run', f.batchFile, ...location, '--json']);
   assert.equal(await conflictedRun.promise, 2);
@@ -348,13 +355,18 @@ test('tasks resolve-conflict : la résolution émet ses signaux sur stderr de bo
 });
 
 test('tasks validate-resolution : la validation émet ses signaux sur stderr de bout en bout et les journalise', { timeout: 120000 }, async t => {
-  const cStarted = gate(); const cHold = gate();
-  t.after(() => { cHold.release(); });
+  const cStarted = gate(); const cHold = gate(); const conflictDetected = gate();
+  t.after(() => { cHold.release(); conflictDetected.release(); });
   const f = await demoFixture(t, [
-    task('task-a', 'pi'), task('task-b', 'codex'), task('task-c', 'pi', ['task-a']),
+    task('task-a', 'pi'), task('task-b', 'codex'), task('drained', 'pi'), task('task-c', 'pi', ['drained']),
   ], async (id, sandbox, emit) => {
     if (id === 'task-a' || id === 'task-b') {
       await writeFile(path.join(sandbox, 'base.txt'), `${id} modified content`);
+      return 0;
+    }
+    if (id === 'drained') {
+      await conflictDetected.promise;
+      await writeFile(path.join(sandbox, 'drained.txt'), 'retained during conflict');
       return 0;
     }
     if (id === 'task-c') {
@@ -366,7 +378,7 @@ test('tasks validate-resolution : la validation émet ses signaux sur stderr de 
     }
     await writeFile(path.join(sandbox, 'review.txt'), 'review');
     return 0;
-  });
+  }, { onUpdate: snapshot => { if (snapshot.conflict) conflictDetected.release(); } });
   const location = ['--cwd', f.repo, '--store', f.storePath];
   const conflictedRun = f.cli(['run', f.batchFile, ...location, '--json']);
   assert.equal(await conflictedRun.promise, 2);

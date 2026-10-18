@@ -407,11 +407,12 @@ test('AC5: after resolution pending results integrate without redoing succeeded 
   assert.ok(state.conflict);
 
   const runId = state.runId;
+  const rejectedId = state.conflict!.taskId;
 
-  // task-c should be pending (blocked by conflict)
+  // A descendant can already have started before the unrelated checkpoint conflicts.
   const taskC = state.tasks.find(t => t.id === 'task-c');
   assert.ok(taskC, 'Should find task-c');
-  assert.equal(taskC?.status, 'pending', 'task-c should be pending');
+  assert.ok(['pending', 'completed', 'succeeded'].includes(taskC!.status));
 
 
 
@@ -427,17 +428,16 @@ test('AC5: after resolution pending results integrate without redoing succeeded 
   // task-c should have been executed (either succeeded or failed)
   const taskCAfter = state.tasks.find(t => t.id === 'task-c');
   assert.ok(taskCAfter, 'Should find task-c after resolution');
-  // task-c might be succeeded, failed, or pending depending on the resolution
-  assert.ok(['succeeded', 'failed', 'pending'].includes(taskCAfter?.status ?? ''), `task-c should be in valid state after resolution, got: ${taskCAfter?.status}`);
+  assert.equal(taskCAfter!.status, rejectedId === 'task-a' ? 'blocked' : 'succeeded');
+  assert.ok(taskCAfter!.attempts.length <= 1, 'an admitted descendant is never executed twice');
 
-  // task-a should be succeeded (it was integrated before the conflict)
-  // task-b should be failed (its changes were rejected with use-current strategy)
+  // Completion events determine which sibling integrated first; use-current rejects the incoming one.
   const taskA = state.tasks.find(t => t.id === 'task-a');
   const taskB = state.tasks.find(t => t.id === 'task-b');
   assert.ok(taskA, 'Should find task-a');
   assert.ok(taskB, 'Should find task-b');
-  assert.equal(taskA?.status, 'succeeded', 'task-a should be succeeded');
-  assert.equal(taskB?.status, 'failed', 'task-b should be failed (rejected with use-current)');
+  assert.equal(taskA?.status, rejectedId === 'task-a' ? 'failed' : 'succeeded');
+  assert.equal(taskB?.status, rejectedId === 'task-b' ? 'failed' : 'succeeded');
 
   // Verify that task-a and task-b were not re-executed
   // They should have only 1 attempt each
