@@ -154,8 +154,8 @@ test('missing official skills stop before a sandbox is created and explain expli
   const external:SubprocessExecutor=request=>request.command==='sbx'&&request.args[0]==='skills'?Promise.resolve({exitCode:0,stdout:JSON.stringify({store:'/official',skills:[]}),stderr:''}):f.execute(request);
   const state=await new TaskBatchService({repositoryPath:f.repo,storePath:path.join(f.root,'runs'),subprocessExecutor:external}).run(f.batchFile);
   assert.equal(state.status,'failed');
-  assert.match(state.tasks[0].attempts[0].diagnostics![0].message,/sbx skills add mattpocock\/skills/);
-  assert.equal(state.tasks[0].attempts[0].resource,undefined);
+  assert.ok(state.diagnostics.some(d => /sbx skills add mattpocock\/skills/.test(d.message)));
+  assert.equal(state.tasks[0].attempts.length,0);
   assert.equal(f.calls.some(a=>a[0]==='create'&&!a.includes('--help')),false);
   assert.equal(f.removed,false);
 });

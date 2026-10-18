@@ -210,7 +210,9 @@ test('tasks CLI launches a frozen batch and reads its public status after source
   const run = spawnSync(process.execPath, [cli, 'tasks', 'run', f.batchFile, '--cwd', f.repo, '--store', f.storePath, '--json'], { encoding: 'utf8',env:{...process.env,PATH:bin+path.delimiter+process.env.PATH} });
   assert.equal(run.status, 2, run.stderr);
   const initial = JSON.parse(run.stdout);
-  assert.equal(initial.status, 'failed');
+  assert.equal(initial.status, 'interrupted');
+  assert.equal(initial.suspension.kind, 'docker_unavailable');
+  assert.ok(initial.tasks.every((item: { attempts: unknown[] }) => item.attempts.length === 0));
   await rm(f.batchFile);
   const status = spawnSync(process.execPath, [cli, 'tasks', 'status', initial.runId, '--cwd', f.repo, '--store', f.storePath, '--json'], { encoding: 'utf8' });
   assert.equal(status.status, 0, status.stderr);
