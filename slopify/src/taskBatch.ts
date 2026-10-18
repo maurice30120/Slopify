@@ -71,6 +71,8 @@ export interface BatchTaskAttempt extends Partial<TaskExecutionResult> {
   integratedCommit?: string;
   /** Dernière validation d'intégrité du checkpoint de cette tentative. */
   checkpointIntegrity?: CheckpointIntegrity;
+  /** Décision opérateur explicite d'écarter le checkpoint inutilisable de cette tentative (resume-task --discard-checkpoint) ; ses preuves restent conservées. */
+  checkpointDiscarded?: { discardedAt: string };
 }
 
 export interface BatchTaskState extends BatchTask {
@@ -629,6 +631,36 @@ export class TaskBatchService {
     return { status: 'valid', checkedAt, ...metadata };
   }
 
+  /**
+   * Séquence commune de garde des checkpoints durables : chaque checkpoint
+   * candidat est validé, puis la reprise échoue fermé dès qu'un seul est
+   * inutilisable (voir failClosedOnUnusableCheckpoints).
+   */
+  private async validateReusableCheckpoints(snapshot: TaskBatchSnapshot, candidates: Array<{ task: BatchTaskState; attempt: BatchTaskAttempt }>): Promise<void> {
+    const failures: Array<{ task: BatchTaskState; integrity: CheckpointIntegrity }> = [];
+    for (const { task, attempt } of candidates) {
+      attempt.checkpointIntegrity = await this.validateCheckpointIntegrity(snapshot, attempt);
+      if (attempt.checkpointIntegrity.status !== 'valid') failures.push({ task, integrity: attempt.checkpointIntegrity });
+    }
+    if (failures.length > 0) await this.failClosedOnUnusableCheckpoints(snapshot, failures);
+  }
+
+  /**
+   * Échec fermé commun des reprises (#110) : la tâche concernée repasse échouée,
+   * l'intégrité mesurée est persistée, puis l'erreur porte le snapshot durable —
+   * sans jamais relancer ni écraser les preuves. La seule issue est la décision
+   * explicite de l'opérateur : `tasks resume-task <task-id> --discard-checkpoint`.
+   */
+  private async failClosedOnUnusableCheckpoints(snapshot: TaskBatchSnapshot, failures: Array<{ task: BatchTaskState; integrity: CheckpointIntegrity }>): Promise<never> {
+    for (const { task } of failures) if (task.status !== 'failed') task.status = 'failed';
+    await this.save(snapshot);
+    const detail = failures.map(({ task, integrity }) =>
+      `Task "${task.id}" checkpoint is ${integrity.status}: ${integrity.reason}`).join(' ');
+    throw new TaskBatchExecutionError(snapshot, new Error(
+      `${detail} Nothing was rerun or overwritten; inspect the retained attempts, `
+      + `or explicitly discard the unusable checkpoint with slopify tasks resume-task <task-id> --discard-checkpoint.`));
+  }
+
   private async integrateTask(snapshot: TaskBatchSnapshot, task: BatchTaskState, workspacePath: string,
     executor?: DockerTaskExecutor): Promise<void> {
     const attempt = task.attempts.at(-1)!;
@@ -756,25 +788,15 @@ export class TaskBatchService {
     // Chaque checkpoint réutilisable est validé avant toute décision de reprise :
     // un checkpoint invalide ou incomplet n'est jamais traité comme réussi ni
     // écrasé ; sa tâche reste échouée, ses preuves et ses descendants bloqués
-    // sont conservés, et rien n'est relancé sans inspection explicite.
-    const unusable: string[] = [];
+    // sont conservés, et rien n'est relancé sans décision explicite de l'opérateur.
+    const reusable: Array<{ task: BatchTaskState; attempt: BatchTaskAttempt }> = [];
     for (const task of snapshot.tasks) {
       if (!['failed', 'interrupted', 'blocked', 'completed'].includes(task.status)) continue;
       const attempt = task.attempts.at(-1);
       if (!attempt?.checkpoint || attempt.exitCode !== 0) continue;
-      attempt.checkpointIntegrity = await this.validateCheckpointIntegrity(snapshot, attempt);
-      if (attempt.checkpointIntegrity.status === 'valid') continue;
-      task.status = 'failed';
-      unusable.push(task.id);
+      reusable.push({ task, attempt });
     }
-    if (unusable.length > 0) {
-      await this.save(snapshot);
-      const detail = unusable.map(id => {
-        const integrity = snapshot.tasks.find(task => task.id === id)!.attempts.at(-1)!.checkpointIntegrity!;
-        return `Task "${id}" checkpoint is ${integrity.status}: ${integrity.reason}`;
-      }).join(' ');
-      throw new TaskBatchExecutionError(snapshot, new Error(`${detail} Nothing was rerun or overwritten; inspect the retained attempts.`));
-    }
+    await this.validateReusableCheckpoints(snapshot, reusable);
     // Réinitialise les tâches échouées ou interrompues à pending pour autoriser leur réexécution.
     for (const task of snapshot.tasks) {
       if (task.status === 'failed' || task.status === 'interrupted' || task.status === 'blocked') {
@@ -800,7 +822,7 @@ export class TaskBatchService {
    * @param taskId Identifiant de la tâche à retenter.
    * @returns Le snapshot après exécution et intégration de la tentative.
    */
-  async resumeTask(runId: string, taskId: string, options: { signal?: AbortSignal } = {}): Promise<TaskBatchSnapshot> {
+  async resumeTask(runId: string, taskId: string, options: { signal?: AbortSignal; discardCheckpoint?: boolean } = {}): Promise<TaskBatchSnapshot> {
     const snapshot = await this.status(runId);
     if (snapshot.conflict) throw new TaskBatchExecutionError(snapshot, 'Run has an unresolved conflict. Use tasks resolve-conflict first.');
     if (snapshot.tasks.filter(task => task.id !== taskId && task.status === 'running').length >= (snapshot.maxConcurrentTasks ?? this.maxConcurrentTasks)) {
@@ -857,17 +879,24 @@ export class TaskBatchService {
     const durableAttempt = task.attempts.at(-1);
     if (durableAttempt?.status === 'succeeded' && durableAttempt.exitCode === 0 && durableAttempt.checkpoint) {
       durableAttempt.checkpointIntegrity = await this.validateCheckpointIntegrity(snapshot, durableAttempt);
-      if (durableAttempt.checkpointIntegrity.status !== 'valid') {
+      if (durableAttempt.checkpointIntegrity.status === 'valid') {
+        snapshot.status = 'running';
         await this.save(snapshot);
-        // L'état durable (tentative conservée, intégrité enregistrée) doit rester
-        // rapportable par la CLI : l'erreur porte le snapshot persisté.
-        throw new TaskBatchExecutionError(snapshot, new Error(`Task "${taskId}" checkpoint is ${durableAttempt.checkpointIntegrity.status}: ${durableAttempt.checkpointIntegrity.reason} Nothing was rerun or overwritten; inspect the retained attempt "${durableAttempt.attemptId}".`));
+        await this.integrateTask(snapshot, task, workspacePath);
+        await this.finishExecution(snapshot, options.signal);
+        return snapshot;
       }
-      snapshot.status = 'running';
+      if (!options.discardCheckpoint) {
+        // L'état durable (tentative conservée, intégrité enregistrée) doit rester
+        // rapportable par la CLI : l'échec fermé commun porte le snapshot persisté.
+        await this.failClosedOnUnusableCheckpoints(snapshot, [{ task, integrity: durableAttempt.checkpointIntegrity }]);
+      }
+      // Échappatoire opérateur explicite (#110 / #103 US7) : le checkpoint
+      // inutilisable n'est jamais écarté par un repli silencieux, seulement par
+      // cette décision persistée. Ses preuves restent conservées telles quelles
+      // et une nouvelle tentative identifiable est créée par le chemin pending.
+      durableAttempt.checkpointDiscarded = { discardedAt: new Date().toISOString() };
       await this.save(snapshot);
-      await this.integrateTask(snapshot, task, workspacePath);
-      await this.finishExecution(snapshot, options.signal);
-      return snapshot;
     }
 
     // Repasse la tâche à pending pour qu'executeTask crée une nouvelle tentative.

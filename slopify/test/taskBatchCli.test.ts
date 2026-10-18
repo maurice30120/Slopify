@@ -440,3 +440,24 @@ test('the tasks help documents the worker pool visibility of status output', asy
   assert.match(sink.messages[0], /worker pool occupancy/);
   assert.match(sink.messages[0], /replacement/);
 });
+
+test('resume-task forwards the explicit checkpoint discard decision and the help documents it', async () => {
+  const seen: Array<{ taskId: string; discardCheckpoint: boolean | undefined }> = [];
+  const state = snapshot('failed');
+  const sink = output();
+  const code = await runTaskBatchCli(['resume-task', 'run', 'work', '--discard-checkpoint', '--json'], sink, '/repo', () => ({
+    ...service(state),
+    resumeTask: async (_runId: string, taskId: string, options: { discardCheckpoint?: boolean }) => {
+      seen.push({ taskId, discardCheckpoint: options.discardCheckpoint });
+      return state;
+    },
+  }));
+  assert.equal(code, 2);
+  assert.deepEqual(seen, [{ taskId: 'work', discardCheckpoint: true }]);
+  const help = output();
+  assert.equal(await runTaskBatchCli(['--help'], help, '/repo', () => { throw new Error('Service must not be constructed'); }), 0);
+  assert.ok(help.messages[0].includes('slopify tasks resume-task <run-id> <task-id> [--discard-checkpoint] [--cwd <repository>] [--store <directory>] [--json]'));
+  assert.match(help.messages[0], /--discard-checkpoint/);
+  assert.match(help.messages[0], /fail-closed/);
+  assert.match(help.messages[0], /preuves|evidence/);
+});
