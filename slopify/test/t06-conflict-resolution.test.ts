@@ -22,7 +22,9 @@ const task = (id: string, agent: 'pi' | 'codex', dependsOn: string[] = []): Batc
 async function fixture(t: { after(fn: () => Promise<void>): void }, tasks: BatchTask[],
   agent: (id: string, sandbox: string) => Promise<number>) {
   const root = await mkdtemp(path.join(tmpdir(), 'slopify-t06-'));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  // Git peut encore écrire dans le clone d'intégration (maintenance automatique)
+  // pendant le nettoyage ; fs.rm réessaie ENOTEMPTY avec maxRetries.
+  t.after(() => rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
   const repo = path.join(root, 'host');
   execFileSync('git', ['init', '-q', repo]);
   await configureRecreatedWorkers(repo);

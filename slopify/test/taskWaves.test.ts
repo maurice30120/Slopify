@@ -609,6 +609,67 @@ test('an integration conflict drains an active sibling and preserves its uninteg
   assert.equal((await service.status(state.runId)).tasks[2].attempts.length, 1);
 });
 
+test('targeted resume after a failure uses a healthy worker distinct from the retained sandbox and keeps prior evidence', async t => {
+  let attempts = 0;
+  const f = await fixture(t, [task('fault', 'codex')], async (id, sandbox) => {
+    attempts += 1;
+    if (attempts === 1) return 1;
+    await writeFile(path.join(sandbox, 'retry.txt'), 'retried work');
+    return 0;
+  });
+  const initial = await f.service.run(f.batchFile);
+  assert.equal(initial.status, 'failed');
+  const failed = initial.tasks[0].attempts[0];
+  const previousReport = await readFile(failed.reportPath!, 'utf8');
+  const previousLog = await readFile(failed.stderrPath!, 'utf8');
+  assert.equal(failed.resourceState, 'retained');
+  // Aucune relance automatique : une seule tentative tant que l'opérateur n'agit pas.
+  assert.equal(initial.tasks[0].attempts.length, 1);
+  const resumed = await f.service.resumeTask(initial.runId, 'fault');
+  const retry = resumed.tasks[0].attempts[1];
+  assert.equal(resumed.tasks[0].status, 'succeeded', 'success only comes from the new valid execution');
+  assert.equal(resumed.tasks[0].attempts.length, 2);
+  assert.notEqual(retry.attemptId, failed.attemptId);
+  assert.notEqual(retry.resource?.workerId, failed.resource?.workerId, 'the retry runs on a healthy worker, not the retained one');
+  assert.notEqual(retry.resource?.sandboxName, failed.resource?.sandboxName);
+  assert.ok(f.sandboxes.has(failed.resource!.sandboxName), 'the failed sandbox stays available for inspection');
+  assert.ok(!f.removed.includes(failed.resource!.sandboxName));
+  assert.equal(await readFile(failed.reportPath!, 'utf8'), previousReport, 'previous attempt evidence is preserved');
+  assert.equal(await readFile(failed.stderrPath!, 'utf8'), previousLog);
+  assert.notEqual(retry.reportPath, failed.reportPath);
+  assert.equal(git(f.repo, 'show', `${resumed.integrationBranch}:retry.txt`), 'retried work');
+});
+
+test('descendants of a failed task stay blocked until an explicit resume integrates the prerequisite', async t => {
+  let fail = true;
+  const f = await fixture(t, [task('parent', 'codex'), task('child', 'codex', ['parent'])], async (id, sandbox) => {
+    if (id === 'parent' && fail) return 1;
+    await writeFile(path.join(sandbox, `${id}.txt`), `${id} work`);
+    return 0;
+  });
+  const initial = await f.service.run(f.batchFile);
+  assert.equal(initial.status, 'failed');
+  assert.equal(initial.tasks[0].attempts.length, 1, 'no automatic retry of the failed task');
+  const child = initial.tasks.find(item => item.id === 'child')!;
+  assert.equal(child.status, 'blocked');
+  assert.deepEqual(child.blockedBy, ['parent']);
+  assert.equal(child.attempts.length, 0);
+  fail = false;
+  const targeted = await f.service.resumeTask(initial.runId, 'parent');
+  assert.equal(targeted.tasks[0].status, 'succeeded');
+  assert.equal(targeted.tasks.find(item => item.id === 'child')!.status, 'blocked',
+    'the descendant stays blocked until its prerequisite is integrated');
+  assert.ok(!f.launched.includes('child'));
+  const resumed = await f.service.resume(initial.runId);
+  assert.equal(resumed.status, 'succeeded');
+  const relaunchedChild = resumed.tasks.find(item => item.id === 'child')!;
+  assert.equal(relaunchedChild.status, 'succeeded');
+  assert.equal(relaunchedChild.attempts.length, 1);
+  assert.equal(relaunchedChild.attempts[0].taskBaseCommit, targeted.integrationCommit,
+    'the descendant starts from the integrated prerequisite, not the run base');
+  assert.equal(git(f.repo, 'show', `${resumed.integrationBranch}:child.txt`), 'child work');
+});
+
 test('a batch records the worker lifecycle with occupancy, retention and replacements', { timeout: 15000 }, async t => {
   const firstRunning = gate(); const releaseFirst = gate();
   t.after(() => { releaseFirst.release(); return Promise.resolve(); });

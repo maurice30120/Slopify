@@ -52,6 +52,15 @@ export interface TaskBatchRunOptions {
   signal?: AbortSignal;
 }
 
+/** Résultat durable de la validation d'un checkpoint avant toute réutilisation. */
+export interface CheckpointIntegrity {
+  status: 'valid' | 'invalid' | 'incomplete';
+  checkedAt: string;
+  reason?: string;
+  commit?: string;
+  bundlePath?: string;
+}
+
 export interface BatchTaskAttempt extends Partial<TaskExecutionResult> {
   attemptId: string;
   taskBaseCommit: string;
@@ -60,6 +69,8 @@ export interface BatchTaskAttempt extends Partial<TaskExecutionResult> {
   finishedAt?: string;
   resourceState?: 'active' | 'retained' | 'removed';
   integratedCommit?: string;
+  /** Dernière validation d'intégrité du checkpoint de cette tentative. */
+  checkpointIntegrity?: CheckpointIntegrity;
 }
 
 export interface BatchTaskState extends BatchTask {
@@ -566,8 +577,61 @@ export class TaskBatchService {
     await this.save(snapshot);
   }
 
+  /**
+   * Valide l'intégrité d'un checkpoint avant réutilisation, dans le clone
+   * d'intégration où les prérequis éventuels existent : métadonnées, bundle
+   * verify, list-heads (le commit annoncé doit être exposé par le bundle),
+   * unbundle (lecture du pack obligatoire même si l'objet est déjà connu),
+   * type du commit puis ascendance de la base de la tentative. Un checkpoint
+   * invalide ou incomplet n'est jamais traité comme réussi ni écrasé.
+   */
+  private async validateCheckpointIntegrity(snapshot: TaskBatchSnapshot, attempt: BatchTaskAttempt): Promise<CheckpointIntegrity> {
+    const checkedAt = new Date().toISOString();
+    const checkpoint = attempt.checkpoint;
+    const metadata: Pick<CheckpointIntegrity, 'commit' | 'bundlePath'> = {};
+    if (checkpoint?.commit && /^[0-9a-f]{40,64}$/.test(checkpoint.commit)) metadata.commit = checkpoint.commit;
+    if (checkpoint?.bundlePath && !checkpoint.bundlePath.startsWith('-')) metadata.bundlePath = checkpoint.bundlePath;
+    if (!metadata.commit) {
+      return { status: 'invalid', checkedAt, reason: 'Checkpoint commit is missing or is not a full Git object ID.' };
+    }
+    if (!metadata.bundlePath) {
+      return { status: 'incomplete', checkedAt, ...metadata, reason: 'Checkpoint bundle path is missing or unsafe.' };
+    }
+    let bundleStat;
+    try { bundleStat = await stat(metadata.bundlePath); }
+    catch (error) {
+      return { status: 'incomplete', checkedAt, ...metadata, reason: `Checkpoint bundle is not readable: ${error instanceof Error ? error.message : String(error)}` };
+    }
+    if (!bundleStat.isFile() || bundleStat.size === 0) {
+      return { status: 'incomplete', checkedAt, ...metadata, reason: 'Checkpoint bundle is not a non-empty regular file.' };
+    }
+    const commit = metadata.commit;
+    const bundlePath = metadata.bundlePath;
+    const workspacePath = path.join(this.storePath, snapshot.runId, 'integration');
+    const git = async (args: string[]): Promise<{ ok: true; stdout: string } | { ok: false; error: Error & { code?: number } }> => {
+      try { return { ok: true, stdout: (await execFileAsync('git', ['-C', workspacePath, ...args])).stdout }; }
+      catch (error) { return { ok: false, error: error as Error & { code?: number } }; }
+    };
+    const invalid = (reason: string, error?: { message?: string }): CheckpointIntegrity =>
+      ({ status: 'invalid', checkedAt, ...metadata, reason: error ? `${reason}: ${error.message}` : reason });
+    const verify = await git(['bundle', 'verify', bundlePath]);
+    if (!verify.ok) return invalid('git bundle verify failed', verify.error);
+    const heads = await git(['bundle', 'list-heads', bundlePath]);
+    if (!heads.ok) return invalid('git bundle list-heads failed', heads.error);
+    const advertised = heads.stdout.split('\n').some(line => line.slice(0, 40).toLowerCase() === commit.toLowerCase());
+    if (!advertised) return invalid('Checkpoint commit is not advertised by the bundle.');
+    const unbundle = await git(['bundle', 'unbundle', bundlePath]);
+    if (!unbundle.ok) return invalid('git bundle unbundle failed; the pack is unreadable', unbundle.error);
+    const type = await git(['cat-file', '-t', commit]);
+    if (!type.ok) return invalid('Checkpoint object is not readable', type.error);
+    if (type.stdout.trim() !== 'commit') return invalid('Checkpoint object is not a commit.');
+    const ancestry = await git(['merge-base', '--is-ancestor', attempt.taskBaseCommit, commit]);
+    if (!ancestry.ok) return invalid('Checkpoint does not descend from the task base commit.', ancestry.error);
+    return { status: 'valid', checkedAt, ...metadata };
+  }
+
   private async integrateTask(snapshot: TaskBatchSnapshot, task: BatchTaskState, workspacePath: string,
-    executor: DockerTaskExecutor): Promise<void> {
+    executor?: DockerTaskExecutor): Promise<void> {
     const attempt = task.attempts.at(-1)!;
     const checkpoint = attempt.checkpoint!;
     this.activityIntegrationTaskId = task.id;
@@ -608,7 +672,7 @@ export class TaskBatchService {
       await this.publish(snapshot, workspacePath);
       task.status = 'succeeded';
       await this.save(snapshot);
-      if (attempt.resource) {
+      if (attempt.resource && executor) {
         try { await executor.cleanup(attempt.resource); attempt.resourceState = 'removed'; }
         catch (error) { attempt.diagnostics = [...attempt.diagnostics ?? [], { code: 'cleanup_failed', message: String(error) }]; }
         await this.save(snapshot);
@@ -690,6 +754,28 @@ export class TaskBatchService {
       throw new Error('Frozen context files (spec or batch) not found. Cannot resume without frozen context.');
     }
 
+    // Chaque checkpoint réutilisable est validé avant toute décision de reprise :
+    // un checkpoint invalide ou incomplet n'est jamais traité comme réussi ni
+    // écrasé ; sa tâche reste échouée, ses preuves et ses descendants bloqués
+    // sont conservés, et rien n'est relancé sans inspection explicite.
+    const unusable: string[] = [];
+    for (const task of snapshot.tasks) {
+      if (!['failed', 'interrupted', 'blocked', 'completed'].includes(task.status)) continue;
+      const attempt = task.attempts.at(-1);
+      if (!attempt?.checkpoint || attempt.exitCode !== 0) continue;
+      attempt.checkpointIntegrity = await this.validateCheckpointIntegrity(snapshot, attempt);
+      if (attempt.checkpointIntegrity.status === 'valid') continue;
+      task.status = 'failed';
+      unusable.push(task.id);
+    }
+    if (unusable.length > 0) {
+      await this.save(snapshot);
+      const detail = unusable.map(id => {
+        const integrity = snapshot.tasks.find(task => task.id === id)!.attempts.at(-1)!.checkpointIntegrity!;
+        return `Task "${id}" checkpoint is ${integrity.status}: ${integrity.reason}`;
+      }).join(' ');
+      throw new TaskBatchExecutionError(snapshot, new Error(`${detail} Nothing was rerun or overwritten; inspect the retained attempts.`));
+    }
     // Réinitialise les tâches échouées ou interrompues à pending pour autoriser leur réexécution.
     for (const task of snapshot.tasks) {
       if (task.status === 'failed' || task.status === 'interrupted' || task.status === 'blocked') {
@@ -765,6 +851,24 @@ export class TaskBatchService {
     const blockedBy = task.dependsOn.filter(id => byId.get(id)?.status !== 'succeeded');
     if (blockedBy.length > 0) {
       throw new Error(`Task "${taskId}" cannot be resumed: dependencies ${blockedBy.join(', ')} are not succeeded.`);
+    }
+
+    // Une tentative durable réussie n'est jamais rejouée : son checkpoint est
+    // validé puis intégré tel quel, sans lancer d'agent ni créer de tentative.
+    const durableAttempt = task.attempts.at(-1);
+    if (durableAttempt?.status === 'succeeded' && durableAttempt.exitCode === 0 && durableAttempt.checkpoint) {
+      durableAttempt.checkpointIntegrity = await this.validateCheckpointIntegrity(snapshot, durableAttempt);
+      if (durableAttempt.checkpointIntegrity.status !== 'valid') {
+        await this.save(snapshot);
+        // L'état durable (tentative conservée, intégrité enregistrée) doit rester
+        // rapportable par la CLI : l'erreur porte le snapshot persisté.
+        throw new TaskBatchExecutionError(snapshot, new Error(`Task "${taskId}" checkpoint is ${durableAttempt.checkpointIntegrity.status}: ${durableAttempt.checkpointIntegrity.reason} Nothing was rerun or overwritten; inspect the retained attempt "${durableAttempt.attemptId}".`));
+      }
+      snapshot.status = 'running';
+      await this.save(snapshot);
+      await this.integrateTask(snapshot, task, workspacePath);
+      await this.finishExecution(snapshot, options.signal);
+      return snapshot;
     }
 
     // Repasse la tâche à pending pour qu'executeTask crée une nouvelle tentative.
