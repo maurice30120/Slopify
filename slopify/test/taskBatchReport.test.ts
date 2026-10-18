@@ -211,15 +211,11 @@ test('reliability summarises worker occupancy and points to the detailed worker 
     { workerId: 'gen/2', sandboxName: 'slopify-worker-2', agent: 'codex', status: 'assigned', taskId: 'active', attemptId: 'att-active', replacements: 1 },
   ];
   const report = taskBatchReport(snapshot);
-  assert.deepEqual(report.reliability.workers, {
-    occupancy: { available: 1, assigned: 1, cleaning: 0, verifying: 0, retained: 0, retired: 0 },
-    replacements: 1,
-    detail: 'see the Workers section of this report',
-  });
+  assert.deepEqual(report.reliability.workers, { detail: 'see the Workers section of this report' },
+    'the reliability summary carries a pointer, never a copy of the occupancy data');
   assert.ok(formatTaskBatchReport(snapshot).includes(
-    'Worker occupancy: 1 available, 1 assigned, 0 cleaning, 0 verifying, 0 retained, 0 retired; '
-    + 'detailed lifecycle: see the Workers section of this report'),
-    'the occupancy summary references the detailed lifecycle');
+    'Worker occupancy: see the Workers section of this report'),
+    'the occupancy summary references the detailed lifecycle without duplicating it');
   const legacy = state([task('done', 'succeeded')]);
   assert.equal(taskBatchReport(legacy).reliability.workers, undefined);
   assert.ok(!formatTaskBatchReport(legacy).includes('Worker occupancy:'));
