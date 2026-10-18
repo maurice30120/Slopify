@@ -1,6 +1,7 @@
 import * as path from 'node:path';
 import type { TaskBatchSnapshot, TaskBatchDiagnostic, BatchTaskState } from './taskBatch.js';
 import type { ActivitySignal } from './activitySignal.js';
+import type { TaskWorkerPoolConfig, TaskWorkerState, TaskWorkerStatus } from './taskWorkerPool.js';
 
 export interface BatchIssue extends TaskBatchDiagnostic {
   severity: 'info' | 'warning' | 'error';
@@ -12,6 +13,63 @@ export interface BatchAction {
   description: string;
   command: string[];
   precondition?: string;
+}
+
+/** Curated lifecycle view of one worker, keyed by durable worker identity. */
+export interface BatchWorkerView {
+  workerId: string;
+  agent: string;
+  status: TaskWorkerStatus;
+  taskId?: string;
+  attemptId?: string;
+  replacements: number;
+}
+
+/** Occupancy and turnover of the frozen worker pool, without exposing pool internals. */
+export interface BatchWorkerPoolView {
+  size: number;
+  lifecycle: TaskWorkerPoolConfig['lifecycle'];
+  occupancy: Record<TaskWorkerStatus, number>;
+  replacements: number;
+  workers: BatchWorkerView[];
+}
+
+/** A worker replaced during the batch counts every worker taken out of service before its creation. */
+function workerPoolView(snapshot: TaskBatchSnapshot): BatchWorkerPoolView | undefined {
+  const config = snapshot.workerPoolConfig;
+  if (!config) return undefined;
+  const workers = snapshot.workers ?? [];
+  const occupancy: Record<TaskWorkerStatus, number> = { available: 0, assigned: 0, cleaning: 0, verifying: 0, retained: 0, retired: 0 };
+  for (const worker of workers) occupancy[worker.status] += 1;
+  return {
+    size: config.size,
+    lifecycle: config.lifecycle,
+    occupancy,
+    replacements: Math.max(0, ...workers.map(worker => worker.replacements)),
+    workers: workers.map(({ workerId, agent, status, taskId, attemptId, replacements }) =>
+      ({ workerId, agent, status, ...(taskId ? { taskId } : {}), ...(attemptId ? { attemptId } : {}), replacements })),
+  };
+}
+
+/** One readable line per worker; ready, assigned and reset-checking workers stay distinct. */
+function describeWorker(worker: BatchWorkerView): string {
+  const link = worker.taskId ? `task ${worker.taskId}${worker.attemptId ? ` (attempt ${worker.attemptId})` : ''}` : '';
+  switch (worker.status) {
+    case 'assigned': return link ? `assigned to ${link}` : 'assigned';
+    case 'cleaning': return link ? `cleaning ${link}` : 'cleaning';
+    case 'verifying': return link ? `verifying reset of ${link}` : 'verifying';
+    case 'retained': return link ? `retained for inspection, ${link}` : 'retained for inspection';
+    case 'retired': return 'retired';
+    default: return 'available';
+  }
+}
+
+function formatWorkerPool(pool: BatchWorkerPoolView): string[] {
+  const occupancy = Object.entries(pool.occupancy).map(([status, count]) => `${count} ${status}`).join(', ');
+  return [
+    `Workers: ${pool.size} configured, lifecycle ${pool.lifecycle}; occupancy: ${occupancy}; ${pool.replacements} replacement${pool.replacements === 1 ? '' : 's'} during this run`,
+    ...pool.workers.map(worker => `  ${worker.workerId} (${worker.agent}): ${describeWorker(worker)}`),
+  ];
 }
 
 export interface TaskBatchWatchUpdate {
@@ -112,7 +170,9 @@ export function taskBatchReport(snapshot: TaskBatchSnapshot, storePath?: string,
       description: `Inspect sandbox for task ${task.id}`, command: attempt.resource.inspectCommand,
     });
   }
-  return { ...snapshot, progress, issues, nextActions, ...(activitySignals?.length ? { activitySignals } : {}) };
+  const workerPool = workerPoolView(snapshot);
+  return { ...snapshot, progress, issues, nextActions,
+    ...(workerPool ? { workerPool } : {}), ...(activitySignals?.length ? { activitySignals } : {}) };
 }
 
 /** Compact state transition for `tasks watch`; updatedAt is deliberately excluded from the fingerprint. */
@@ -222,6 +282,7 @@ export function formatTaskBatchReport(snapshot: TaskBatchSnapshot, storePath?: s
     `Integration commit: ${snapshot.integrationCommit ?? snapshot.runBaseCommit}`,
     ...formatActivitySignalWindow(activitySignals ?? []),
     ...snapshot.tasks.flatMap(taskDetails),
+    ...(report.workerPool ? formatWorkerPool(report.workerPool) : []),
     ...progress.waitingOn.map(task => `${task.taskId} waits for: ${task.dependencyIds.join(', ')}`),
     ...report.issues.map(issue => `[${issue.severity}${issue.historical ? ', historical' : ''}] ${issue.code}${issue.taskId ? ` (${issue.taskId})` : ''}: ${issue.message}`),
     ...report.nextActions.flatMap(action => [`Next: ${action.description}`, `  ${displayCommand(action.command)}`,

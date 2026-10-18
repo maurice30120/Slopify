@@ -105,3 +105,49 @@ test('a recovered failure remains identifiable as history instead of a current r
   assert.match(formatTaskBatchReport(snapshot), /error, historical/);
   assert.ok(!report.nextActions.some(action => action.command.includes('resume')));
 });
+
+test('the report exposes worker pool occupancy, replacement count and worker-to-attempt links', () => {
+  const snapshot = state([task('active', 'running')]);
+  snapshot.workerPoolConfig = { size: 6, mounts: [], lifecycle: 'reuse' };
+  snapshot.workers = [
+    { workerId: 'gen/1', sandboxName: 'slopify-worker-1', agent: 'codex', status: 'available', replacements: 0 },
+    { workerId: 'gen/2', sandboxName: 'slopify-worker-2', agent: 'pi', status: 'assigned', taskId: 'active', attemptId: 'att-active', replacements: 1 },
+    { workerId: 'gen/3', sandboxName: 'slopify-worker-3', agent: 'codex', status: 'cleaning', taskId: 'reset', attemptId: 'att-reset', replacements: 1 },
+    { workerId: 'gen/4', sandboxName: 'slopify-worker-4', agent: 'codex', status: 'verifying', taskId: 'reset', attemptId: 'att-reset', replacements: 1 },
+    { workerId: 'gen/5', sandboxName: 'slopify-worker-5', agent: 'pi', status: 'retained', taskId: 'failed', attemptId: 'att-failed', replacements: 2 },
+    { workerId: 'gen/6', sandboxName: 'slopify-worker-6', agent: 'codex', status: 'retired', replacements: 2 },
+  ];
+  const original = structuredClone(snapshot);
+  const report = taskBatchReport(snapshot);
+  assert.deepEqual(report.workerPool, {
+    size: 6, lifecycle: 'reuse',
+    occupancy: { available: 1, assigned: 1, cleaning: 1, verifying: 1, retained: 1, retired: 1 },
+    replacements: 2,
+    workers: [
+      { workerId: 'gen/1', agent: 'codex', status: 'available', replacements: 0 },
+      { workerId: 'gen/2', agent: 'pi', status: 'assigned', taskId: 'active', attemptId: 'att-active', replacements: 1 },
+      { workerId: 'gen/3', agent: 'codex', status: 'cleaning', taskId: 'reset', attemptId: 'att-reset', replacements: 1 },
+      { workerId: 'gen/4', agent: 'codex', status: 'verifying', taskId: 'reset', attemptId: 'att-reset', replacements: 1 },
+      { workerId: 'gen/5', agent: 'pi', status: 'retained', taskId: 'failed', attemptId: 'att-failed', replacements: 2 },
+      { workerId: 'gen/6', agent: 'codex', status: 'retired', replacements: 2 },
+    ],
+  });
+  const text = formatTaskBatchReport(snapshot);
+  for (const part of [
+    'Workers: 6 configured, lifecycle reuse; occupancy: 1 available, 1 assigned, 1 cleaning, 1 verifying, 1 retained, 1 retired; 2 replacements during this run',
+    'gen/1 (codex): available',
+    'gen/2 (pi): assigned to task active (attempt att-active)',
+    'gen/3 (codex): cleaning task reset (attempt att-reset)',
+    'gen/4 (codex): verifying reset of task reset (attempt att-reset)',
+    'gen/5 (pi): retained for inspection, task failed (attempt att-failed)',
+    'gen/6 (codex): retired',
+  ]) assert.ok(text.includes(part), part);
+  assert.deepEqual(snapshot, original, 'reporting never changes durable state');
+});
+
+test('legacy runs without a frozen worker pool stay readable without worker lines', () => {
+  const snapshot = state([task('done', 'succeeded')]);
+  const report = taskBatchReport(snapshot);
+  assert.equal(report.workerPool, undefined);
+  assert.ok(!formatTaskBatchReport(snapshot).includes('Workers:'));
+});
