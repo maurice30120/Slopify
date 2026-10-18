@@ -100,6 +100,35 @@ function batch(tasks: Array<{ id: string; dependsOn: string[] }> = [{ id: 'imple
   };
 }
 
+test('the final review inherits the batch defaults, not the first task overrides', async (t) => {
+  const f = await fixture(t);
+  await writeFile(path.join(f.root, 'spec.md'), '# Spec');
+  const input = batch([{ id: 'first', dependsOn: [] }, { id: 'second', dependsOn: ['first'] }]);
+  input.defaults = { agent: 'codex', model: 'batch-default-model', effort: 'high' };
+  input.tasks[0].model = 'first-task-model';
+  input.tasks[0].effort = 'low';
+  await writeFile(f.batchFile, JSON.stringify(input));
+  const snapshot = await f.service.run(f.batchFile, { execute: false });
+  const finalReview = snapshot.tasks.at(-1)!;
+  assert.equal(finalReview.source, 'final-review');
+  assert.equal(finalReview.agent, 'codex');
+  assert.equal(finalReview.model, 'batch-default-model', 'the final review applies the batch defaults');
+  assert.equal(finalReview.effort, 'high', 'the final review applies the batch defaults');
+  assert.equal(snapshot.tasks[0].model, 'first-task-model', 'task overrides keep precedence over defaults');
+  const fallback = await (async () => {
+    const other = batch([{ id: 'only', dependsOn: [] }]);
+    other.tasks[0].agent = 'pi';
+    other.tasks[0].model = undefined as unknown as string;
+    await writeFile(f.batchFile, JSON.stringify(other));
+    const service = new TaskBatchService({ repositoryPath: f.repo, storePath: path.join(f.root, 'other-runs') });
+    return service.run(f.batchFile, { execute: false });
+  })();
+  const fallbackReview = fallback.tasks.at(-1)!;
+  assert.equal(fallbackReview.agent, 'pi', 'without defaults the final review falls back to the manifest frontier');
+  assert.equal(fallbackReview.model, undefined);
+  assert.equal(fallbackReview.effort, undefined);
+});
+
 test('a dependency cycle is refused with the participating task IDs', async (t) => {
   const f = await fixture(t);
   await writeFile(f.batchFile, JSON.stringify(batch([

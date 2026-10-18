@@ -1195,11 +1195,16 @@ function finalReviewTask(batch: TaskBatch, runBaseCommit: string): BatchTaskStat
   const used = new Set(batch.tasks.map((task) => task.id));
   let id = 'final-review';
   for (let suffix = 2; used.has(id); suffix += 1) id = `final-review-${suffix}`;
+  // La revue finale suit la même logique de surcharge que les autres tâches :
+  // defaults du lot d'abord, repli sur la frontière du manifeste sans defaults.
+  const agent = batch.defaults?.agent ?? batch.tasks[0].agent;
+  const model = agent === 'codex' ? batch.defaults?.model : undefined;
+  const effort = agent === 'codex' ? batch.defaults?.effort : undefined;
   return {
     id,
-    agent: batch.tasks[0].agent,
-    ...(batch.tasks[0].model ? { model: batch.tasks[0].model } : {}),
-    ...(batch.tasks[0].effort ? { effort: batch.tasks[0].effort } : {}),
+    agent,
+    ...(model ? { model } : {}),
+    ...(effort ? { effort } : {}),
     source: 'final-review',
     dependsOn: batch.tasks.map((task) => task.id),
     prompt:
