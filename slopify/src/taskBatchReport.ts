@@ -72,6 +72,8 @@ export interface BatchReliabilityView {
     invalid: Array<{ taskId: string; attemptId: string; reason?: string }>;
     incomplete: Array<{ taskId: string; attemptId: string; reason?: string }>;
   };
+  /** Consolidated inspection view (#109): the sandbox, worktree and checkpoint kept of every retained attempt. */
+  retainedForInspection?: Array<{ taskId: string; attemptId: string; sandboxName?: string; worktreePath?: string; checkpointBundlePath?: string }>;
   /** Why the batch stopped, kept separate from task-local failures (#109). */
   stop: {
     kind: 'none' | 'integration_conflict' | 'docker_outage' | 'operator_interruption' | 'task_failures';
@@ -118,6 +120,7 @@ function reliabilityView(snapshot: TaskBatchSnapshot, counts: BatchTaskCounts,
     ...(workerPool ? { workers: { occupancy: { ...workerPool.occupancy }, replacements: workerPool.replacements,
       detail: 'see the Workers section of this report' as const } } : {}),
     checkpoints: checkpointIntegrityView(snapshot),
+    ...(retainedForInspectionView(snapshot) ? { retainedForInspection: retainedForInspectionView(snapshot) } : {}),
     stop: stopView(snapshot, failedTaskIds),
     ...(wallClockMs(snapshot) !== undefined ? { wallClockMs: wallClockMs(snapshot) } : {}),
     manifest: manifestView(snapshot, counts),
@@ -133,6 +136,37 @@ function manifestView(snapshot: TaskBatchSnapshot, counts: BatchTaskCounts): Bat
   const counted = Object.values(counts).reduce((total, count) => total + count, 0);
   return { batchTasks: snapshot.tasks.length - finalReview, finalReview, total: snapshot.tasks.length, counted };
 }
+}
+
+/** Consolidated inspection view (#109): one entry per attempt whose resources were kept for diagnosis. */
+function retainedForInspectionView(snapshot: TaskBatchSnapshot): BatchReliabilityView['retainedForInspection'] {
+  const retained: NonNullable<BatchReliabilityView['retainedForInspection']> = [];
+  for (const task of snapshot.tasks) {
+    for (const attempt of task.attempts) {
+      if (attempt.resourceState !== 'retained') continue;
+      retained.push({
+        taskId: task.id, attemptId: attempt.attemptId,
+        ...(attempt.resource?.sandboxName ? { sandboxName: attempt.resource.sandboxName } : {}),
+        ...(attempt.resource?.worktreePath ? { worktreePath: attempt.resource.worktreePath } : {}),
+        ...(attempt.checkpoint?.bundlePath ? { checkpointBundlePath: attempt.checkpoint.bundlePath } : {}),
+      });
+    }
+  }
+  return retained.length > 0 ? retained : undefined;
+}
+
+/** Retained-for-inspection lines; hidden while nothing is kept for diagnosis. */
+function formatRetainedForInspection(reliability: BatchReliabilityView): string[] {
+  const retained = reliability.retainedForInspection;
+  if (!retained?.length) return [];
+  const details = retained.map(entry => {
+    const parts = [entry.sandboxName ? `sandbox ${entry.sandboxName}` : undefined,
+      entry.worktreePath ? `worktree ${entry.worktreePath}` : undefined,
+      entry.checkpointBundlePath ? `checkpoint bundle ${entry.checkpointBundlePath}` : undefined]
+      .filter(Boolean).join('; ');
+    return `  ${entry.taskId} (${entry.attemptId}): ${parts}`;
+  });
+  return [`Retained for inspection: ${retained.length} attempt${retained.length === 1 ? '' : 's'} kept for diagnosis`, ...details];
 }
 
 /** Wall clock from durable timestamps; undefined when legacy state lacks usable dates. */
@@ -442,6 +476,7 @@ export function formatTaskBatchReport(snapshot: TaskBatchSnapshot, storePath?: s
     formatReliability(report.reliability),
     ...formatWorkerOccupancy(report.reliability),
     ...formatCheckpointIntegrity(report.reliability),
+    ...formatRetainedForInspection(report.reliability),
     `Stop reason: ${report.reliability.stop.message}`,
     ...(report.reliability.wallClockMs !== undefined
       ? [`Wall clock: ${report.reliability.wallClockMs} ms (diagnostic only; no time threshold can fail the batch)`] : []),

@@ -326,3 +326,32 @@ test('manifest accounting keeps every manifest task and the final review counted
   assert.equal(uncounted.reliability.manifest.counted, uncounted.reliability.manifest.total,
     'every task status is counted even without a final review');
 });
+
+test('the report consolidates every attempt retained for inspection', () => {
+  const failed = task('broken', 'failed');
+  failed.attempts.push({ attemptId: 'att-broken', taskBaseCommit: 'base', status: 'failed', exitCode: 2, resourceState: 'retained',
+    resource: { sandboxName: 'sbx-broken', workerId: 'gen/2', worktreePath: '/store/run/workspaces/att-broken',
+      inspectCommand: ['sbx', 'exec', 'sbx-broken', 'sh'] },
+    checkpoint: { commit: 'cb', bundlePath: '/store/run/attempts/att-broken/checkpoint.bundle' } });
+  const stopped = task('stopped', 'interrupted');
+  stopped.attempts.push({ attemptId: 'att-stopped', taskBaseCommit: 'base', status: 'interrupted', resourceState: 'retained',
+    resource: { sandboxName: 'sbx-stopped', inspectCommand: ['sbx', 'exec', 'sbx-stopped', 'sh'] } });
+  const removed = task('done', 'succeeded');
+  removed.attempts.push({ attemptId: 'att-done', taskBaseCommit: 'base', status: 'succeeded', resourceState: 'removed',
+    resource: { sandboxName: 'sbx-done', inspectCommand: ['sbx', 'exec', 'sbx-done', 'sh'] } });
+  const snapshot = state([failed, stopped, removed]);
+  const report = taskBatchReport(snapshot);
+  assert.deepEqual(report.reliability.retainedForInspection, [
+    { taskId: 'broken', attemptId: 'att-broken', sandboxName: 'sbx-broken',
+      worktreePath: '/store/run/workspaces/att-broken',
+      checkpointBundlePath: '/store/run/attempts/att-broken/checkpoint.bundle' },
+    { taskId: 'stopped', attemptId: 'att-stopped', sandboxName: 'sbx-stopped' },
+  ]);
+  const text = formatTaskBatchReport(snapshot);
+  assert.ok(text.includes('Retained for inspection: 2 attempts kept for diagnosis'), 'the consolidated section header is rendered');
+  assert.ok(text.includes('  broken (att-broken): sandbox sbx-broken; worktree /store/run/workspaces/att-broken; checkpoint bundle /store/run/attempts/att-broken/checkpoint.bundle'));
+  assert.ok(text.includes('  stopped (att-stopped): sandbox sbx-stopped'));
+  const untouched = state([task('fresh', 'pending')]);
+  assert.equal(taskBatchReport(untouched).reliability.retainedForInspection, undefined);
+  assert.ok(!formatTaskBatchReport(untouched).includes('Retained for inspection'));
+});
