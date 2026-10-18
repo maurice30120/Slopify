@@ -224,3 +224,34 @@ test('reliability summarises worker occupancy and points to the detailed worker 
   assert.equal(taskBatchReport(legacy).reliability.workers, undefined);
   assert.ok(!formatTaskBatchReport(legacy).includes('Worker occupancy:'));
 });
+
+
+test('reliability exposes checkpoint integrity checks and keeps valid, invalid and incomplete distinct', () => {
+  const valid = task('valid', 'succeeded');
+  valid.attempts.push({ attemptId: 'att-valid', taskBaseCommit: 'base', status: 'succeeded', exitCode: 0,
+    checkpointIntegrity: { status: 'valid', checkedAt: '2026-10-18T09:00:00Z', commit: 'c1', bundlePath: '/store/b1' } });
+  const invalid = task('invalid', 'failed');
+  invalid.attempts.push({ attemptId: 'att-invalid', taskBaseCommit: 'base', status: 'succeeded', exitCode: 0,
+    checkpointIntegrity: { status: 'invalid', checkedAt: '2026-10-18T09:00:01Z', reason: 'Checkpoint commit is not advertised by the bundle.', commit: 'c2', bundlePath: '/store/b2' } });
+  const incomplete = task('incomplete', 'failed');
+  incomplete.attempts.push({ attemptId: 'att-incomplete', taskBaseCommit: 'base', status: 'succeeded', exitCode: 0,
+    checkpointIntegrity: { status: 'incomplete', checkedAt: '2026-10-18T09:00:02Z', reason: 'Checkpoint bundle is not readable: gone', commit: 'c3', bundlePath: '/store/b3' } });
+  const unchecked = task('unchecked', 'failed');
+  unchecked.attempts.push({ attemptId: 'att-unchecked', taskBaseCommit: 'base', status: 'failed', exitCode: 1 });
+  const snapshot = state([valid, invalid, incomplete, unchecked]);
+  const report = taskBatchReport(snapshot);
+  assert.deepEqual(report.reliability.checkpoints, {
+    valid: [{ taskId: 'valid', attemptId: 'att-valid' }],
+    invalid: [{ taskId: 'invalid', attemptId: 'att-invalid', reason: 'Checkpoint commit is not advertised by the bundle.' }],
+    incomplete: [{ taskId: 'incomplete', attemptId: 'att-incomplete', reason: 'Checkpoint bundle is not readable: gone' }],
+  });
+  const text = formatTaskBatchReport(snapshot);
+  for (const part of [
+    'Checkpoints: 1 valid (valid), 1 invalid (invalid: Checkpoint commit is not advertised by the bundle.), '
+      + '1 incomplete (incomplete: Checkpoint bundle is not readable: gone)',
+    'att-unchecked',
+  ]) assert.ok(text.includes(part), part);
+  const untouched = state([task('fresh', 'pending')]);
+  assert.deepEqual(taskBatchReport(untouched).reliability.checkpoints, { valid: [], invalid: [], incomplete: [] });
+  assert.ok(!formatTaskBatchReport(untouched).includes('Checkpoints:'));
+});

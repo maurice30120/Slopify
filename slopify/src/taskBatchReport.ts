@@ -43,6 +43,12 @@ export interface BatchReliabilityView {
   attempts: { total: number; retries: number; retriedTaskIds: string[] };
   /** Occupancy snapshot of the frozen pool, deferring to the detailed worker lifecycle. */
   workers?: { occupancy: Record<TaskWorkerStatus, number>; replacements: number; detail: 'see the Workers section of this report' };
+  /** Durable checkpoint integrity checks, split into valid, invalid and incomplete (#110). */
+  checkpoints: {
+    valid: Array<{ taskId: string; attemptId: string }>;
+    invalid: Array<{ taskId: string; attemptId: string; reason?: string }>;
+    incomplete: Array<{ taskId: string; attemptId: string; reason?: string }>;
+  };
 }
 
 /** A worker replaced during the batch counts every worker taken out of service before its creation. */
@@ -77,7 +83,33 @@ function reliabilityView(snapshot: TaskBatchSnapshot, workerPool?: BatchWorkerPo
       - snapshot.tasks.filter(task => task.attempts.length > 0).length), retriedTaskIds },
     ...(workerPool ? { workers: { occupancy: { ...workerPool.occupancy }, replacements: workerPool.replacements,
       detail: 'see the Workers section of this report' as const } } : {}),
+    checkpoints: checkpointIntegrityView(snapshot),
   };
+}
+
+/** Every recorded integrity check of every attempt, keyed by its durable outcome. */
+function checkpointIntegrityView(snapshot: TaskBatchSnapshot): BatchReliabilityView['checkpoints'] {
+  const view: BatchReliabilityView['checkpoints'] = { valid: [], invalid: [], incomplete: [] };
+  for (const task of snapshot.tasks) {
+    for (const attempt of task.attempts) {
+      const integrity = attempt.checkpointIntegrity;
+      if (!integrity) continue;
+      const entry = { taskId: task.id, attemptId: attempt.attemptId, ...(integrity.reason ? { reason: integrity.reason } : {}) };
+      if (integrity.status === 'valid') view.valid.push({ taskId: task.id, attemptId: attempt.attemptId });
+      else view[integrity.status].push(entry);
+    }
+  }
+  return view;
+}
+
+/** Checkpoint integrity line; hidden while no resume has run any integrity check. */
+function formatCheckpointIntegrity(reliability: BatchReliabilityView): string[] {
+  const { valid, invalid, incomplete } = reliability.checkpoints;
+  if (valid.length + invalid.length + incomplete.length === 0) return [];
+  const detail = (entries: Array<{ taskId: string; reason?: string }>) =>
+    entries.map(entry => entry.reason ? `${entry.taskId}: ${entry.reason}` : entry.taskId).join(', ');
+  return [`Checkpoints: ${valid.length} valid (${detail(valid)}), `
+    + `${invalid.length} invalid (${detail(invalid)}), ${incomplete.length} incomplete (${detail(incomplete)})`];
 }
 
 /** One rendered reliability line; plural forms stay readable for 0, 1 and many. */
@@ -330,6 +362,7 @@ export function formatTaskBatchReport(snapshot: TaskBatchSnapshot, storePath?: s
     `Last durable update: ${snapshot.updatedAt}`,
     formatReliability(report.reliability),
     ...formatWorkerOccupancy(report.reliability),
+    ...formatCheckpointIntegrity(report.reliability),
     `Integration branch: ${snapshot.integrationBranch}`,
     `Integration commit: ${snapshot.integrationCommit ?? snapshot.runBaseCommit}`,
     ...formatActivitySignalWindow(activitySignals ?? []),
