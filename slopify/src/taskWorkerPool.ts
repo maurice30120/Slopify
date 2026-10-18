@@ -1,4 +1,5 @@
 import { appendFileSync } from 'node:fs';
+import { mkdir, chmod } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
 import * as path from 'node:path';
 import type { SubprocessExecutor, SubprocessRequest, SubprocessResult } from '@acp-client/sandbox';
@@ -117,7 +118,9 @@ export class TaskWorkerPool {
   private async createTask(lease:WorkerLease,args:string[]) {
     const {worker,request}=lease;const target=args[args.indexOf(request.workspacePath)-1];
     if(!worker.created){
-      const extra=args.slice(args.indexOf(request.workspacePath)+2);worker.sharedMounts=[...new Set([...this.config.mounts,...extra])];if(worker.sharedMounts.some(mount=>!mount.endsWith(':ro')))throw new Error('Worker shared mounts must be readonly.');await this.control(worker,request,['create','--name',worker.sandboxName,'--skills','readonly',target,...this.config.mounts,...extra]);worker.created=true;
+      const extra=args.slice(args.indexOf(request.workspacePath)+2);worker.sharedMounts=[...new Set([...this.config.mounts,...extra])];if(worker.sharedMounts.some(mount=>!mount.endsWith(':ro')))throw new Error('Worker shared mounts must be readonly.');const bootstrap=path.join(request.resultDirectory,'worker-bootstrap');
+      if(worker.sharedMounts.length){await mkdir(bootstrap,{recursive:true,mode:0o777});await chmod(bootstrap,0o777);}
+      await this.control(worker,request,['create','--name',worker.sandboxName,'--skills','readonly',target,...(worker.sharedMounts.length?[bootstrap,...worker.sharedMounts]:[])]);worker.created=true;
       await this.control(worker,request,['run','-d','--name',worker.sandboxName]);
       await this.execInWorker(lease,['docker','info']);
       // Host networking is needed by the injected credential proxy. Refuse an exposed Docker TCP daemon.

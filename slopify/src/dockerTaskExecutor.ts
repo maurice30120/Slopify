@@ -136,7 +136,7 @@ export class DockerTaskExecutor implements TaskExecutor {
     } catch(error) {
       if(lease){
         await this.pool!.retain(lease);
-        if(!resource && lease.worker.created){resource=this.pool!.resource(lease,{sandboxName:lease.worker.sandboxName,inspectCommand:['sbx','exec',lease.worker.sandboxName,'sh'],diagnosticsDirectory:request.resultDirectory});await request.onResource?.(resource);}
+        if(!resource && lease.worker.created){resource={workerId:lease.worker.workerId,sandboxName:lease.worker.sandboxName,worktreePath:lease.request.workspacePath,inspectCommand:['sbx','exec',lease.worker.sandboxName,'sh'],diagnosticsDirectory:request.resultDirectory};await request.onResource?.(resource);}
       }
       const message=error instanceof Error?error.message:String(error);
       diagnostics.push({code:request.signal?.aborted?'interrupted':'execution_failed',message});

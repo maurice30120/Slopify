@@ -173,3 +173,21 @@ test('worker evidence records the actual commands that ran through the worker',a
   assert.ok(evidence.some(record=>record.type==='start'&&record.args?.includes('implement-test')),'the actual agent command is audited');
   assert.ok(evidence.some(record=>record.type==='start'&&record.command==='git'),'host git commands routed through the worker are audited');
 });
+
+test('a pooled worker create receives a bootstrap directory before its readonly shared mounts',async t=>{
+  const sharedRoot=await mkdtemp(path.join(tmpdir(),'slopify-shared-'));const shared=path.join(sharedRoot,'official');await mkdir(shared);await writeFile(path.join(shared,'skill.md'),'skill');t.after(()=>rm(sharedRoot,{recursive:true,force:true}));
+  const f=await fixture(t,{pool:{size:1,mounts:[shared+':ro'],lifecycle:'reuse'}});
+  const done=await f.executor.execute(await f.request('first'));assert.equal(done.exitCode,0,JSON.stringify(done.diagnostics));
+  const bootstrap=path.join(f.root,'outputs','first','worker-bootstrap');
+  const create=f.calls.find(args=>args[0]==='create'&&args.includes(f.workers[0]))!;
+  const index=create.indexOf(bootstrap);
+  assert.ok(index>0,'the bootstrap directory is passed to sbx create');
+  assert.equal(create[index+1],shared+':ro','the shared mount follows the bootstrap directory');
+  assert.equal((await stat(bootstrap)).mode&0o777,0o777,'the bootstrap directory is writable by the worker');
+});
+
+test('a worker bootstrap failure retains a usable outer inspection command',async t=>{
+  const f=await fixture(t);f.failHealth=true;const result=await f.executor.execute(await f.request('first'));assert.equal(result.exitCode,1);assert.ok(result.resource);
+  assert.match(result.resource.sandboxName,/^slopify-worker-/);
+  assert.deepEqual(result.resource.inspectCommand,['sbx','exec',result.resource.sandboxName,'sh']);
+});
