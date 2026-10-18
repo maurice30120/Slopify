@@ -93,7 +93,9 @@ function anonymize(text: string): string {
     .replace(/\b[0-9a-f]{40,64}\b/g, '<commit>')
     .replace(/slopify-[0-9a-f]{24}\b/g, 'slopify-<sandbox>')
     .replace(/Wall clock: \d+ ms/g, 'Wall clock: <wall clock> ms')
-    .replace(/"wallClockMs":\d+/g, '"wallClockMs":<ms>');
+    .replace(/"wallClockMs":\d+/g, '"wallClockMs":<ms>')
+    .replace(/Active execution: \d+ ms/g, 'Active execution: <active execution> ms')
+    .replace(/"activeExecutionMs":\d+/g, '"activeExecutionMs":<ms>');
 }
 
 test('tasks run en mode texte : phrases préfixées sur stderr de bout en bout et stdout/progress inchangés au byte près', { timeout: 120000 }, async t => {
