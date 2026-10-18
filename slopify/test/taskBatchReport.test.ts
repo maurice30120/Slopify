@@ -177,3 +177,27 @@ test('task details name the worker and the per-attempt worktree behind each sand
   assert.equal(text.split('Worker: gen/1').length - 1, 2, 'both attempts of the reused worker name it');
   assert.ok(!text.includes('Worktree: undefined'));
 });
+
+
+test('the reliability summary counts task failures and the attempt and retry history', () => {
+  const flaky = task('flaky', 'succeeded');
+  flaky.attempts.push({ attemptId: 'att-1', taskBaseCommit: 'base', status: 'failed', exitCode: 1 },
+    { attemptId: 'att-2', taskBaseCommit: 'base', status: 'succeeded', exitCode: 0 });
+  const broken = task('broken', 'failed');
+  broken.attempts.push({ attemptId: 'att-3', taskBaseCommit: 'base', status: 'failed', exitCode: 2 });
+  const stopped = task('stopped', 'interrupted');
+  stopped.attempts.push({ attemptId: 'att-4', taskBaseCommit: 'base', status: 'interrupted' });
+  const fresh = task('fresh', 'pending');
+  const snapshot = state([flaky, broken, stopped, fresh]);
+  const original = structuredClone(snapshot);
+  const report = taskBatchReport(snapshot);
+  assert.deepEqual(report.reliability, {
+    failedTaskIds: ['broken'],
+    interruptedTaskIds: ['stopped'],
+    attempts: { total: 4, retries: 1, retriedTaskIds: ['flaky'] },
+  });
+  const text = formatTaskBatchReport(snapshot);
+  assert.ok(text.includes('Reliability: 1 failed task (broken); 1 interrupted (stopped); 4 attempts, 1 retry (flaky)'),
+    'the reliability line is rendered');
+  assert.deepEqual(snapshot, original, 'reporting never changes durable state');
+});

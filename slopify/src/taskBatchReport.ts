@@ -34,6 +34,15 @@ export interface BatchWorkerPoolView {
   workers: BatchWorkerView[];
 }
 
+/** Reliability summary of the batch (#111): failures, retries, stops and diagnostics. */
+export interface BatchReliabilityView {
+  /** Tasks whose current durable status is failed. */
+  failedTaskIds: string[];
+  /** Tasks stopped without a task decision, by an interruption. */
+  interruptedTaskIds: string[];
+  attempts: { total: number; retries: number; retriedTaskIds: string[] };
+}
+
 /** A worker replaced during the batch counts every worker taken out of service before its creation. */
 function workerPoolView(snapshot: TaskBatchSnapshot): BatchWorkerPoolView | undefined {
   const config = snapshot.workerPoolConfig;
@@ -49,6 +58,30 @@ function workerPoolView(snapshot: TaskBatchSnapshot): BatchWorkerPoolView | unde
     workers: workers.map(({ workerId, agent, status, taskId, attemptId, replacements }) =>
       ({ workerId, agent, status, ...(taskId ? { taskId } : {}), ...(attemptId ? { attemptId } : {}), replacements })),
   };
+}
+
+/** Failures and attempt history of the batch, straight from durable state. */
+function reliabilityView(snapshot: TaskBatchSnapshot): BatchReliabilityView {
+  const failedTaskIds = snapshot.tasks.filter(task => task.status === 'failed').map(task => task.id);
+  const interruptedTaskIds = snapshot.tasks.filter(task => task.status === 'interrupted').map(task => task.id);
+  const attempts = snapshot.tasks.flatMap(task => task.attempts);
+  const retriedTaskIds = snapshot.tasks.filter(task => task.attempts.length > 1).map(task => task.id);
+  return {
+    failedTaskIds, interruptedTaskIds,
+    attempts: { total: attempts.length, retries: Math.max(0, attempts.length
+      - snapshot.tasks.filter(task => task.attempts.length > 0).length), retriedTaskIds },
+  };
+}
+
+/** One rendered reliability line; plural forms stay readable for 0, 1 and many. */
+function formatReliability(reliability: BatchReliabilityView): string {
+  const failed = `${reliability.failedTaskIds.length} failed task${reliability.failedTaskIds.length === 1 ? '' : 's'}`;
+  const interrupted = `${reliability.interruptedTaskIds.length} interrupted`;
+  const retries = `${reliability.attempts.retries} retr${reliability.attempts.retries === 1 ? 'y' : 'ies'}`;
+  const retried = reliability.attempts.retriedTaskIds.length ? ` (${reliability.attempts.retriedTaskIds.join(', ')})` : '';
+  return `Reliability: ${failed}${reliability.failedTaskIds.length ? ` (${reliability.failedTaskIds.join(', ')})` : ''}; `
+    + `${interrupted}${reliability.interruptedTaskIds.length ? ` (${reliability.interruptedTaskIds.join(', ')})` : ''}; `
+    + `${reliability.attempts.total} attempt${reliability.attempts.total === 1 ? '' : 's'}, ${retries}${retried}`;
 }
 
 /** One readable line per worker; ready, assigned and reset-checking workers stay distinct. */
@@ -171,7 +204,7 @@ export function taskBatchReport(snapshot: TaskBatchSnapshot, storePath?: string,
     });
   }
   const workerPool = workerPoolView(snapshot);
-  return { ...snapshot, progress, issues, nextActions,
+  return { ...snapshot, progress, issues, nextActions, reliability: reliabilityView(snapshot),
     ...(workerPool ? { workerPool } : {}), ...(activitySignals?.length ? { activitySignals } : {}) };
 }
 
@@ -281,6 +314,7 @@ export function formatTaskBatchReport(snapshot: TaskBatchSnapshot, storePath?: s
     `Run ${snapshot.runId}: ${snapshot.status} (${progress.phase})`,
     `Progress: ${progress.counts.succeeded}/${progress.total} integrated; ${progress.counts.running} running; ${progress.counts.completed} awaiting integration; ${progress.counts.pending} pending; ${progress.counts.failed} failed; ${progress.counts.interrupted} interrupted; ${progress.counts.blocked} blocked; ${progress.counts.conflicted} conflicted`,
     `Last durable update: ${snapshot.updatedAt}`,
+    formatReliability(report.reliability),
     `Integration branch: ${snapshot.integrationBranch}`,
     `Integration commit: ${snapshot.integrationCommit ?? snapshot.runBaseCommit}`,
     ...formatActivitySignalWindow(activitySignals ?? []),
