@@ -21,7 +21,7 @@ const task = (id: string, agent: 'pi' | 'codex', dependsOn: string[] = []): Batc
 
 /** Substitute sbx alone: all clones, commits, checkpoints and published branches are real Git. */
 async function fixture(t: { after(fn: () => Promise<void>): void }, tasks: BatchTask[],
-  agent: (id: string, sandbox: string) => Promise<number>, options: Pick<TaskBatchServiceOptions, 'maxConcurrentTasks'> = {}) {
+  agent: (id: string, sandbox: string, signal?: AbortSignal) => Promise<number>, options: Pick<TaskBatchServiceOptions, 'maxConcurrentTasks'> = {}) {
   const root = await mkdtemp(path.join(tmpdir(), 'slopify-waves-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const repo = path.join(root, 'host');
@@ -89,7 +89,7 @@ async function fixture(t: { after(fn: () => Promise<void>): void }, tasks: Batch
       if ((a.includes('codex') && a.includes('--json')) || (a.includes('pi') && a.includes('--print'))) {
         const id = String(a.at(-1)).includes('code-review au diff complet') ? 'final-review' : a.at(-1)!;
         launched.push(id);
-        const exitCode = await agent(id, sandbox);
+        const exitCode = await agent(id, sandbox, request.signal);
         const stdout = a.includes('pi')
           ? JSON.stringify({ type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: `${id} report\nSLOPIFY_RESULT={"status":"succeeded"}` }] } })
           : JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: `${id} report\nSLOPIFY_RESULT={"status":"succeeded"}` } });
@@ -443,4 +443,165 @@ test('checkpoints ready together integrate serially in JSON order without rerunn
   assert.equal(git(f.repo, 'rev-parse', `${second.attempts[0].integratedCommit}^1`), first.attempts[0].integratedCommit);
   assert.equal(git(f.repo, 'show', `${resumed.integrationBranch}:first.txt`), 'first');
   assert.equal(git(f.repo, 'show', `${resumed.integrationBranch}:second.txt`), 'second');
+});
+
+
+test('a common Docker outage stops admission and active sandboxes while preserving their evidence', { timeout: 15000 }, async t => {
+  const bothStarted = gate();
+  let active = 0;
+  let canceled = false;
+  const f = await fixture(t, [task('slow', 'codex'), task('fault', 'codex'), task('later', 'codex')], async (id, sandbox, signal) => {
+    active++;
+    if (active === 2) bothStarted.release();
+    await bothStarted.promise;
+    await writeFile(path.join(sandbox, `${id}.txt`), 'partial evidence');
+    if (id === 'fault') return 0;
+    await new Promise<void>(resolve => {
+      if (signal?.aborted) { canceled = true; resolve(); }
+      else signal?.addEventListener('abort', () => { canceled = true; resolve(); }, { once: true });
+    });
+    return 1;
+  }, { maxConcurrentTasks: 2 });
+  let failedControl = false;
+  const stopped: string[] = [];
+  const service = new TaskBatchService({ repositoryPath: f.repo, storePath: path.join(f.root, 'runs'), maxConcurrentTasks: 2,
+    subprocessExecutor: async request => {
+      if (request.command === 'sbx' && request.args[0] === 'cp') {
+        failedControl = true;
+        return { exitCode: 1, stdout: '', stderr: 'Docker control unavailable' };
+      }
+      if (request.command === 'sbx' && request.args[0] === 'ls' && failedControl) {
+        assert.equal(request.signal?.aborted, false, 'health check is independent of task cancellation');
+        return { exitCode: 1, stdout: '', stderr: 'Docker daemon unavailable' };
+      }
+      if (request.command === 'sbx' && request.args[0] === 'stop') {
+        stopped.push(request.args.at(-1)!);
+        return { exitCode: 0, stdout: '', stderr: '' };
+      }
+      return f.execute(request);
+    } });
+  const state = await service.run(f.batchFile);
+  assert.equal(state.status, 'interrupted');
+  const suspension = JSON.parse(JSON.stringify(state)).suspension;
+  assert.equal(suspension.kind, 'docker_unavailable');
+  assert.match(suspension.healthCheck.stderr, /daemon unavailable/);
+  assert.equal(canceled, true);
+  assert.deepEqual(f.launched.sort(), ['fault', 'slow']);
+  assert.equal(state.tasks[2].attempts.length, 0);
+  assert.ok(stopped.includes(state.tasks[0].attempts[0].resource!.sandboxName));
+  assert.equal(state.tasks[0].attempts[0].resourceState, 'retained');
+  assert.equal(f.removed.length, 0);
+  assert.equal(await readFile(path.join(f.sandboxes.get(state.tasks[0].attempts[0].resource!.sandboxName)!, 'slow.txt'), 'utf8'), 'partial evidence');
+  assert.match(await readFile(state.tasks[1].attempts[0].stderrPath!, 'utf8'), /Docker control unavailable/);
+  assert.equal(git(f.repo, 'status', '--porcelain=v1'), f.dirty);
+});
+
+
+test('a failed shared startup preflight admits no task and persists one run suspension', async t => {
+  const f = await fixture(t, [task('first', 'codex'), task('second', 'codex')], async () => 0);
+  let versions = 0;
+  const service = new TaskBatchService({ repositoryPath: f.repo, storePath: path.join(f.root, 'runs'),
+    subprocessExecutor: async request => {
+      if (request.command === 'sbx' && request.args[0] === 'version') {
+        versions++;
+        return { exitCode: 1, stdout: '', stderr: 'Docker startup unavailable' };
+      }
+      if (request.command === 'sbx' && request.args[0] === 'ls') return { exitCode: 1, stdout: '', stderr: 'Docker unavailable' };
+      return f.execute(request);
+    } });
+  const state = await service.run(f.batchFile);
+  assert.equal(state.status, 'interrupted');
+  assert.equal(versions, 1);
+  assert.ok(state.tasks.every(item => item.attempts.length === 0), 'preflight failure is a run failure, no task has been admitted');
+  assert.equal((await service.status(state.runId)).suspension?.kind, 'docker_unavailable');
+});
+
+
+test('a healthy Docker probe keeps a control error local and independent work continues without retry', async t => {
+  const f = await fixture(t, [task('fault', 'codex'), task('independent', 'codex')], async (id, sandbox) => {
+    await writeFile(path.join(sandbox, `${id}.txt`), id);
+    return 0;
+  }, { maxConcurrentTasks: 1 });
+  let failed = false;
+  let probes = 0;
+  let versions = 0;
+  const service = new TaskBatchService({ repositoryPath: f.repo, storePath: path.join(f.root, 'runs'), maxConcurrentTasks: 1,
+    subprocessExecutor: async request => {
+      if (request.command === 'sbx' && request.args[0] === 'version') versions++;
+      if (request.command === 'sbx' && request.args[0] === 'cp' && !failed) {
+        failed = true;
+        return { exitCode: 1, stdout: '', stderr: 'local evidence copy failure' };
+      }
+      if (request.command === 'sbx' && request.args[0] === 'ls' && failed) probes++;
+      return f.execute(request);
+    } });
+  const state = await service.run(f.batchFile);
+  assert.equal(state.status, 'failed');
+  assert.equal(state.suspension, undefined);
+  assert.equal(probes, 1);
+  assert.equal(versions, 1, 'one Docker preflight serves all task attempts');
+  assert.deepEqual(f.launched, ['fault', 'independent']);
+  assert.equal(state.tasks[0].attempts.length, 1);
+  assert.equal(state.tasks[0].attempts[0].resourceState, 'retained');
+  assert.equal(state.tasks[1].status, 'succeeded');
+});
+
+
+test('targeted resume has its own shared preflight and retains both attempts on common outage', async t => {
+  const f = await fixture(t, [task('retry', 'codex')], async () => 1);
+  const initial = await f.service.run(f.batchFile);
+  const previous = initial.tasks[0].attempts[0];
+  const previousLog = await readFile(previous.stderrPath!, 'utf8');
+  let failedControl = false;
+  let versions = 0;
+  const service = new TaskBatchService({ repositoryPath: f.repo, storePath: path.join(f.root, 'runs'),
+    subprocessExecutor: async request => {
+      if (request.command === 'sbx' && request.args[0] === 'version') versions++;
+      if (request.command === 'sbx' && request.args[0] === 'cp') { failedControl = true; throw new Error('Docker transport lost'); }
+      if (request.command === 'sbx' && request.args[0] === 'ls' && failedControl) throw new Error('Docker health transport lost');
+      if (request.command === 'sbx' && request.args[0] === 'stop') return { exitCode: 1, stdout: '', stderr: 'daemon still down' };
+      return f.execute(request);
+    } });
+  const resumed = await service.resumeTask(initial.runId, 'retry');
+  assert.equal(resumed.status, 'interrupted');
+  assert.equal(versions, 1);
+  assert.equal(resumed.suspension?.kind, 'docker_unavailable');
+  assert.match(resumed.suspension?.healthCheck.error ?? '', /health transport lost/);
+  assert.match(resumed.suspension?.stops[0].error ?? '', /daemon still down/);
+  assert.equal(resumed.tasks[0].attempts.length, 2);
+  assert.notEqual(resumed.tasks[0].attempts[1].resource?.sandboxName, previous.resource?.sandboxName);
+  assert.equal(resumed.tasks[0].attempts[0].resourceState, 'retained');
+  assert.equal(await readFile(previous.stderrPath!, 'utf8'), previousLog);
+});
+
+
+test('an integration conflict drains an active sibling and preserves its unintegrated checkpoint until explicit resolution', { timeout: 15000 }, async t => {
+  const firstIntegrated = gate(); const conflictSeen = gate(); const finishSlow = gate();
+  t.after(async () => { firstIntegrated.release(); finishSlow.release(); });
+  const f = await fixture(t, [task('first', 'codex'), task('second', 'codex'), task('slow', 'codex'), task('later', 'codex', ['second'])], async (id, sandbox) => {
+    if (id === 'second') await firstIntegrated.promise;
+    if (id === 'slow') await finishSlow.promise;
+    await writeFile(path.join(sandbox, id === 'slow' ? 'slow.txt' : 'base.txt'), id);
+    return 0;
+  }, { maxConcurrentTasks: 3 });
+  const service = new TaskBatchService({ repositoryPath: f.repo, storePath: path.join(f.root, 'runs'), maxConcurrentTasks: 3,
+    subprocessExecutor: f.execute, onUpdate: state => {
+      if (state.tasks[0].status === 'succeeded') firstIntegrated.release();
+      if (state.conflict) conflictSeen.release();
+    } });
+  const running = service.run(f.batchFile);
+  assert.equal(await Promise.race([conflictSeen.promise.then(() => 'conflict'), running.then(() => 'returned')]), 'conflict');
+  finishSlow.release();
+  const state = await running;
+  assert.equal(state.status, 'conflicted');
+  assert.equal(state.suspension, undefined);
+  assert.equal(state.tasks[2].status, 'completed');
+  assert.ok(state.tasks[2].attempts[0].checkpoint);
+  assert.equal(state.tasks[2].attempts[0].integratedCommit, undefined);
+  assert.equal(state.tasks[2].attempts[0].resourceState, 'retained');
+  assert.equal(state.tasks[3].attempts.length, 0);
+  assert.equal(git(f.repo, 'show', `${state.integrationBranch}:base.txt`), 'first');
+  assert.throws(() => git(f.repo, 'show', `${state.integrationBranch}:slow.txt`));
+  await assert.rejects(service.resume(state.runId), /unresolved conflict/);
+  assert.equal((await service.status(state.runId)).tasks[2].attempts.length, 1);
 });

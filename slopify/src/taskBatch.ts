@@ -6,6 +6,7 @@ import { homedir } from 'node:os';
 import * as path from 'node:path';
 import { createNodeSubprocessExecutor, type SubprocessExecutor } from '@acp-client/sandbox';
 import { DockerTaskExecutor } from './dockerTaskExecutor.js';
+import { DockerRunHealth, type DockerRunSuspension } from './dockerRunHealth.js';
 import type { TaskExecutionResult, TaskSandboxResource } from './taskExecution.js';
 import { activityJournalPath, appendActivitySignal, readActivitySignals, readAllActivitySignals } from './activityJournal.js';
 import type { ActivitySignal } from './activitySignal.js';
@@ -104,6 +105,7 @@ export interface TaskBatchSnapshot {
   tasks: BatchTaskState[];
   diagnostics: TaskBatchDiagnostic[];
   conflict?: TaskBatchConflict;
+  suspension?: DockerRunSuspension;
   resolution?: TaskBatchResolution;
 }
 
@@ -268,6 +270,40 @@ export class TaskBatchService {
     return diagnostics;
   }
 
+  /** One invocation owns its health decision and stops external work without deleting inspectable sandboxes. */
+  private createExecutionRuntime(snapshot: TaskBatchSnapshot, signal?: AbortSignal) {
+    delete snapshot.suspension;
+    const subprocess = this.subprocessExecutor ?? createNodeSubprocessExecutor();
+    const previous = new Set(snapshot.tasks.flatMap(task => task.attempts.map(attempt => attempt.attemptId)));
+    const stopped = new Set<string>();
+    const stopSuspendedResources = async () => {
+      if (!snapshot.suspension) return;
+      const suspension = snapshot.suspension;
+      const resources = snapshot.tasks.flatMap(task => task.attempts)
+        .filter(attempt => !previous.has(attempt.attemptId) && attempt.resource && !attempt.integratedCommit)
+        .map(attempt => attempt.resource!);
+      await Promise.all(resources.map(async resource => {
+        if (stopped.has(resource.sandboxName)) return;
+        stopped.add(resource.sandboxName);
+        try {
+          const result = await subprocess({ command: 'sbx', args: ['stop', resource.sandboxName],
+            cwd: resource.diagnosticsDirectory ?? this.repositoryPath, stdin: 'ignore', signal: AbortSignal.timeout(10000) });
+          suspension.stops.push({ sandboxName: resource.sandboxName, exitCode: result.exitCode,
+            ...(result.exitCode ? { error: result.stderr || result.stdout } : {}) });
+        } catch (error) { suspension.stops.push({ sandboxName: resource.sandboxName, error: String(error) }); }
+      }));
+      await this.save(snapshot);
+    };
+    const health = new DockerRunHealth(subprocess, async suspension => {
+      snapshot.suspension = suspension;
+      snapshot.status = 'interrupted';
+      snapshot.diagnostics.push({ code: 'docker_unavailable', message: 'Shared Docker control failed; admission stopped, cancellation and sandbox stops requested, resources retained.' });
+      await this.save(snapshot);
+      await stopSuspendedResources();
+    }, signal);
+    return { executor: new DockerTaskExecutor({ executor: health.execute }), health, stopSuspendedResources };
+  }
+
   private async executeSchedule(snapshot: TaskBatchSnapshot, signal?: AbortSignal): Promise<void> {
     await this.withActivityTick(snapshot, signal, () => this.runSchedule(snapshot, signal));
   }
@@ -275,7 +311,9 @@ export class TaskBatchService {
   private async runSchedule(snapshot: TaskBatchSnapshot, signal?: AbortSignal): Promise<void> {
     const runDirectory = path.join(this.storePath, snapshot.runId);
     const workspacePath = path.join(runDirectory, 'integration');
-    const executor = new DockerTaskExecutor({ executor: this.subprocessExecutor });
+    const runtime = this.createExecutionRuntime(snapshot, signal);
+    const executor = runtime.executor;
+    signal = runtime.health.controller.signal;
     snapshot.status = 'running';
     await this.save(snapshot);
     try {
@@ -307,6 +345,7 @@ export class TaskBatchService {
 
       const active = new Map<string, Promise<void>>();
       let integration: Promise<void> | undefined;
+      let prepared = false;
       try {
         while (true) {
           this.blockDescendants(snapshot);
@@ -315,13 +354,18 @@ export class TaskBatchService {
             for (const task of snapshot.tasks) {
               if (active.size >= (snapshot.maxConcurrentTasks ?? this.maxConcurrentTasks)) break;
               if (task.status !== 'pending' || !task.dependsOn.every(id => byId.get(id)!.status === 'succeeded')) continue;
+              if (!prepared) {
+                await executor.prepareRun({ runId: snapshot.runId, workspacePath, signal });
+                prepared = true;
+                if (signal?.aborted || snapshot.suspension) break;
+              }
               // La base appartient à la tentative : les intégrations suivantes ne la modifient jamais.
               const execution = this.executeTask(snapshot, task, snapshot.integrationCommit!, workspacePath, executor, signal)
                 .finally(() => { active.delete(task.id); });
               active.set(task.id, execution);
             }
           }
-          if (!integration && !snapshot.conflict) {
+          if (!integration && !snapshot.conflict && !snapshot.suspension) {
             // Les checkpoints disponibles dans ce tour sont départagés par l'ordre du manifeste.
             // Cela réutilise aussi les résultats durables d'une reprise explicite.
             const ready = snapshot.tasks.find(task => task.status === 'completed');
@@ -346,6 +390,9 @@ export class TaskBatchService {
       snapshot.status = signal?.aborted ? 'interrupted' : 'failed';
       snapshot.diagnostics.push({ code: 'integration_failed', message: error instanceof Error ? error.message : String(error) });
       await this.save(snapshot);
+    } finally {
+      await runtime.stopSuspendedResources();
+      runtime.health.close();
     }
   }
 
@@ -440,6 +487,7 @@ export class TaskBatchService {
   private async finishExecution(snapshot: TaskBatchSnapshot, signal?: AbortSignal): Promise<void> {
     this.blockDescendants(snapshot);
     snapshot.status = snapshot.conflict ? 'conflicted'
+      : snapshot.suspension ? 'interrupted'
       : snapshot.tasks.every(task => task.status === 'succeeded') ? 'succeeded'
       : signal?.aborted || snapshot.tasks.some(task => task.status === 'interrupted') ? 'interrupted'
       : snapshot.tasks.some(task => task.status === 'running') ? 'running' : 'failed';
@@ -702,25 +750,31 @@ export class TaskBatchService {
     await this.save(snapshot);
 
     // Exécute la tâche ; cette opération crée une nouvelle tentative.
-    const executor = new DockerTaskExecutor({ executor: this.subprocessExecutor });
+    const runtime = this.createExecutionRuntime(snapshot, options.signal);
+    const executor = runtime.executor;
+    const executionSignal = runtime.health.controller.signal;
 
     await this.withActivityTick(snapshot, options.signal, async () => {
       try {
-        await this.executeTask(snapshot, task, currentIntegrationCommit, workspacePath, executor, options.signal);
+        await executor.prepareRun({ runId: snapshot.runId, workspacePath, signal: executionSignal });
+        await this.executeTask(snapshot, task, currentIntegrationCommit, workspacePath, executor, executionSignal);
 
         // Relit la tâche depuis le snapshot pour obtenir son état après executeTask.
         const updatedTask = snapshot.tasks.find(t => t.id === taskId)!;
         // Après l'exécution, intègre si elle a réussi (executeTask place task.status à completed en cas de succès).
-        if (updatedTask.status === 'completed') {
+        if (updatedTask.status === 'completed' && !snapshot.suspension) {
           await this.integrateTask(snapshot, updatedTask, workspacePath, executor);
         }
 
-        await this.finishExecution(snapshot, options.signal);
+        await this.finishExecution(snapshot, executionSignal);
       } catch (error) {
-        snapshot.status = options.signal?.aborted ? 'interrupted' : 'failed';
+        snapshot.status = executionSignal.aborted ? 'interrupted' : 'failed';
         snapshot.diagnostics.push({ code: 'resume_failed', message: error instanceof Error ? error.message : String(error) });
         await this.save(snapshot);
         throw new TaskBatchExecutionError(snapshot, error);
+      } finally {
+        await runtime.stopSuspendedResources();
+        runtime.health.close();
       }
     });
 
