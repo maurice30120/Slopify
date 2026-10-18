@@ -263,11 +263,14 @@ function taskDetails(task: BatchTaskState): string[] {
   if (attempt?.exitCode !== undefined) lines.push(`  Agent exit code: ${attempt.exitCode}`);
   if (attempt?.taskBaseCommit) lines.push(`  Task base: ${attempt.taskBaseCommit}`);
   if (attempt?.checkpoint) lines.push(`  Checkpoint: ${attempt.checkpoint.commit}`);
+  if (attempt?.checkpoint?.bundlePath) lines.push(`  Checkpoint bundle: ${attempt.checkpoint.bundlePath}`);
   if (attempt?.integratedCommit) lines.push(`  Integrated commit: ${attempt.integratedCommit}`);
   if (attempt?.reportPath) lines.push(`  Report: ${attempt.reportPath}`);
   if (attempt?.stdoutPath) lines.push(`  Stdout: ${attempt.stdoutPath}`);
   if (attempt?.stderrPath) lines.push(`  Stderr: ${attempt.stderrPath}`);
   if (attempt?.resource) lines.push(`  Sandbox: ${attempt.resource.sandboxName} (${attempt.resourceState ?? 'unknown'})`);
+  if (attempt?.resource?.workerId) lines.push(`  Worker: ${attempt.resource.workerId}`);
+  if (attempt?.resource?.worktreePath) lines.push(`  Worktree: ${attempt.resource.worktreePath}`);
   return lines;
 }
 

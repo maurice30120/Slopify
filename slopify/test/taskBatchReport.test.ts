@@ -151,3 +151,29 @@ test('legacy runs without a frozen worker pool stay readable without worker line
   assert.equal(report.workerPool, undefined);
   assert.ok(!formatTaskBatchReport(snapshot).includes('Workers:'));
 });
+
+test('task details name the worker and the per-attempt worktree behind each sandbox', () => {
+  const first = task('first', 'succeeded');
+  first.attempts.push({ attemptId: 'att-1', taskBaseCommit: 'base', status: 'succeeded', resourceState: 'removed',
+    checkpoint: { commit: 'checkpoint', bundlePath: '/store/run/attempts/att-1/checkpoint.bundle' },
+    resource: { sandboxName: 'slopify-worker-a', workerId: 'gen/1', worktreePath: '/store/run/workspaces/att-1',
+      inspectCommand: ['sbx', 'exec', 'slopify-worker-a', 'sh'] } });
+  const second = task('second', 'succeeded');
+  second.attempts.push({ attemptId: 'att-2', taskBaseCommit: 'base', status: 'succeeded', resourceState: 'removed',
+    checkpoint: { commit: 'checkpoint-2', bundlePath: '/store/run/attempts/att-2/checkpoint.bundle' },
+    resource: { sandboxName: 'slopify-worker-a', workerId: 'gen/1', worktreePath: '/store/run/workspaces/att-2',
+      inspectCommand: ['sbx', 'exec', 'slopify-worker-a', 'sh'] } });
+  const unpooled = task('unpooled', 'failed');
+  unpooled.attempts.push({ attemptId: 'att-3', taskBaseCommit: 'base', status: 'failed',
+    resource: { sandboxName: 'sbx-task-3', inspectCommand: ['sbx', 'exec', 'sbx-task-3', 'sh'] } });
+  const text = formatTaskBatchReport(state([first, second, unpooled]));
+  for (const part of [
+    'Worker: gen/1',
+    'Worktree: /store/run/workspaces/att-1',
+    'Worktree: /store/run/workspaces/att-2',
+    '/store/run/attempts/att-1/checkpoint.bundle',
+    '/store/run/attempts/att-2/checkpoint.bundle',
+  ]) assert.ok(text.includes(part), part);
+  assert.equal(text.split('Worker: gen/1').length - 1, 2, 'both attempts of the reused worker name it');
+  assert.ok(!text.includes('Worktree: undefined'));
+});
