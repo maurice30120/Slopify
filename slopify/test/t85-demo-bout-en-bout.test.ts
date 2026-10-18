@@ -81,16 +81,19 @@ async function tickUntilSignals(sink: CliSink, clock: ManualActivityClock, count
 
 /**
  * Masque les seuls identifiants propres à chaque run — uuid du run et des tentatives,
- * instants muraux de sauvegarde, commits git, noms de sandbox — pour que deux exécutions
- * du même lot restent comparables au byte près sur tout le reste : l'identité des
- * identifiants n'est pas l'objet de la démonstration, l'invariabilité du contenu l'est.
+ * instants muraux de sauvegarde, commits git, noms de sandbox, durée murale mesurée —
+ * pour que deux exécutions du même lot restent comparables au byte près sur tout le
+ * reste : l'identité des identifiants n'est pas l'objet de la démonstration,
+ * l'invariabilité du contenu l'est.
  */
 function anonymize(text: string): string {
   return text
     .replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g, '<uuid>')
     .replace(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z/g, '<instant>')
     .replace(/\b[0-9a-f]{40,64}\b/g, '<commit>')
-    .replace(/slopify-[0-9a-f]{24}\b/g, 'slopify-<sandbox>');
+    .replace(/slopify-[0-9a-f]{24}\b/g, 'slopify-<sandbox>')
+    .replace(/Wall clock: \d+ ms/g, 'Wall clock: <wall clock> ms')
+    .replace(/"wallClockMs":\d+/g, '"wallClockMs":<ms>');
 }
 
 test('tasks run en mode texte : phrases préfixées sur stderr de bout en bout et stdout/progress inchangés au byte près', { timeout: 120000 }, async t => {

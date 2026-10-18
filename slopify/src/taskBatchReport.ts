@@ -54,6 +54,8 @@ export interface BatchReliabilityView {
     kind: 'none' | 'integration_conflict' | 'docker_outage' | 'operator_interruption' | 'task_failures';
     message: string;
   };
+  /** Wall clock between durable creation and last update; diagnostic only, never a success criterion. */
+  wallClockMs?: number;
 }
 
 /** A worker replaced during the batch counts every worker taken out of service before its creation. */
@@ -90,7 +92,16 @@ function reliabilityView(snapshot: TaskBatchSnapshot, workerPool?: BatchWorkerPo
       detail: 'see the Workers section of this report' as const } } : {}),
     checkpoints: checkpointIntegrityView(snapshot),
     stop: stopView(snapshot, failedTaskIds),
+    ...(wallClockMs(snapshot) !== undefined ? { wallClockMs: wallClockMs(snapshot) } : {}),
   };
+}
+
+/** Wall clock from durable timestamps; undefined when legacy state lacks usable dates. */
+function wallClockMs(snapshot: TaskBatchSnapshot): number | undefined {
+  const created = Date.parse(snapshot.createdAt);
+  const updated = Date.parse(snapshot.updatedAt);
+  if (Number.isNaN(created) || Number.isNaN(updated) || updated < created) return undefined;
+  return updated - created;
 }
 
 /**
@@ -393,6 +404,8 @@ export function formatTaskBatchReport(snapshot: TaskBatchSnapshot, storePath?: s
     ...formatWorkerOccupancy(report.reliability),
     ...formatCheckpointIntegrity(report.reliability),
     `Stop reason: ${report.reliability.stop.message}`,
+    ...(report.reliability.wallClockMs !== undefined
+      ? [`Wall clock: ${report.reliability.wallClockMs} ms (diagnostic only; no time threshold can fail the batch)`] : []),
     `Integration branch: ${snapshot.integrationBranch}`,
     `Integration commit: ${snapshot.integrationCommit ?? snapshot.runBaseCommit}`,
     ...formatActivitySignalWindow(activitySignals ?? []),

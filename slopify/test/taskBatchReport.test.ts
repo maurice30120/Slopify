@@ -293,3 +293,19 @@ test('batch-level stops for conflict or shared docker outage stay distinct from 
   assert.equal(running.reliability.stop.kind, 'none');
   assert.match(running.reliability.stop.message, /No batch-level stop/);
 });
+
+
+test('wall clock is a diagnostic measure that never gates the batch outcome', () => {
+  const snapshot = state([task('done', 'succeeded')]);
+  snapshot.createdAt = '2026-10-18T10:00:00Z';
+  snapshot.updatedAt = '2026-10-18T10:00:45Z';
+  snapshot.status = 'succeeded';
+  const report = taskBatchReport(snapshot);
+  assert.equal(report.reliability.wallClockMs, 45000);
+  assert.ok(formatTaskBatchReport(snapshot)
+    .includes('Wall clock: 45000 ms (diagnostic only; no time threshold can fail the batch)'),
+    'the wall clock is rendered as a diagnostic without a threshold');
+  const legacy = state([task('old', 'succeeded')]);
+  assert.equal(taskBatchReport(legacy).reliability.wallClockMs, undefined);
+  assert.ok(!formatTaskBatchReport(legacy).includes('Wall clock:'));
+});
