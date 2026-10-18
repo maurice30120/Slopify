@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, writeFile, readFile, rm } from 'node:fs/promises';
 import * as path from 'node:path';
 import test from 'node:test';
 import type { SubprocessExecutor } from '@acp-client/sandbox';
-import { TaskBatchService, type TaskBatchSnapshot } from '../src/taskBatch.js';
+import { TaskBatchService, TaskBatchExecutionError, type TaskBatchSnapshot } from '../src/taskBatch.js';
 
 const git = (repo: string, ...args: string[]) => execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8' }).trim();
 
@@ -114,7 +114,12 @@ test('targeted resume rejects unusable checkpoints without rerunning or overwrit
     const f = await fixture(t, mutate);
     const bundleBefore = await readFile(f.bundlePath).catch(() => null);
     const reportBefore = await readFile(f.reportPath, 'utf8');
-    await assert.rejects(f.service.resumeTask(f.snapshot.runId, 'work'), { message: /checkpoint is (invalid|incomplete)/ }, name);
+    await assert.rejects(f.service.resumeTask(f.snapshot.runId, 'work'), (error: unknown) => {
+      assert.ok(error instanceof TaskBatchExecutionError, `${name}: the CLI must report the durable outcome`);
+      assert.match(error.message, /checkpoint is (invalid|incomplete)/, name);
+      assert.equal(error.snapshot.tasks[0].attempts[0].checkpointIntegrity?.status, expected, name);
+      return true;
+    }, name);
     const state = JSON.parse(await readFile(path.join(f.directory, 'state.json'), 'utf8')) as TaskBatchSnapshot;
     assert.equal(state.tasks[0].status, 'failed', name);
     assert.equal(state.tasks[0].attempts.length, 1, name);
@@ -127,3 +132,79 @@ test('targeted resume rejects unusable checkpoints without rerunning or overwrit
     assert.deepEqual(f.calls, [], name);
   }
 });
+
+/** Ajoute un descendant bloqué de la tâche « work » au snapshot durable. */
+const blockDescendant = async (f: Fixture): Promise<void> => {
+  f.snapshot.tasks.push({ id: 'child', prompt: 'child', dependsOn: ['work'], agent: 'codex',
+    source: 'child', status: 'blocked', blockedBy: ['work'], attempts: [] });
+};
+
+test('batch resume rejects an unusable durable checkpoint without rerunning, overwriting or unblocking', async t => {
+  for (const [name, expected, mutate] of corruptions) {
+    const f = await fixture(t, async f => { await mutate(f); await blockDescendant(f); });
+    const bundleBefore = await readFile(f.bundlePath).catch(() => null);
+    const reportBefore = await readFile(f.reportPath, 'utf8');
+    await assert.rejects(f.service.resume(f.snapshot.runId), (error: unknown) => {
+      assert.ok(error instanceof TaskBatchExecutionError, `${name}: the CLI must report the durable outcome`);
+      assert.match(error.message, /checkpoint is (invalid|incomplete)/, name);
+      return true;
+    }, name);
+    const state = JSON.parse(await readFile(path.join(f.directory, 'state.json'), 'utf8')) as TaskBatchSnapshot;
+    const work = state.tasks.find(task => task.id === 'work')!;
+    const child = state.tasks.find(task => task.id === 'child')!;
+    assert.equal(work.status, 'failed', name);
+    assert.equal(work.attempts.length, 1, name);
+    assert.equal(work.attempts[0].checkpointIntegrity?.status, expected, name);
+    assert.equal(child.status, 'blocked', name);
+    assert.deepEqual(child.blockedBy, ['work'], name);
+    const bundleAfter = await readFile(f.bundlePath).catch(() => null);
+    assert.ok(bundleBefore === null ? bundleAfter === null : bundleAfter?.equals(bundleBefore), `${name}: bundle bytes changed`);
+    assert.equal(await readFile(f.reportPath, 'utf8'), reportBefore, name);
+    assert.deepEqual(f.calls, [], name);
+  }
+});
+
+test('batch resume rejects an unusable checkpoint of a completed but not yet integrated task', async t => {
+  const f = await fixture(t, async f => {
+    f.snapshot.tasks[0].status = 'completed';
+    await corruptions[2][2](f);
+  });
+  const reportBefore = await readFile(f.reportPath, 'utf8');
+  await assert.rejects(f.service.resume(f.snapshot.runId), (error: unknown) => {
+    assert.ok(error instanceof TaskBatchExecutionError);
+    assert.match(error.message, /checkpoint is invalid/);
+    return true;
+  });
+  const state = JSON.parse(await readFile(path.join(f.directory, 'state.json'), 'utf8')) as TaskBatchSnapshot;
+  assert.equal(state.tasks[0].status, 'failed');
+  assert.equal(state.tasks[0].attempts.length, 1);
+  assert.equal(state.tasks[0].attempts[0].checkpointIntegrity?.status, 'invalid');
+  assert.equal(await readFile(f.reportPath, 'utf8'), reportBefore);
+  assert.deepEqual(f.calls, []);
+});
+
+test('batch resume validates a durable checkpoint before reusing it without rerunning the task', async t => {
+  const f = await fixture(t);
+  const state = await f.service.resume(f.snapshot.runId);
+  const work = state.tasks[0];
+  assert.equal(work.status, 'succeeded');
+  assert.equal(work.attempts.length, 1, 'a validated durable checkpoint is reused, never rerun');
+  assert.equal(work.attempts[0].checkpointIntegrity?.status, 'valid');
+  assert.equal(git(f.repo, 'show', `${state.integrationBranch}:result.txt`), 'checkpoint');
+  assert.ok(!f.calls.some(args => args.includes('work')), 'no agent runs for the reused task');
+});
+
+test('targeted resume refuses inadmissible work whose prerequisite is not integrated', async t => {
+  const f = await fixture(t, async f => {
+    f.snapshot.tasks[0].dependsOn = ['prereq'];
+    f.snapshot.tasks.unshift({ id: 'prereq', prompt: 'prereq', dependsOn: [], agent: 'codex',
+      source: 'prereq', status: 'failed', attempts: [] });
+  });
+  await assert.rejects(f.service.resumeTask(f.snapshot.runId, 'work'), /cannot be resumed: dependencies prereq are not succeeded/);
+  const state = JSON.parse(await readFile(path.join(f.directory, 'state.json'), 'utf8')) as TaskBatchSnapshot;
+  const work = state.tasks.find(task => task.id === 'work')!;
+  assert.equal(work.status, 'failed');
+  assert.equal(work.attempts.length, 1, 'no new attempt is created for inadmissible work');
+  assert.deepEqual(f.calls, []);
+});
+
