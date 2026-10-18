@@ -87,11 +87,11 @@ export class DockerTaskExecutor implements TaskExecutor {
     let resource:TaskSandboxResource|undefined;
     let checkpoint:TaskExecutionResult['checkpoint'];
     try {
-      lease=await this.pool?.acquire(request);
       const adapter=this.adapters.get(request.agent);
       if(!adapter)throw new Error(`Agent ${request.agent} is unavailable.`);
       const sandboxName='slopify-'+createHash('sha256').update(`${request.runId}/${request.taskId}/${request.attemptId}`).digest('hex').slice(0,24);
       await this.prepareRun(request);
+      lease=await this.pool?.acquire(request);
       const inventory=this.skillsInventory!;
       if(lease)lease.skillsStore=inventory.store;
       const containerContextPath=path.join(request.resultDirectory,'context');

@@ -97,22 +97,22 @@ export class TaskWorkerPool {
       await this.execInWorker(lease,['docker','exec','-w',lease.request.workspacePath,lease.container,'git','bundle','create','/tmp/checkpoint.bundle','HEAD']);
       await this.execInWorker(lease,['docker','cp',lease.container+':/tmp/checkpoint.bundle',lease.stage+'/checkpoint.bundle']);
       const transfer=path.join(lease.request.resultDirectory,'worker-checkpoint.bundle');await this.control(lease.worker,lease.request,['cp',lease.worker.sandboxName+':'+lease.stage+'/checkpoint.bundle',transfer]);
-      return this.execute({...request,args:[...a.slice(0,2),transfer,...a.slice(3)]});
+      return this.appendEvidence({...request,args:[...a.slice(0,2),transfer,...a.slice(3)]},lease.request.resultDirectory);
     }
-    if(request.command!=='sbx')return this.execute(request);
+    if(request.command!=='sbx')return this.appendEvidence(request,lease.request.resultDirectory);
     if(a[0]==='create'&&!a.includes('--help')){await this.createTask(lease,a);return {exitCode:0,stdout:'',stderr:''};}
     if(a[0]==='exec'){
       const nameIndex=a.findIndex((value,index)=>index>0&&value.startsWith('slopify-'));
       if(nameIndex<0)throw new Error('Missing task sandbox identity.');
       const options=a.slice(1,nameIndex);const command=a.slice(nameIndex+1);
-      return this.execute({...request,args:['exec',lease.worker.sandboxName,'docker','exec',...(options.includes('-w')?options:['-w',lease.request.workspacePath,...options]),lease.container,...command]});
+      return this.appendEvidence({...request,args:['exec',lease.worker.sandboxName,'docker','exec',...(options.includes('-w')?options:['-w',lease.request.workspacePath,...options]),lease.container,...command]},lease.request.resultDirectory);
     }
     if(a[0]==='cp'){
       const source=a[1],target=a[2];
       if(source.startsWith('slopify-')){const file=source.slice(source.indexOf(':')+1);const stage=lease.stage+'/copy-out';await this.execInWorker(lease,['docker','cp',lease.container+':'+file,stage]);return this.control(lease.worker,lease.request,['cp',lease.worker.sandboxName+':'+stage,target]);}
       if(target.startsWith('slopify-')){const file=target.slice(target.indexOf(':')+1);const stage=lease.stage+'/copy-in';await this.control(lease.worker,lease.request,['cp',source,lease.worker.sandboxName+':'+stage]);await this.control(lease.worker,lease.request,['exec','-u','root',lease.worker.sandboxName,'chown','agent:agent',stage]);return this.execInWorker(lease,['docker','cp',stage,lease.container+':'+file]);}
     }
-    return this.execute(request);
+    return this.appendEvidence(request,lease.request.resultDirectory);
   }
   private async createTask(lease:WorkerLease,args:string[]) {
     const {worker,request}=lease;const target=args[args.indexOf(request.workspacePath)-1];
@@ -154,6 +154,7 @@ export class TaskWorkerPool {
   private wake(){for(const wake of this.waiters.splice(0))wake();}
   async close():Promise<void>{
     for(const worker of this.workers){
+      if(worker.status==='assigned'){worker.status='retained';continue;}
       if(worker.status!=='available')continue;
       const result=await this.execute({command:'sbx',args:['rm','--force',worker.sandboxName],cwd:process.cwd(),stdin:'ignore'});
       if(result.exitCode!==0)throw new Error('Worker shutdown failed: '+result.stderr);worker.status='retired';
