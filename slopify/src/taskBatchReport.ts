@@ -33,8 +33,28 @@ export interface BatchWorkerPoolView {
   size: number;
   lifecycle: TaskWorkerPoolConfig['lifecycle'];
   occupancy: Record<TaskWorkerStatus, number>;
+  /** Occupancy by status is the source of truth; replacements only count failure-driven turnover that a new worker restored. */
   replacements: number;
   workers: BatchWorkerView[];
+}
+
+/**
+ * Real replacements of the batch (#108): a worker driven out of service by a failure
+ * (a retained attempt or a failed reset) whose capacity was restored by a new worker.
+ * Agent-frontier swaps of idle workers and planned lifecycle recycling never count.
+ * Each pool generation carries its own cumulative total on its last created worker,
+ * so replacements sum across resumed sessions; occupancy by status stays the truth.
+ */
+function replacementTotal(workers: BatchWorkerView[]): number {
+  const byGeneration = new Map<string, number>();
+  for (const worker of workers) {
+    const separator = worker.workerId.lastIndexOf('/');
+    const generation = separator < 0 ? worker.workerId : worker.workerId.slice(0, separator);
+    byGeneration.set(generation, Math.max(byGeneration.get(generation) ?? 0, worker.replacements));
+  }
+  let total = 0;
+  for (const count of byGeneration.values()) total += count;
+  return total;
 }
 
 /** Reliability summary of the batch (#111): failures, retries, stops and diagnostics. */
@@ -44,21 +64,25 @@ export interface BatchReliabilityView {
   /** Tasks stopped without a task decision, by an interruption. */
   interruptedTaskIds: string[];
   attempts: { total: number; retries: number; retriedTaskIds: string[] };
-  /** Occupancy snapshot of the frozen pool, deferring to the detailed worker lifecycle. */
-  workers?: { occupancy: Record<TaskWorkerStatus, number>; replacements: number; detail: 'see the Workers section of this report' };
+  /** Reference to the Workers section; the occupancy and turnover data live there, never duplicated here. */
+  workers?: { detail: 'see the Workers section of this report' };
   /** Durable checkpoint integrity checks, split into valid, invalid and incomplete (#110). */
   checkpoints: {
     valid: Array<{ taskId: string; attemptId: string }>;
     invalid: Array<{ taskId: string; attemptId: string; reason?: string }>;
     incomplete: Array<{ taskId: string; attemptId: string; reason?: string }>;
   };
+  /** Consolidated inspection view (#109): the sandbox, worktree and checkpoint kept of every retained attempt. */
+  retainedForInspection?: Array<{ taskId: string; attemptId: string; sandboxName?: string; worktreePath?: string; checkpointBundlePath?: string }>;
   /** Why the batch stopped, kept separate from task-local failures (#109). */
   stop: {
     kind: 'none' | 'integration_conflict' | 'docker_outage' | 'operator_interruption' | 'task_failures';
     message: string;
   };
-  /** Wall clock between durable creation and last update; diagnostic only, never a success criterion. */
+  /** Wall clock since batch creation, dead time between interruptions and resumes included; diagnostic only, never a threshold. */
   wallClockMs?: number;
+  /** Cumulative execution time of the recorded attempts (each counted once, overlaps included); diagnostic only, never a threshold. */
+  activeExecutionMs?: number;
   /** Manifest accounting (#111): every declared task stays counted, including the generated final review. */
   manifest: { batchTasks: number; finalReview: number; total: number; counted: number };
 }
@@ -70,13 +94,14 @@ function workerPoolView(snapshot: TaskBatchSnapshot): BatchWorkerPoolView | unde
   const workers = snapshot.workers ?? [];
   const occupancy: Record<TaskWorkerStatus, number> = { available: 0, assigned: 0, cleaning: 0, verifying: 0, retained: 0, retired: 0 };
   for (const worker of workers) occupancy[worker.status] += 1;
+  const views: BatchWorkerView[] = workers.map(({ workerId, agent, status, taskId, attemptId, replacements }) =>
+    ({ workerId, agent, status, ...(taskId ? { taskId } : {}), ...(attemptId ? { attemptId } : {}), replacements }));
   return {
     size: config.size,
     lifecycle: config.lifecycle,
     occupancy,
-    replacements: Math.max(0, ...workers.map(worker => worker.replacements)),
-    workers: workers.map(({ workerId, agent, status, taskId, attemptId, replacements }) =>
-      ({ workerId, agent, status, ...(taskId ? { taskId } : {}), ...(attemptId ? { attemptId } : {}), replacements })),
+    replacements: replacementTotal(views),
+    workers: views,
   };
 }
 
@@ -90,15 +115,19 @@ function reliabilityView(snapshot: TaskBatchSnapshot, counts: BatchTaskCounts,
   const interruptedTaskIds = snapshot.tasks.filter(task => task.status === 'interrupted').map(task => task.id);
   const attempts = snapshot.tasks.flatMap(task => task.attempts);
   const retriedTaskIds = snapshot.tasks.filter(task => task.attempts.length > 1).map(task => task.id);
+  const retained = retainedForInspectionView(snapshot);
+  const wall = wallClockMs(snapshot);
+  const active = activeExecutionMs(snapshot);
   return {
     failedTaskIds, interruptedTaskIds,
     attempts: { total: attempts.length, retries: Math.max(0, attempts.length
       - snapshot.tasks.filter(task => task.attempts.length > 0).length), retriedTaskIds },
-    ...(workerPool ? { workers: { occupancy: { ...workerPool.occupancy }, replacements: workerPool.replacements,
-      detail: 'see the Workers section of this report' as const } } : {}),
+    ...(workerPool ? { workers: { detail: 'see the Workers section of this report' as const } } : {}),
     checkpoints: checkpointIntegrityView(snapshot),
+    ...(retained ? { retainedForInspection: retained } : {}),
     stop: stopView(snapshot, failedTaskIds),
-    ...(wallClockMs(snapshot) !== undefined ? { wallClockMs: wallClockMs(snapshot) } : {}),
+    ...(wall !== undefined ? { wallClockMs: wall } : {}),
+    ...(active !== undefined ? { activeExecutionMs: active } : {}),
     manifest: manifestView(snapshot, counts),
   };
 
@@ -114,6 +143,37 @@ function manifestView(snapshot: TaskBatchSnapshot, counts: BatchTaskCounts): Bat
 }
 }
 
+/** Consolidated inspection view (#109): one entry per attempt whose resources were kept for diagnosis. */
+function retainedForInspectionView(snapshot: TaskBatchSnapshot): BatchReliabilityView['retainedForInspection'] {
+  const retained: NonNullable<BatchReliabilityView['retainedForInspection']> = [];
+  for (const task of snapshot.tasks) {
+    for (const attempt of task.attempts) {
+      if (attempt.resourceState !== 'retained') continue;
+      retained.push({
+        taskId: task.id, attemptId: attempt.attemptId,
+        ...(attempt.resource?.sandboxName ? { sandboxName: attempt.resource.sandboxName } : {}),
+        ...(attempt.resource?.worktreePath ? { worktreePath: attempt.resource.worktreePath } : {}),
+        ...(attempt.checkpoint?.bundlePath ? { checkpointBundlePath: attempt.checkpoint.bundlePath } : {}),
+      });
+    }
+  }
+  return retained.length > 0 ? retained : undefined;
+}
+
+/** Retained-for-inspection lines; hidden while nothing is kept for diagnosis. */
+function formatRetainedForInspection(reliability: BatchReliabilityView): string[] {
+  const retained = reliability.retainedForInspection;
+  if (!retained?.length) return [];
+  const details = retained.map(entry => {
+    const parts = [entry.sandboxName ? `sandbox ${entry.sandboxName}` : undefined,
+      entry.worktreePath ? `worktree ${entry.worktreePath}` : undefined,
+      entry.checkpointBundlePath ? `checkpoint bundle ${entry.checkpointBundlePath}` : undefined]
+      .filter(Boolean).join('; ');
+    return `  ${entry.taskId} (${entry.attemptId}): ${parts}`;
+  });
+  return [`Retained for inspection: ${retained.length} attempt${plural(retained.length, '', 's')} kept for diagnosis`, ...details];
+}
+
 /** Wall clock from durable timestamps; undefined when legacy state lacks usable dates. */
 function wallClockMs(snapshot: TaskBatchSnapshot): number | undefined {
   const created = Date.parse(snapshot.createdAt);
@@ -122,12 +182,25 @@ function wallClockMs(snapshot: TaskBatchSnapshot): number | undefined {
   return updated - created;
 }
 
+/** Cumulative execution time of recorded attempts; undefined when legacy state lacks usable dates. */
+function activeExecutionMs(snapshot: TaskBatchSnapshot): number | undefined {
+  let total: number | undefined;
+  for (const attempt of snapshot.tasks.flatMap(task => task.attempts)) {
+    if (!attempt.startedAt) continue;
+    const started = Date.parse(attempt.startedAt);
+    const finished = Date.parse(attempt.finishedAt ?? snapshot.updatedAt);
+    if (Number.isNaN(started) || Number.isNaN(finished) || finished < started) continue;
+    total = (total ?? 0) + finished - started;
+  }
+  return total;
+}
+
 /**
  * Batch-level stop reason: an integration conflict or a shared Docker outage
  * stopped the whole batch and must never be read as a task failure.
  */
 function stopView(snapshot: TaskBatchSnapshot, failedTaskIds: string[]): BatchReliabilityView['stop'] {
-  const failures = `${failedTaskIds.length} task failure${failedTaskIds.length === 1 ? '' : 's'}`
+  const failures = `${failedTaskIds.length} task failure${plural(failedTaskIds.length, '', 's')}`
     + `${failedTaskIds.length ? ` (${failedTaskIds.join(', ')})` : ''}`;
   if (snapshot.conflict) return { kind: 'integration_conflict',
     message: `Batch stopped by an integration conflict in task ${snapshot.conflict.taskId}; explicit resolution required. `
@@ -141,7 +214,7 @@ function stopView(snapshot: TaskBatchSnapshot, failedTaskIds: string[]): BatchRe
     message: `Batch ended by task failures${failedTaskIds.length ? ` (${failedTaskIds.join(', ')})` : ''}; `
       + `no conflict or shared outage stopped this batch.` };
   return { kind: 'none',
-    message: failedTaskIds.length ? `No batch-level stop recorded; ${failures} ${failedTaskIds.length === 1 ? 'is' : 'are'} task-local.`
+    message: failedTaskIds.length ? `No batch-level stop recorded; ${failures} ${plural(failedTaskIds.length, 'is', 'are')} task-local.`
       : 'No batch-level stop and no task failure recorded.' };
 }
 
@@ -170,22 +243,26 @@ function formatCheckpointIntegrity(reliability: BatchReliabilityView): string[] 
     + `${invalid.length} invalid (${detail(invalid)}), ${incomplete.length} incomplete (${detail(incomplete)})`];
 }
 
+/** Plural forms stay readable for 0, 1 and many; one shared helper instead of repeated ternaries. */
+function plural(count: number, one: string, many: string): string {
+  return count === 1 ? one : many;
+}
+
 /** One rendered reliability line; plural forms stay readable for 0, 1 and many. */
 /** Occupancy line of the reliability summary; the per-worker lifecycle lives in the Workers section. */
 function formatWorkerOccupancy(reliability: BatchReliabilityView): string[] {
   if (!reliability.workers) return [];
-  const occupancy = Object.entries(reliability.workers.occupancy).map(([status, count]) => `${count} ${status}`).join(', ');
-  return [`Worker occupancy: ${occupancy}; detailed lifecycle: ${reliability.workers.detail}`];
+  return [`Worker occupancy: ${reliability.workers.detail}`];
 }
 
 function formatReliability(reliability: BatchReliabilityView): string {
-  const failed = `${reliability.failedTaskIds.length} failed task${reliability.failedTaskIds.length === 1 ? '' : 's'}`;
+  const failed = `${reliability.failedTaskIds.length} failed task${plural(reliability.failedTaskIds.length, '', 's')}`;
   const interrupted = `${reliability.interruptedTaskIds.length} interrupted`;
-  const retries = `${reliability.attempts.retries} retr${reliability.attempts.retries === 1 ? 'y' : 'ies'}`;
+  const retries = `${reliability.attempts.retries} retr${plural(reliability.attempts.retries, 'y', 'ies')}`;
   const retried = reliability.attempts.retriedTaskIds.length ? ` (${reliability.attempts.retriedTaskIds.join(', ')})` : '';
   return `Reliability: ${failed}${reliability.failedTaskIds.length ? ` (${reliability.failedTaskIds.join(', ')})` : ''}; `
     + `${interrupted}${reliability.interruptedTaskIds.length ? ` (${reliability.interruptedTaskIds.join(', ')})` : ''}; `
-    + `${reliability.attempts.total} attempt${reliability.attempts.total === 1 ? '' : 's'}, ${retries}${retried}`;
+    + `${reliability.attempts.total} attempt${plural(reliability.attempts.total, '', 's')}, ${retries}${retried}`;
 }
 
 /** One readable line per worker; ready, assigned and reset-checking workers stay distinct. */
@@ -204,7 +281,7 @@ function describeWorker(worker: BatchWorkerView): string {
 function formatWorkerPool(pool: BatchWorkerPoolView): string[] {
   const occupancy = Object.entries(pool.occupancy).map(([status, count]) => `${count} ${status}`).join(', ');
   return [
-    `Workers: ${pool.size} configured, lifecycle ${pool.lifecycle}; occupancy: ${occupancy}; ${pool.replacements} replacement${pool.replacements === 1 ? '' : 's'} during this run`,
+    `Workers: ${pool.size} configured, lifecycle ${pool.lifecycle}; occupancy: ${occupancy}; ${pool.replacements} replacement${plural(pool.replacements, '', 's')} during this run`,
     ...pool.workers.map(worker => `  ${worker.workerId} (${worker.agent}): ${describeWorker(worker)}`),
   ];
 }
@@ -421,11 +498,16 @@ export function formatTaskBatchReport(snapshot: TaskBatchSnapshot, storePath?: s
     formatReliability(report.reliability),
     ...formatWorkerOccupancy(report.reliability),
     ...formatCheckpointIntegrity(report.reliability),
+    ...formatRetainedForInspection(report.reliability),
     `Stop reason: ${report.reliability.stop.message}`,
     ...(report.reliability.wallClockMs !== undefined
-      ? [`Wall clock: ${report.reliability.wallClockMs} ms (diagnostic only; no time threshold can fail the batch)`] : []),
-    `Manifest: ${report.reliability.manifest.batchTasks} manifest task${report.reliability.manifest.batchTasks === 1 ? '' : 's'} `
-      + `+ ${report.reliability.manifest.finalReview} final review = ${report.reliability.manifest.total} task${report.reliability.manifest.total === 1 ? '' : 's'}, `
+      ? [`Wall clock: ${report.reliability.wallClockMs} ms since batch creation (diagnostic only; `
+        + `includes idle time between interruptions and resumes; no time threshold can fail the batch)`] : []),
+    ...(report.reliability.activeExecutionMs !== undefined
+      ? [`Active execution: ${report.reliability.activeExecutionMs} ms across recorded attempts (diagnostic only; `
+        + `no time threshold can fail the batch)`] : []),
+    `Manifest: ${report.reliability.manifest.batchTasks} manifest task${plural(report.reliability.manifest.batchTasks, '', 's')} `
+      + `+ ${report.reliability.manifest.finalReview} final review = ${report.reliability.manifest.total} task${plural(report.reliability.manifest.total, '', 's')}, `
       + `${report.reliability.manifest.counted} accounted; coverage is never hidden to look faster`,
     `Integration branch: ${snapshot.integrationBranch}`,
     `Integration commit: ${snapshot.integrationCommit ?? snapshot.runBaseCommit}`,

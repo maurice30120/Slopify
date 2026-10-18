@@ -100,6 +100,36 @@ function batch(tasks: Array<{ id: string; dependsOn: string[] }> = [{ id: 'imple
   };
 }
 
+test('the final review inherits the batch defaults, not the first task overrides', async (t) => {
+  const f = await fixture(t);
+  await writeFile(path.join(f.root, 'spec.md'), '# Spec');
+  await writeFile(f.batchFile, JSON.stringify({
+    specFile: 'spec.md',
+    defaults: { agent: 'codex', model: 'batch-default-model', effort: 'high' },
+    tasks: [
+      { id: 'first', agent: 'codex', model: 'first-task-model', effort: 'low', dependsOn: [], prompt: 'first', source: 'first.md' },
+      { id: 'second', agent: 'codex', dependsOn: ['first'], prompt: 'second', source: 'second.md' },
+    ],
+  }));
+  const snapshot = await f.service.run(f.batchFile, { execute: false });
+  const finalReview = snapshot.tasks.at(-1)!;
+  assert.equal(finalReview.source, 'final-review');
+  assert.equal(finalReview.agent, 'codex');
+  assert.equal(finalReview.model, 'batch-default-model', 'the final review applies the batch defaults');
+  assert.equal(finalReview.effort, 'high', 'the final review applies the batch defaults');
+  assert.equal(snapshot.tasks[0].model, 'first-task-model', 'task overrides keep precedence over defaults');
+  await writeFile(f.batchFile, JSON.stringify({
+    specFile: 'spec.md',
+    tasks: [{ id: 'only', agent: 'pi', dependsOn: [], prompt: 'only', source: 'only.md' }],
+  }));
+  const service = new TaskBatchService({ repositoryPath: f.repo, storePath: path.join(f.root, 'other-runs') });
+  const fallback = await service.run(f.batchFile, { execute: false });
+  const fallbackReview = fallback.tasks.at(-1)!;
+  assert.equal(fallbackReview.agent, 'pi', 'without defaults the final review falls back to the manifest frontier');
+  assert.equal(fallbackReview.model, undefined);
+  assert.equal(fallbackReview.effort, undefined);
+});
+
 test('a dependency cycle is refused with the participating task IDs', async (t) => {
   const f = await fixture(t);
   await writeFile(f.batchFile, JSON.stringify(batch([

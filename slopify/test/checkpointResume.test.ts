@@ -213,3 +213,63 @@ test('targeted resume refuses inadmissible work whose prerequisite is not integr
   assert.deepEqual(f.calls, []);
 });
 
+
+/** Exécuteur sbx minimal : la préparation du run réussit, l'exécution de la tâche échoue. */
+function sbxPreparingExecutor(calls: string[][]): SubprocessExecutor {
+  return async request => {
+    if (request.command === 'git') {
+      const r = spawnSync('git', request.args, { cwd: request.cwd, encoding: 'utf8' });
+      return { exitCode: r.status ?? 1, stdout: r.stdout ?? '', stderr: r.stderr ?? '' };
+    }
+    const a = request.args;
+    if (a[0] === 'version') return { exitCode: 0, stdout: 'sbx 0.48.0', stderr: '' };
+    if (a.includes('--help')) return { exitCode: 0, stdout: '--clone --skills --json policy init', stderr: '' };
+    if (a[0] === 'skills') return {
+      exitCode: 0, stdout: JSON.stringify({ store: '/official', skills: ['implement', 'tdd', 'code-review'] }), stderr: '',
+    };
+    if (a[0] === 'ls') return { exitCode: 0, stdout: '[]', stderr: '' };
+    if (a[0] === 'policy') return { exitCode: 0, stdout: '{"initialized":true}', stderr: '' };
+    calls.push(a);
+    return { exitCode: 1, stdout: '', stderr: 'Docker deliberately unavailable' };
+  };
+}
+
+test('targeted resume can explicitly discard an unusable checkpoint and keeps the previous evidence', async t => {
+  const f = await fixture(t, async f => { await corruptions[2][2](f); });
+  const bundleBefore = await readFile(f.bundlePath);
+  const reportBefore = await readFile(f.reportPath, 'utf8');
+  const calls: string[][] = [];
+  const service = new TaskBatchService({ repositoryPath: f.repo, storePath: f.storePath, subprocessExecutor: sbxPreparingExecutor(calls) });
+  const state = await service.resumeTask(f.snapshot.runId, 'work', { discardCheckpoint: true });
+  const work = state.tasks[0];
+  assert.equal(work.status, 'failed', 'the retry runs and fails on the deliberately unavailable executor');
+  assert.equal(work.attempts.length, 2, 'the explicit discard creates a new identifiable attempt');
+  const [original, retry] = work.attempts;
+  assert.equal(original.attemptId, 'original');
+  assert.equal(original.checkpointIntegrity?.status, 'invalid');
+  assert.ok(original.checkpointDiscarded, 'the operator decision is recorded on the discarded attempt');
+  assert.ok(original.checkpointDiscarded!.discardedAt);
+  assert.notEqual(retry.attemptId, 'original');
+  assert.ok(retry.startedAt, 'the retry actually started');
+  assert.ok(!retry.checkpointDiscarded);
+  assert.ok(calls.length > 0, 'a real new attempt was launched');
+  assert.ok((await readFile(f.bundlePath)).equals(bundleBefore), 'the previous bundle is preserved byte for byte');
+  assert.equal(await readFile(f.reportPath, 'utf8'), reportBefore, 'the previous report is preserved');
+  const persisted = JSON.parse(await readFile(path.join(f.directory, 'state.json'), 'utf8')) as TaskBatchSnapshot;
+  assert.ok(persisted.tasks[0].attempts[0].checkpointDiscarded, 'the discard decision is durable');
+});
+
+test('the fail-closed rejection now points to the explicit discard escape hatch', async t => {
+  const f = await fixture(t, async f => { await corruptions[2][2](f); });
+  await assert.rejects(f.service.resumeTask(f.snapshot.runId, 'work'), (error: unknown) => {
+    assert.ok(error instanceof TaskBatchExecutionError);
+    assert.match(error.message, /checkpoint is invalid/);
+    assert.match(error.message, /--discard-checkpoint/);
+    return true;
+  });
+  await assert.rejects(f.service.resume(f.snapshot.runId), (error: unknown) => {
+    assert.ok(error instanceof TaskBatchExecutionError);
+    assert.match(error.message, /--discard-checkpoint/);
+    return true;
+  });
+});

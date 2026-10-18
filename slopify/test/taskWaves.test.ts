@@ -673,9 +673,10 @@ test('descendants of a failed task stay blocked until an explicit resume integra
 test('a batch records the worker lifecycle with occupancy, retention and replacements', { timeout: 15000 }, async t => {
   const firstRunning = gate(); const releaseFirst = gate();
   t.after(() => { releaseFirst.release(); return Promise.resolve(); });
-  const f = await fixture(t, [task('first', 'codex'), task('broken', 'codex')], async (id, sandbox) => {
+  const f = await fixture(t, [task('first', 'codex'), task('broken', 'codex'), task('third', 'codex')], async (id, sandbox) => {
     if (id === 'first') { await writeFile(path.join(sandbox, 'first.txt'), 'ok'); firstRunning.release(); await releaseFirst.promise; return 0; }
-    return 1;
+    if (id === 'broken') return 1;
+    await writeFile(path.join(sandbox, 'third.txt'), 'ok'); return 0;
   });
   await writeFile(path.join(f.repo, '.slopify', 'runtime.yaml'), 'workers:\n  size: 1\n  lifecycle: recreate\n  mounts: []\n');
   const running = f.service.run(f.batchFile);
@@ -696,16 +697,19 @@ test('a batch records the worker lifecycle with occupancy, retention and replace
   const state = await running;
   assert.equal(state.status, 'failed');
   const workers = state.workers ?? [];
-  assert.equal(workers.length, 2, 'the failed task forced a replacement worker');
+  assert.equal(workers.length, 3, 'each attempt runs on its own recreate-lifecycle worker');
   assert.equal(workers[0].status, 'retired');
   assert.equal(workers[0].taskId, 'first');
   assert.equal(workers[0].attemptId, state.tasks[0].attempts[0].attemptId);
+  assert.equal(workers[0].replacements, 0, 'planned recreate recycling is never counted as a replacement');
   assert.equal(workers[1].status, 'retained');
   assert.equal(workers[1].taskId, 'broken');
   assert.equal(workers[1].attemptId, state.tasks[1].attempts[0].attemptId);
-  assert.equal(workers[1].replacements, 1);
+  assert.equal(workers[1].replacements, 0, 'a retained worker only counts once a new worker restores its capacity');
+  assert.equal(workers[2].taskId, 'third');
+  assert.equal(workers[2].replacements, 1, 'the worker that restores the failed capacity counts exactly one real replacement');
   const report = taskBatchReport(state);
-  assert.deepEqual(report.workerPool?.occupancy, { available: 0, assigned: 0, cleaning: 0, verifying: 0, retained: 1, retired: 1 });
+  assert.deepEqual(report.workerPool?.occupancy, { available: 0, assigned: 0, cleaning: 0, verifying: 0, retained: 1, retired: 2 });
   assert.equal(report.workerPool?.replacements, 1);
   const text = formatTaskBatchReport(state);
   assert.match(text, /1 replacement during this run/);

@@ -33,7 +33,7 @@ export const taskBatchHelp = [
   '  slopify tasks status <run-id> [--cwd <repository>] [--store <directory>] [--json]',
   '  slopify tasks watch <run-id> [--cwd <repository>] [--store <directory>] [--interval <ms>] [--json]',
   '  slopify tasks resume <run-id> [--cwd <repository>] [--store <directory>] [--json]',
-  '  slopify tasks resume-task <run-id> <task-id> [--cwd <repository>] [--store <directory>] [--json]',
+  '  slopify tasks resume-task <run-id> <task-id> [--discard-checkpoint] [--cwd <repository>] [--store <directory>] [--json]',
   '  slopify tasks resolve-conflict <run-id> [--strategy <use-current|use-incoming|manual>] [--cwd <repository>] [--store <directory>] [--json]',
   '  slopify tasks conflict <run-id> [--cwd <repository>] [--store <directory>] [--json]',
   '  slopify tasks validate-resolution <run-id> <resolution-id> [--cwd <repository>] [--store <directory>] [--json]',
@@ -48,6 +48,8 @@ export const taskBatchHelp = [
   'During execution progress is written to stderr (JSON lines with --json); stdout keeps one final result.',
   'Periodic activity signals also go to stderr: JSON events of type "activity-signal" with --json, one prefixed sentence per line in text mode.',
   'Running is durable state; inspect sandbox liveness before retrying an interrupted process.',
+  'An unusable durable checkpoint stays fail-closed by default: nothing is rerun or overwritten and the retained evidence (preuves) of the failed attempt is kept for inspection.',
+  'resume-task --discard-checkpoint is the explicit operator escape hatch: it sets the unusable checkpoint aside on a recorded decision, preserves the previous attempt evidence untouched and starts a new identifiable attempt.',
   'Batch paths are relative to the calling directory; specFile is relative to the batch file.',
   'Optional inputFiles are repository-relative files; each must be committed at the selected run base.',
   'Batch defaults: {"agent":"codex","model":"gpt-6-luna","effort":"medium"}; each task may override agent, model and effort.',
@@ -130,6 +132,7 @@ export async function runTaskBatchCli(
     let storePath: string | undefined;
     let baseRef: string | undefined;
     let strategy: 'use-current' | 'use-incoming' | 'manual' | undefined;
+    let discardCheckpoint = false;
     let watchIntervalMs = DEFAULT_WATCH_INTERVAL_MS;
     const positional: string[] = [];
     for (let index = 1; index < argv.length; index += 1) {
@@ -153,6 +156,11 @@ export async function runTaskBatchCli(
         }
         else if (next === 'use-current' || next === 'use-incoming' || next === 'manual') strategy = next;
         else throw new Error(`Invalid strategy: ${next}. Use 'use-current', 'use-incoming', or 'manual'.`);
+        continue;
+      }
+      if (value === '--discard-checkpoint') {
+        if (action !== 'resume-task') throw new Error('--discard-checkpoint is only supported by tasks resume-task.');
+        discardCheckpoint = true;
         continue;
       }
       if (value.startsWith('-')) throw new Error(`Unknown tasks option "${value}".`);
@@ -210,7 +218,7 @@ export async function runTaskBatchCli(
         activitySignals = await service.recentActivitySignals(runId);
         break;
       case 'resume': snapshot = await service.resume(runId, options); break;
-      case 'resume-task': snapshot = await service.resumeTask(runId, taskId, options); break;
+      case 'resume-task': snapshot = await service.resumeTask(runId, taskId, { ...options, discardCheckpoint }); break;
       case 'resolve-conflict': snapshot = await service.resolveConflict(runId, { ...options, resolutionStrategy: strategy }); break;
       case 'validate-resolution': snapshot = await service.validateResolution(runId, taskId, options); break;
       default: throw new Error(taskBatchHelp);
