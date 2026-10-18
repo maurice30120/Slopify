@@ -8,7 +8,7 @@ import { createNodeSubprocessExecutor, type SubprocessExecutor } from '@acp-clie
 import { DockerTaskExecutor } from './dockerTaskExecutor.js';
 import { DockerRunHealth, type DockerRunSuspension } from './dockerRunHealth.js';
 import { loadTaskRuntimeConfig } from './taskRuntimeConfig.js';
-import type { TaskWorkerPoolConfig, TaskWorkerState } from './taskWorkerPool.js';
+import { assertWorkerPoolSize, type TaskWorkerPoolConfig, type TaskWorkerState } from './taskWorkerPool.js';
 import type { TaskExecutionResult, TaskSandboxResource } from './taskExecution.js';
 import { activityJournalPath, appendActivitySignal, readActivitySignals, readAllActivitySignals } from './activityJournal.js';
 import type { ActivitySignal } from './activitySignal.js';
@@ -167,9 +167,8 @@ export class TaskBatchService {
 
   constructor(options: TaskBatchServiceOptions) {
     const capacity = options.maxConcurrentTasks ?? DEFAULT_MAX_CONCURRENT_TASKS;
-    if (!Number.isInteger(capacity) || capacity < 1 || capacity > 10) {
-      throw new RangeError('maxConcurrentTasks must be an integer between 1 and 10.');
-    }
+    // Garde partagée avec la configuration du pool de workers : une seule autorité sur l'entier 1–10.
+    assertWorkerPoolSize(capacity, 'maxConcurrentTasks');
     this.maxConcurrentTasks = capacity;
     this.repositoryPath = path.resolve(options.repositoryPath);
     this.onUpdate = options.onUpdate;

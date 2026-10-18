@@ -11,6 +11,14 @@ export interface TaskWorkerPoolConfig {
   image?: string;
 }
 export type TaskWorkerStatus = 'available' | 'assigned' | 'cleaning' | 'verifying' | 'retired' | 'retained';
+/** Shared guard and single authority over TaskWorkerPoolConfig: the worker pool size is an integer from 1 to 10. */
+export function assertWorkerPoolSize(size:number,label='Worker pool size'):void{
+  if(!Number.isInteger(size)||size<1||size>10)throw new Error(`${label} must be an integer from 1 to 10.`);
+}
+/** Shared guard and single authority over TaskWorkerPoolConfig: shared mounts are absolute readonly paths. */
+export function assertSharedWorkerMounts(mounts:string[],label='Shared worker mounts'):void{
+  if(mounts.some(mount=>!mount.endsWith(':ro')||!path.isAbsolute(mount.slice(0,-3))))throw new Error(`${label} must contain absolute readonly paths ending in :ro.`);
+}
 export interface TaskWorkerState {
   workerId: string;
   sandboxName: string;
@@ -40,8 +48,8 @@ export class TaskWorkerPool {
   private readonly waiters:Array<()=>void>=[];
   constructor(private readonly execute:SubprocessExecutor, readonly config:TaskWorkerPoolConfig,
     private readonly changed?:(workers:TaskWorkerState[])=>void|Promise<void>) {
-    if(!Number.isInteger(config.size)||config.size<1||config.size>10)throw new Error('Worker pool size must be an integer from 1 to 10.');
-    if(config.mounts.some(mount=>!mount.endsWith(':ro')||!path.isAbsolute(mount.slice(0,-3))))throw new Error('Shared worker mounts must be absolute readonly paths ending in :ro.');
+    assertWorkerPoolSize(config.size);
+    assertSharedWorkerMounts(config.mounts);
     if(!['reuse','recreate'].includes(config.lifecycle))throw new Error('Worker lifecycle must be reuse or recreate.');
   }
   private async emit(){await this.changed?.(this.workers.map(({workerId,sandboxName,agent,status,taskId,attemptId,replacements})=>({workerId,sandboxName,agent,status,taskId,attemptId,replacements})));}
