@@ -4,6 +4,8 @@ Ces trois PNG sont intégrés au [README principal](../../../README.md) par des
 chemins relatifs au dépôt, compatibles avec l’affichage GitHub. Leur contenu est
 fondé sur une inspection statique du code présent dans l’espace de travail le
 8 octobre 2026, avec un plafond d’exécution de **10 tâches par vague**.
+Ces illustrations historiques précèdent l’ordonnanceur au fil de l’eau (#103) :
+le texte du README principal et du guide du coordinateur décrit le comportement actuel.
 
 ## Références
 

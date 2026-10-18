@@ -1,15 +1,16 @@
 # Slopify V2
 
 Slopify reçoit une spec et un lot JSON préparés à l’extérieur, puis exécute les
-tâches avec Pi ou Codex dans des sandboxes Docker distincts. Les dix premières
-tâches prêtes dans l’ordre du JSON forment une vague. Toutes partent du même commit
-intégré ; la vague suivante attend leur fin et l’intégration des réussites dans
-l’ordre du JSON. Un échec bloque seulement ses descendants, sans relance automatique.
+tâches avec Pi ou Codex dans des sandboxes Docker distincts. Dès qu’une place se
+libère, la première tâche prête dans l’ordre du JSON démarre, avec au plus dix
+tâches actives. Chaque tâche garde sa base épinglée au démarrage. Les checkpoints
+s’intègrent un à un dès leur disponibilité ; leurs descendants deviennent alors
+éligibles. Un échec bloque seulement ses descendants, sans relance automatique.
 
 ## Fonctionnement en images
 
-Les trois planches ci-dessous décrivent le fonctionnement observé dans le code.
-Une vague peut exécuter jusqu’à **10 tâches prêtes en parallèle**, chacune avec
+Les trois planches ci-dessous illustrent le fonctionnement historique par vagues.
+L’ordonnanceur actuel admet jusqu’à **10 tâches prêtes en parallèle**, chacune avec
 son agent principal et sa sandbox. Les sous-agents de revue ne sont pas comptés
 dans ce plafond.
 

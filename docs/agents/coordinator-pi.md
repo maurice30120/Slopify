@@ -233,19 +233,20 @@ Avant tout lancement, Slopify :
 
 ## 3. Exécution et suivi
 
-### 3.1 Ordonnancement par vagues
+### 3.1 Ordonnancement au fil de l’eau
 
-Slopify exécute les tâches par **vagues** :
+Slopify affecte chaque capacité libre à la première tâche prête dans l’ordre du JSON,
+avec au plus **dix tâches actives** par lot, y compris après reprise.
 
-1. **Vague 0** : Les dix premières tâches sans dépendance (`dependsOn: []`), dans l’ordre du JSON
-2. **Vague suivante** : Les dix premières tâches encore prêtes, après intégration de la vague précédente
-3. **Vague N** : Les dix premières tâches encore prêtes dont **toutes** les dépendances ont réussi
-
-**Propriétés :**
-- Au maximum **dix tâches** sont lancées en parallèle, y compris après reprise ; le plafond est fixe. Les tâches prêtes restantes attendent la vague suivante.
-- Chaque tâche dans son **propre sandbox Docker**
-- Les tâches d'une vague partagent le **même commit de base** (état intégré courant)
-- L’intégration attend la fin de **toute la vague**, intègre les réussites dans l’ordre du JSON, puis recalcule les tâches prêtes.
+- Une tâche devient prête après l’intégration réussie de tous ses prérequis.
+- Chaque tâche conserve le commit de base épinglé à son démarrage ; les nouvelles
+  tâches partent du dernier commit intégré.
+- Un seul intégrateur traite les checkpoints au fil de leur disponibilité. L’ordre
+  JSON départage les checkpoints prêts dans le même tour.
+- Une tâche lente ne retarde pas les tâches indépendantes. Un échec bloque ses
+  descendants, sans relance automatique.
+- Un conflit suspend l’admission et les intégrations ; les tâches déjà actives
+  terminent et leurs résultats restent disponibles pour une résolution explicite.
 
 ### 3.2 États des tâches
 
@@ -592,16 +593,16 @@ slopify tasks run batch.json --cwd /private/tmp/slopify-v2-smoke-run --store /tm
 
 **Étape 5 : Pi suit le run**
 ```bash
-# Vague 0 : task-add (pi) + task-multiply (codex) en parallèle
+# Démarrage : task-add (pi) + task-multiply (codex) en parallèle
 slopify tasks status 550e8400...  # status: running, 2 tasks running
 
-# Après vague 0 : les deux tâches réussissent
+# Chaque checkpoint est intégré dès sa disponibilité
 slopify tasks status 550e8400...  # status: running, 1 task completed, 1 task pending
 
-# Vague 1 : task-total démarre
+# Les deux prérequis intégrés : task-total démarre
 slopify tasks status 550e8400...  # status: running, 1 task running
 
-# Vague 2 : task-verify démarre
+# task-total intégré : task-verify démarre
 slopify tasks status 550e8400...  # status: running, 1 task running
 
 # Fin : toutes les tâches réussissent
