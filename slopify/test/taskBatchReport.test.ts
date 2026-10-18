@@ -255,3 +255,41 @@ test('reliability exposes checkpoint integrity checks and keeps valid, invalid a
   assert.deepEqual(taskBatchReport(untouched).reliability.checkpoints, { valid: [], invalid: [], incomplete: [] });
   assert.ok(!formatTaskBatchReport(untouched).includes('Checkpoints:'));
 });
+
+
+test('batch-level stops for conflict or shared docker outage stay distinct from task failures', () => {
+  const failed = task('broken', 'failed');
+  failed.attempts.push({ attemptId: 'att-broken', taskBaseCommit: 'base', status: 'failed', exitCode: 2 });
+
+  const suspended = state([failed]);
+  suspended.status = 'interrupted';
+  suspended.suspension = { kind: 'docker_unavailable', detectedAt: '2026-10-18T09:30:00Z',
+    failedCommand: { command: 'sbx', args: ['exec', 'worker'], exitCode: 1 },
+    healthCheck: { exitCode: 7, stdout: '', stderr: 'docker down' }, stops: [] };
+  const outage = taskBatchReport(suspended);
+  assert.equal(outage.reliability.stop.kind, 'docker_outage');
+  assert.match(outage.reliability.stop.message, /shared Docker control failure/);
+  assert.match(outage.reliability.stop.message, /not a task failure/);
+  assert.match(outage.reliability.stop.message, /1 task failure \(broken\)/);
+  assert.match(formatTaskBatchReport(suspended), /Stop reason: .*2026-10-18T09:30:00Z/);
+
+  const conflicted = state([task('conflicted', 'conflicted'), failed]);
+  conflicted.status = 'conflicted';
+  conflicted.conflict = { taskId: 'conflicted', attemptId: 'att-conflict', taskBaseCommit: 'base',
+    currentCommit: 'current', incomingCommit: 'incoming', files: ['src/a.ts'], output: 'conflict' };
+  const conflictReport = taskBatchReport(conflicted);
+  assert.equal(conflictReport.reliability.stop.kind, 'integration_conflict');
+  assert.match(conflictReport.reliability.stop.message, /integration conflict in task conflicted/);
+  assert.match(conflictReport.reliability.stop.message, /not a task failure/);
+
+  const taskOnly = state([failed]);
+  taskOnly.status = 'failed';
+  const taskOnlyReport = taskBatchReport(taskOnly);
+  assert.equal(taskOnlyReport.reliability.stop.kind, 'task_failures');
+  assert.match(taskOnlyReport.reliability.stop.message, /Batch ended by task failures \(broken\)/);
+  assert.match(taskOnlyReport.reliability.stop.message, /no conflict or shared outage/);
+
+  const running = taskBatchReport(state([task('ok', 'succeeded')]));
+  assert.equal(running.reliability.stop.kind, 'none');
+  assert.match(running.reliability.stop.message, /No batch-level stop/);
+});

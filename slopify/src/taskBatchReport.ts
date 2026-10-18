@@ -49,6 +49,11 @@ export interface BatchReliabilityView {
     invalid: Array<{ taskId: string; attemptId: string; reason?: string }>;
     incomplete: Array<{ taskId: string; attemptId: string; reason?: string }>;
   };
+  /** Why the batch stopped, kept separate from task-local failures (#109). */
+  stop: {
+    kind: 'none' | 'integration_conflict' | 'docker_outage' | 'operator_interruption' | 'task_failures';
+    message: string;
+  };
 }
 
 /** A worker replaced during the batch counts every worker taken out of service before its creation. */
@@ -84,7 +89,31 @@ function reliabilityView(snapshot: TaskBatchSnapshot, workerPool?: BatchWorkerPo
     ...(workerPool ? { workers: { occupancy: { ...workerPool.occupancy }, replacements: workerPool.replacements,
       detail: 'see the Workers section of this report' as const } } : {}),
     checkpoints: checkpointIntegrityView(snapshot),
+    stop: stopView(snapshot, failedTaskIds),
   };
+}
+
+/**
+ * Batch-level stop reason: an integration conflict or a shared Docker outage
+ * stopped the whole batch and must never be read as a task failure.
+ */
+function stopView(snapshot: TaskBatchSnapshot, failedTaskIds: string[]): BatchReliabilityView['stop'] {
+  const failures = `${failedTaskIds.length} task failure${failedTaskIds.length === 1 ? '' : 's'}`
+    + `${failedTaskIds.length ? ` (${failedTaskIds.join(', ')})` : ''}`;
+  if (snapshot.conflict) return { kind: 'integration_conflict',
+    message: `Batch stopped by an integration conflict in task ${snapshot.conflict.taskId}; explicit resolution required. `
+      + `This stop is not a task failure; ${failures}.` };
+  if (snapshot.suspension) return { kind: 'docker_outage',
+    message: `Batch suspended by a shared Docker control failure detected at ${snapshot.suspension.detectedAt}; `
+      + `this is a common outage, not a task failure; ${failures}.` };
+  if (snapshot.status === 'interrupted') return { kind: 'operator_interruption',
+    message: `Batch interrupted by an operator or coordinator stop; this is not a task failure; ${failures}.` };
+  if (snapshot.status === 'failed') return { kind: 'task_failures',
+    message: `Batch ended by task failures${failedTaskIds.length ? ` (${failedTaskIds.join(', ')})` : ''}; `
+      + `no conflict or shared outage stopped this batch.` };
+  return { kind: 'none',
+    message: failedTaskIds.length ? `No batch-level stop recorded; ${failures} ${failedTaskIds.length === 1 ? 'is' : 'are'} task-local.`
+      : 'No batch-level stop and no task failure recorded.' };
 }
 
 /** Every recorded integrity check of every attempt, keyed by its durable outcome. */
@@ -363,6 +392,7 @@ export function formatTaskBatchReport(snapshot: TaskBatchSnapshot, storePath?: s
     formatReliability(report.reliability),
     ...formatWorkerOccupancy(report.reliability),
     ...formatCheckpointIntegrity(report.reliability),
+    `Stop reason: ${report.reliability.stop.message}`,
     `Integration branch: ${snapshot.integrationBranch}`,
     `Integration commit: ${snapshot.integrationCommit ?? snapshot.runBaseCommit}`,
     ...formatActivitySignalWindow(activitySignals ?? []),
