@@ -240,6 +240,11 @@ export class TaskBatchService {
       // lors d'une reprise explicite évite de réexécuter l'agent.
       for (const task of snapshot.tasks) {
         if (task.status !== 'completed') continue;
+        if (this.review && task.phase !== 'accepted') {
+          await this.reviewUntilAcceptedOrStopped(snapshot, task, workspacePath, executor, undefined);
+          if (snapshot.criticalFailure) return;
+        }
+        if (task.status !== 'completed') continue;
         await this.integrateTask(snapshot, task, workspacePath, executor);
         if (snapshot.conflict) return;
       }
@@ -350,6 +355,14 @@ export class TaskBatchService {
     task.phase = task.corrections ? 'correction' : 'implementation';
     await this.executeTask(snapshot, task, taskBaseCommit, integrationPath, executor, signal);
     if (snapshot.tasks.find(t => t.id === task.id)!.status !== 'completed') return;
+    await this.reviewUntilAcceptedOrStopped(snapshot, task, integrationPath, executor, signal);
+  }
+
+  /** Boucle de review partagée : aucun chemin vers l'intégration ne contourne un verdict PASS avec preuves.
+   * Un crash ou une reprise n'y consomme jamais de correction : le compteur n'augmente que sur une décision
+   * métier du contrôleur après une review FAIL. */
+  private async reviewUntilAcceptedOrStopped(snapshot: TaskBatchSnapshot, task: BatchTaskState, integrationPath: string,
+    executor: DockerTaskExecutor, signal?: AbortSignal): Promise<void> {
     task.candidateCommit = task.attempts.at(-1)!.checkpoint?.commit;
     task.phase = 'review';
     task.status = 'running';
@@ -645,7 +658,12 @@ export class TaskBatchService {
       const updatedTask = snapshot.tasks.find(t => t.id === taskId)!;
       // Après l'exécution, intègre si elle a réussi (executeTask place task.status à completed en cas de succès).
       if (updatedTask.status === 'completed') {
-        await this.integrateTask(snapshot, updatedTask, workspacePath, executor);
+        if (this.review && updatedTask.phase !== 'accepted') {
+          await this.reviewUntilAcceptedOrStopped(snapshot, updatedTask, workspacePath, executor, options.signal);
+        }
+        if (updatedTask.status === 'completed') {
+          await this.integrateTask(snapshot, updatedTask, workspacePath, executor);
+        }
       }
 
       await this.finishExecution(snapshot, options.signal);

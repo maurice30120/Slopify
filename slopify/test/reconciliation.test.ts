@@ -347,3 +347,28 @@ test('scenario 11 (non-regression): existing V2 behaviour unchanged without the 
   const invalidProof = parseReviewVerdict('SLOPIFY_RESULT_REVIEW={"verdict":"PASS","proofs":{"implementation-report":"  "}}');
   assert.equal(missingProofs([{ id: 'implementation-report', description: 'report' }], invalidProof.proofs).length, 1, 'a blank proof is missing');
 });
+
+test('T7 resume: a completed but unreviewed task goes through REVIEW before integration, consuming no correction', { timeout: 60000 }, async t => {
+  const f = await fixture(t, [task('A', 'pi'), task('B', 'pi')], {
+    missions: { A: { reviews: [PASS_ALL, PASS_ALL] }, B: { reviews: [PASS_ALL] } },
+  });
+  const state = await f.service.run(f.batchFile);
+  assert.equal(state.status, 'succeeded');
+  // Simulate a crash that lost the review outcome: A is durable as completed but unreviewed.
+  const persisted = JSON.parse(await readFile(path.join(f.root, 'runs', state.runId, 'state.json'), 'utf8')) as TaskBatchSnapshot;
+  const a = persisted.tasks.find(task => task.id === 'A')!;
+  a.status = 'completed';
+  a.phase = undefined;
+  await writeFile(path.join(f.root, 'runs', state.runId, 'state.json'), JSON.stringify(persisted, null, 2));
+  // A fresh session never auto-resumes: status() only reads.
+  const afterCrash = await f.service.status(state.runId);
+  assert.equal(afterCrash.tasks.find(task => task.id === 'A')!.status, 'completed');
+  // The explicit manual resume routes A through the REVIEW gate before integration.
+  const resumed = await f.service.resume(state.runId);
+  const resumedA = resumed.tasks.find(task => task.id === 'A')!;
+  assert.equal(resumedA.status, 'succeeded');
+  assert.equal(resumedA.phase, 'accepted', 'resume routed A through the review gate');
+  assert.equal(resumedA.corrections ?? 0, 0, 'the crash consumed no business correction');
+  assert.equal(resumed.status, 'succeeded');
+  assert.ok(f.launched.filter(id => id === 'review:A').length >= 2, 'A was re-reviewed on resume');
+});
