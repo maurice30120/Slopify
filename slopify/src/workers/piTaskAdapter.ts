@@ -1,7 +1,7 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import type { TaskAgentAdapter, TaskAgentContext } from './dockerTaskExecutor.js';
-import type { TaskBatchDiagnostic } from './taskBatch.js';
+import type { TaskBatchDiagnostic } from '../taskBatch.js';
 import { agentOutcomeDiagnostics } from './agentOutcome.js';
 
 /** L'image Pi exige la configuration explicite de Mistral et l'exemple officiel de délégation. */

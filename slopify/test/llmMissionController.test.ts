@@ -4,9 +4,9 @@ import type { TaskBatchSnapshot } from '../src/taskBatch.js';
 import {
   DECISION_MARKER, createLlmMissionController, mechanicalProofContract, parseControllerDecision,
   type ControllerLlmInvoker,
-} from '../src/llmMissionController.js';
-import type { ControllerTaskView } from '../src/missionController.js';
-import { defaultMissionController } from '../src/missionController.js';
+} from '../src/controller/llmMissionController.js';
+import type { ControllerTaskView } from '../src/controller/missionController.js';
+import { defaultMissionController } from '../src/controller/missionController.js';
 
 const snapshot = {} as TaskBatchSnapshot;
 const view = (over: Partial<ControllerTaskView> = {}): ControllerTaskView => ({

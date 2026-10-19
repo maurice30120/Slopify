@@ -1,5 +1,6 @@
 import * as path from 'node:path';
 import type { TaskBatchSnapshot, TaskBatchDiagnostic, BatchTaskState } from './taskBatch.js';
+import { deriveTaskProgress } from './controller/attemptJournal.js';
 
 export interface BatchIssue extends TaskBatchDiagnostic {
   severity: 'info' | 'warning' | 'error';
@@ -32,6 +33,10 @@ export function taskBatchReport(snapshot: TaskBatchSnapshot, storePath?: string)
     phase, total: snapshot.tasks.length, counts, activeTaskIds, readyTaskIds, waitingOn,
     awaitingIntegrationTaskIds: snapshot.tasks.filter(task => task.status === 'completed').map(task => task.id),
   };
+  const taskProgress = Object.fromEntries(snapshot.tasks.map(task => {
+    const derived = deriveTaskProgress(task, snapshot.maxCorrections ?? 3);
+    return [task.id, { phase: derived.phase, corrections: derived.corrections, correctionsRemaining: derived.correctionsRemaining }];
+  }));
   const issues: BatchIssue[] = snapshot.diagnostics.map(diagnostic => ({ ...diagnostic,
     ...(diagnostic.code !== 'host_changes_excluded' && !diagnostic.code.includes('cleanup')
       && (snapshot.status === 'running' || snapshot.status === 'succeeded') ? { historical: true } : {}),
@@ -90,7 +95,7 @@ export function taskBatchReport(snapshot: TaskBatchSnapshot, storePath?: string)
       description: `Inspect sandbox for task ${task.id}`, command: attempt.resource.inspectCommand,
     });
   }
-  return { ...snapshot, progress, issues, nextActions };
+  return { ...snapshot, progress, taskProgress, issues, nextActions };
 }
 
 export function displayCommand(command: string[]): string {

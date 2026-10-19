@@ -6,8 +6,9 @@ import { tmpdir } from 'node:os';
 import test from 'node:test';
 import type { SubprocessExecutor } from '@acp-client/sandbox';
 import { TaskBatchService, type BatchTask, type TaskBatchSnapshot } from '../src/taskBatch.js';
-import type { MissionController, ReviewVerdict } from '../src/missionController.js';
-import { parseReviewVerdict, missingProofs } from '../src/missionController.js';
+import type { MissionController, ReviewVerdict } from '../src/controller/missionController.js';
+import { parseReviewVerdict, missingProofs } from '../src/controller/missionController.js';
+import { deriveTaskProgress } from '../src/controller/attemptJournal.js';
 
 function git(repo: string, ...args: string[]) {
   return execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8' }).trim();
@@ -156,8 +157,8 @@ test('scenario 1 (DAG): a dependent ticket only starts after review PASS and int
   const state = await f.service.run(f.batchFile);
   assert.equal(state.status, 'succeeded');
   const a = state.tasks.find(t => t.id === 'A')!;
-  assert.equal(a.phase, 'accepted');
-  assert.equal(a.corrections, 1, 'A consumed exactly one correction');
+  assert.equal(deriveTaskProgress(a, 3).phase, 'accepted');
+  assert.equal(deriveTaskProgress(a, 3).corrections, 1, 'A consumed exactly one correction');
   const b = state.tasks.find(t => t.id === 'B')!;
   assert.equal(b.status, 'succeeded');
   assert.ok(f.launched.includes('review:A'), 'A was independently reviewed');
@@ -173,7 +174,7 @@ test('scenario 2 (real verification): a PASS missing a required proof fails the 
   const state = await f.service.run(f.batchFile);
   const a = state.tasks.find(t => t.id === 'A')!;
   assert.equal(a.status, 'succeeded');
-  assert.equal(a.corrections, 1, 'a PASS without required proof is not accepted');
+  assert.equal(deriveTaskProgress(a, 3).corrections, 1, 'a PASS without required proof is not accepted');
 });
 
 test('scenario 3 (fail and correct): a FAIL is followed by a targeted correction that reuses the candidate checkpoint', { timeout: 30000 }, async t => {
@@ -186,8 +187,10 @@ test('scenario 3 (fail and correct): a FAIL is followed by a targeted correction
   const state = await f.service.run(f.batchFile);
   const a = state.tasks.find(t => t.id === 'A')!;
   assert.equal(a.status, 'succeeded');
-  assert.equal(a.corrections, 1);
+  assert.equal(deriveTaskProgress(a, 3).corrections, 1);
   assert.equal(a.attempts.length, 2, 'implementation and correction are two attempts');
+  assert.equal(a.attempts[0].mission, 'IMPLEMENT');
+  assert.equal(a.attempts[1].mission, 'CORRECT', 'the correction attempt carries its mission');
   const second = a.attempts[1];
   assert.ok(second.taskBaseCommit, 'correction attempt keeps a candidate base');
   assert.notEqual(second.taskBaseCommit, a.attempts[0].taskBaseCommit, 'correction reuses candidate work, not the old integration commit');
@@ -201,8 +204,9 @@ test('scenario 4 (early stop): the controller decides STOP at the first failure 
   };
   const f = await fixture(t, [task('A', 'pi')], { controller, missions: { A: { reviews: [FAIL_ONE] } } });
   const state = await f.service.run(f.batchFile);
-  assert.equal(state.criticalFailure?.taskId, 'A');
-  assert.equal(state.status, 'critical_failure');
+  assert.equal(state.controllerStop?.taskId, 'A', 'the controller decision is a distinct persistent stop');
+  assert.equal(state.criticalFailure, undefined, 'a controller STOP is not a critical failure');
+  assert.equal(state.status, 'stopped');
   assert.equal(f.launched.filter(id => id === 'review:A').length, 1);
   assert.ok(!f.launched.some(id => id === 'final-review'), 'no new mission after STOP');
 });
@@ -212,11 +216,11 @@ test('scenario 5 (ceiling): three failed corrections trigger the global critical
   const state = await f.service.run(f.batchFile);
   assert.equal(state.status, 'critical_failure');
   const a = state.tasks.find(t => t.id === 'A')!;
-  assert.equal(a.corrections, 3, 'exactly three corrections consumed');
+  assert.equal(deriveTaskProgress(a, 3).corrections, 3, 'exactly three corrections consumed');
   assert.equal(a.status, 'failed');
   assert.equal(state.criticalFailure?.taskId, 'A');
   assert.ok(!f.launched.some(id => id === 'final-review'), 'no new ticket planned after the ceiling');
-  assert.equal(a.phase, 'blocked');
+  assert.equal(deriveTaskProgress(a, 3).phase, 'blocked');
 });
 
 test('scenario 6 (independent tickets): an independent ticket finishes even when another enters critical failure', { timeout: 60000 }, async t => {
@@ -293,7 +297,7 @@ test('scenario 9 (crash): a snapshot found after restart is never auto-resumed a
   void controller;
   const state = await f.service.run(f.batchFile);
   const persisted = JSON.parse(await readFile(path.join(f.root, 'runs', state.runId, 'state.json'), 'utf8'));
-  assert.equal(persisted.tasks[0].corrections ?? 0, 0, 'a stored snapshot never consumes corrections on read');
+  assert.equal(persisted.tasks[0].attempts.filter((attempt: { mission?: string }) => attempt.mission === 'CORRECT').length, 0, 'a stored snapshot never consumes corrections on read');
   await assert.rejects(() => controller.status('not-a-run'), /Cannot read state file/, 'status does not resume anything');
 });
 
@@ -358,7 +362,6 @@ test('T7 resume: a completed but unreviewed task goes through REVIEW before inte
   const persisted = JSON.parse(await readFile(path.join(f.root, 'runs', state.runId, 'state.json'), 'utf8')) as TaskBatchSnapshot;
   const a = persisted.tasks.find(task => task.id === 'A')!;
   a.status = 'completed';
-  a.phase = undefined;
   await writeFile(path.join(f.root, 'runs', state.runId, 'state.json'), JSON.stringify(persisted, null, 2));
   // A fresh session never auto-resumes: status() only reads.
   const afterCrash = await f.service.status(state.runId);
@@ -367,8 +370,8 @@ test('T7 resume: a completed but unreviewed task goes through REVIEW before inte
   const resumed = await f.service.resume(state.runId);
   const resumedA = resumed.tasks.find(task => task.id === 'A')!;
   assert.equal(resumedA.status, 'succeeded');
-  assert.equal(resumedA.phase, 'accepted', 'resume routed A through the review gate');
-  assert.equal(resumedA.corrections ?? 0, 0, 'the crash consumed no business correction');
+  assert.equal(deriveTaskProgress(resumedA, 3).phase, 'accepted', 'resume routed A through the review gate');
+  assert.equal(deriveTaskProgress(resumedA, 3).corrections, 0, 'the crash consumed no business correction');
   assert.equal(resumed.status, 'succeeded');
   assert.ok(f.launched.filter(id => id === 'review:A').length >= 2, 'A was re-reviewed on resume');
 });
@@ -395,4 +398,23 @@ test('T9 prompts: implementer keeps TDD and drops self-review only under the ind
   assert.ok(reviewHarness.includes('Required proofs:'), 'the reviewer receives the proof contract');
   assert.ok(reviewHarness.includes('verifiable reference'), 'the reviewer must provide verifiable references');
   assert.ok(reviewHarness.includes('An affirmation like "it works" is not a proof'), 'a bare claim is rejected as a proof');
+});
+
+test('scenario 12: the final lot review is purely informational under the gate — a FAIL verdict changes no status', { timeout: 60000 }, async t => {
+  const f = await fixture(t, [task('A', 'pi')], {
+    missions: {
+      A: { reviews: [PASS_ALL] },
+      'final-review': { reviews: [{ verdict: 'FAIL', proofs: {}, findings: ['global-smell'], summary: 'informational' }] },
+    },
+  });
+  const state = await f.service.run(f.batchFile);
+  assert.equal(state.status, 'succeeded', 'the run stays succeeded whatever the final review says');
+  assert.equal(state.finalReview?.verdict, 'FAIL', 'the final verdict is persisted');
+  assert.deepEqual(state.finalReview?.findings, ['global-smell']);
+  for (const task of state.tasks) {
+    assert.equal(task.status, 'succeeded', `no task status changed: ${task.id}`);
+  }
+  const work = state.tasks.find(task => task.id === 'A')!;
+  assert.equal(deriveTaskProgress(work, 3).corrections, 0, 'no correction was triggered by the final review');
+  assert.ok(state.decisions?.some(decision => decision.action === 'INFORMATIVE_REVIEW'), 'the informational review is journaled');
 });

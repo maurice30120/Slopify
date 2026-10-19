@@ -3,11 +3,11 @@ import { mkdir, writeFile, readFile, copyFile, readdir } from 'node:fs/promises'
 import { createHash } from 'node:crypto';
 import * as path from 'node:path';
 import { createNodeSubprocessExecutor, DockerSandboxRuntime, GitPromotion, type SubprocessExecutor, type SubprocessRequest, type SubprocessResult } from '@acp-client/sandbox';
-import type { TaskBatchDiagnostic } from './taskBatch.js';
+import type { TaskBatchDiagnostic } from '../taskBatch.js';
 import type { TaskExecutor, TaskExecutionRequest, TaskExecutionResult, TaskSandboxResource } from './taskExecution.js';
 import { createPiTaskAdapter } from './piTaskAdapter.js';
 import { agentOutcomeDiagnostics } from './agentOutcome.js';
-import { parseReviewVerdict } from './missionController.js';
+import { parseReviewVerdict } from '../controller/missionController.js';
 
 /** Contrat fonctionnel de TaskAgentContext dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface TaskAgentContext extends TaskExecutionRequest {

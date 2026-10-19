@@ -3,8 +3,8 @@ import { mkdir } from 'node:fs/promises';
 import { readFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import type { SubprocessExecutor } from '@acp-client/sandbox';
-import { DockerTaskExecutor } from './dockerTaskExecutor.js';
-import type { TaskAgent, TaskBatchDiagnostic, TaskBatchSnapshot } from './taskBatch.js';
+import { DockerTaskExecutor } from '../workers/dockerTaskExecutor.js';
+import type { TaskAgent, TaskBatchDiagnostic, TaskBatchSnapshot } from '../taskBatch.js';
 import type { ControllerTaskView, MissionController, ProofRequirement } from './missionController.js';
 
 export const DECISION_MARKER = 'SLOPIFY_DECISION=';

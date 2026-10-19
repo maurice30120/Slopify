@@ -1,4 +1,4 @@
-import type { BatchTaskState, TaskBatchSnapshot } from './taskBatch.js';
+import type { BatchTaskState, TaskBatchSnapshot } from '../taskBatch.js';
 
 /** Exigence de preuve déduite par le contrôleur à partir des critères d'acceptation du ticket. */
 export interface ProofRequirement {
@@ -26,7 +26,7 @@ export interface DecisionRecord {
 /** État synthétique transmis au contrôleur : jamais les transcriptions des workers. */
 export interface ControllerTaskView {
   taskId: string;
-  phase: NonNullable<BatchTaskState['phase']>;
+  phase: 'implementation' | 'review' | 'correction' | 'accepted' | 'blocked';
   status: BatchTaskState['status'];
   corrections: number;
   maxCorrections: number;

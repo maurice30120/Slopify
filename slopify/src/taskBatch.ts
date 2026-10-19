@@ -5,9 +5,11 @@ import { promisify } from 'node:util';
 import { homedir } from 'node:os';
 import * as path from 'node:path';
 import { createNodeSubprocessExecutor, type SubprocessExecutor } from '@acp-client/sandbox';
-import { DockerTaskExecutor } from './dockerTaskExecutor.js';
-import type { TaskExecutionResult, TaskSandboxResource } from './taskExecution.js';
-import { defaultMissionController, missingProofs, parseReviewVerdict, type ControllerTaskView, type DecisionRecord, type MissionController, type ProofRequirement, type ReviewVerdict } from './missionController.js';
+import { DockerTaskExecutor } from './workers/dockerTaskExecutor.js';
+import type { TaskExecutionResult, TaskSandboxResource } from './workers/taskExecution.js';
+import { defaultMissionController, missingProofs, type ControllerTaskView, type DecisionRecord, type MissionController, type ProofRequirement, type ReviewVerdict } from './controller/missionController.js';
+import { deriveTaskProgress } from './controller/attemptJournal.js';
+import { WAVE_SIZE, selectReadyWave, blockDescendants } from './scheduler/taskSelection.js';
 
 export interface TaskBatchDiagnostic {
   code: string;
@@ -46,6 +48,8 @@ export interface BatchTaskAttempt extends Partial<TaskExecutionResult> {
   attemptId: string;
   taskBaseCommit: string;
   status: 'running' | 'succeeded' | 'failed' | 'interrupted';
+  /** Mission portée par cette tentative ; les tentatives héritées des runs V2 valent IMPLEMENT. */
+  mission?: 'IMPLEMENT' | 'REVIEW' | 'CORRECT';
   resourceState?: 'active' | 'retained' | 'removed';
   integratedCommit?: string;
 }
@@ -54,8 +58,6 @@ export interface BatchTaskState extends BatchTask {
   status: 'pending' | 'running' | 'completed' | 'conflicted' | 'succeeded' | 'failed' | 'interrupted' | 'blocked';
   attempts: BatchTaskAttempt[];
   blockedBy?: string[];
-  phase?: 'implementation' | 'review' | 'correction' | 'accepted' | 'blocked';
-  corrections?: number;
   proofContract?: ProofRequirement[];
   lastReview?: { verdict: 'PASS' | 'FAIL'; findings: string[]; summary: string; proofs?: Record<string, string> };
   candidateCommit?: string;
@@ -88,7 +90,7 @@ export interface TaskBatchSnapshot {
   version: 1;
   runId: string;
   repositoryPath: string;
-  status: 'ready' | 'running' | 'succeeded' | 'failed' | 'interrupted' | 'conflicted' | 'critical_failure';
+  status: 'ready' | 'running' | 'succeeded' | 'failed' | 'interrupted' | 'conflicted' | 'critical_failure' | 'stopped';
   runBaseCommit: string;
   integrationCommit?: string;
   integrationBranch: string;
@@ -101,6 +103,12 @@ export interface TaskBatchSnapshot {
   resolution?: TaskBatchResolution;
   decisions?: DecisionRecord[];
   criticalFailure?: { taskId: string; reason: string; at: string };
+  /** Arrêt global décidé par le contrôleur : distinct du plafond CRITICAL_FAILURE, reprise humaine explicite. */
+  controllerStop?: { taskId: string; reason: string; at: string };
+  /** Verdict purement informatif de la revue finale du lot : ne change aucun statut, ne déclenche rien. */
+  finalReview?: { verdict: 'PASS' | 'FAIL'; findings: string[]; summary: string; reportPath?: string; at: string };
+  /** Plafond de corrections par ticket ; présent seulement quand le gate review est actif. */
+  maxCorrections?: number;
 }
 
 /** An execution stopped after durable state was available; CLI can report its outcome. */
@@ -112,7 +120,6 @@ export class TaskBatchExecutionError extends Error {
 }
 
 const execFileAsync = promisify(execFile);
-const WAVE_SIZE = 10;
 
 /** Seam public V2 : la validation et le contexte durable ne pénètrent jamais dans le runtime de pipeline V1. */
 export class TaskBatchService {
@@ -179,6 +186,7 @@ export class TaskBatchService {
       integrationBranch: `feature/slopify-${runId}`, createdAt: now, updatedAt: now,
       context: { specFile: frozenSpecFile, specText, batchFile: frozenBatchFile },
       tasks: [...batch.tasks.map((task) => ({ ...task, status: 'pending' as const, attempts: [] as BatchTaskAttempt[] })), finalReviewTask(batch, runBaseCommit)], diagnostics: [],
+      ...(this.review ? { maxCorrections: this.maxCorrections } : {}),
     };
     await this.save(snapshot);
     if (options.execute !== false) await this.executeWaves(snapshot, options.signal);
@@ -240,7 +248,7 @@ export class TaskBatchService {
       // lors d'une reprise explicite évite de réexécuter l'agent.
       for (const task of snapshot.tasks) {
         if (task.status !== 'completed') continue;
-        if (this.review && task.phase !== 'accepted') {
+        if (this.review && task.status === 'completed') {
           await this.reviewUntilAcceptedOrStopped(snapshot, task, workspacePath, executor, undefined);
           if (snapshot.criticalFailure) return;
         }
@@ -249,15 +257,9 @@ export class TaskBatchService {
         if (snapshot.conflict) return;
       }
 
-      while (!signal?.aborted && !snapshot.criticalFailure) {
-        this.blockDescendants(snapshot);
-        const byId = new Map(snapshot.tasks.map(task => [task.id, task]));
-        const ready = snapshot.tasks.filter(task => task.status === 'pending'
-          && task.dependsOn.every(id => byId.get(id)!.status === 'succeeded'));
-        // À priorité égale, préfère le ticket qui débloque le plus de descendants directs, puis l'ordre stable du JSON.
-        const descendants = (id: string) => snapshot.tasks.filter(other => other.dependsOn.includes(id)).length;
-        ready.sort((a, b) => descendants(b.id) - descendants(a.id));
-        const wave = ready.slice(0, WAVE_SIZE);
+      while (!signal?.aborted && !snapshot.criticalFailure && !snapshot.controllerStop) {
+        blockDescendants(snapshot.tasks);
+        const wave = selectReadyWave(snapshot.tasks);
         if (wave.length === 0) break;
         const taskBaseCommit = snapshot.integrationCommit!;
         // Chaque tentative possède son clone et ses refs de checkpoint. Les nœuds frères ne partagent que leur base figée.
@@ -284,7 +286,8 @@ export class TaskBatchService {
 
   private async finishExecution(snapshot: TaskBatchSnapshot, signal?: AbortSignal): Promise<void> {
     this.blockDescendants(snapshot);
-    snapshot.status = snapshot.criticalFailure ? 'critical_failure'
+    snapshot.status = snapshot.controllerStop ? 'stopped'
+      : snapshot.criticalFailure ? 'critical_failure'
       : snapshot.conflict ? 'conflicted'
       : snapshot.tasks.every(task => task.status === 'succeeded') ? 'succeeded'
       : signal?.aborted || snapshot.tasks.some(task => task.status === 'interrupted') ? 'interrupted'
@@ -306,12 +309,13 @@ export class TaskBatchService {
   }
 
   private async executeTask(snapshot: TaskBatchSnapshot, task: BatchTaskState, taskBaseCommit: string,
-    integrationPath: string, executor: DockerTaskExecutor, signal?: AbortSignal, baseBundlePath?: string): Promise<void> {
+    integrationPath: string, executor: DockerTaskExecutor, signal?: AbortSignal, baseBundlePath?: string,
+    mission: 'IMPLEMENT' | 'CORRECT' = 'IMPLEMENT'): Promise<void> {
     const attemptId = randomUUID();
     const runDirectory = path.join(this.storePath, snapshot.runId);
     const workspacePath = path.join(runDirectory, 'workspaces', attemptId);
     const resultDirectory = path.join(runDirectory, 'attempts', attemptId);
-    const attempt: BatchTaskAttempt = { attemptId, taskBaseCommit, status: 'running' };
+    const attempt: BatchTaskAttempt = { attemptId, taskBaseCommit, status: 'running', mission };
     task.attempts.push(attempt); task.status = 'running';
     await this.save(snapshot);
     try {
@@ -343,7 +347,26 @@ export class TaskBatchService {
   private async reconcileTask(snapshot: TaskBatchSnapshot, task: BatchTaskState, taskBaseCommit: string,
     integrationPath: string, executor: DockerTaskExecutor, signal?: AbortSignal): Promise<void> {
     if (task.source === 'final-review') {
+      if (!this.review) {
+        await this.executeTask(snapshot, task, taskBaseCommit, integrationPath, executor, signal);
+        return;
+      }
+      // Sous le gate, chaque ticket est déjà revu indépendamment : la revue finale du lot
+      // devient purement informative — aucun statut changé, aucune correction, aucune interruption.
       await this.executeTask(snapshot, task, taskBaseCommit, integrationPath, executor, signal);
+      const attempt = task.attempts.at(-1);
+      if (attempt?.checkpoint || task.status === 'completed') {
+        const verdict = await this.runReviewMission(snapshot, task, executor, signal);
+        snapshot.finalReview = {
+          verdict: verdict.verdict, findings: verdict.findings, summary: verdict.summary,
+          at: new Date().toISOString(),
+        };
+        this.recordDecision(snapshot, task.id, 'INFORMATIVE_REVIEW',
+          verdict.verdict === 'PASS' ? 'Revue finale informative PASS.' : 'Revue finale informative FAIL ; aucun statut changé.');
+        await this.save(snapshot);
+      }
+      task.status = 'succeeded';
+      await this.save(snapshot);
       return;
     }
     if (!task.proofContract) {
@@ -352,7 +375,6 @@ export class TaskBatchService {
       this.recordDecision(snapshot, task.id, 'IMPLEMENT', plan.reason);
       await this.save(snapshot);
     }
-    task.phase = task.corrections ? 'correction' : 'implementation';
     await this.executeTask(snapshot, task, taskBaseCommit, integrationPath, executor, signal);
     if (snapshot.tasks.find(t => t.id === task.id)!.status !== 'completed') return;
     await this.reviewUntilAcceptedOrStopped(snapshot, task, integrationPath, executor, signal);
@@ -364,7 +386,6 @@ export class TaskBatchService {
   private async reviewUntilAcceptedOrStopped(snapshot: TaskBatchSnapshot, task: BatchTaskState, integrationPath: string,
     executor: DockerTaskExecutor, signal?: AbortSignal): Promise<void> {
     task.candidateCommit = task.attempts.at(-1)!.checkpoint?.commit;
-    task.phase = 'review';
     task.status = 'running';
     await this.save(snapshot);
     while (!signal?.aborted) {
@@ -374,35 +395,39 @@ export class TaskBatchService {
       const missing = [...missingProofs(task.proofContract ?? [], verdict.proofs),
         ...(verdict.verdict === 'FAIL' ? verdict.findings : [])];
       if (verdict.verdict === 'PASS' && missing.length === 0) {
-        task.phase = 'accepted';
         task.status = 'completed';
         this.recordDecision(snapshot, task.id, 'ACCEPT', 'Review PASS avec toutes les preuves exigées.');
         await this.save(snapshot);
         return;
       }
-      task.corrections = (task.corrections ?? 0);
-      const decision = await this.controller.decideAfterReviewFailure(this.controllerView(task, snapshot), snapshot);
-      this.recordDecision(snapshot, task.id, decision.mission, decision.reason);
-      if (decision.mission === 'STOP' || (task.corrections ?? 0) + 1 > this.maxCorrections) {
-        task.status = 'failed'; task.phase = 'blocked';
-        snapshot.criticalFailure = { taskId: task.id, reason: decision.reason, at: new Date().toISOString() };
+      const { corrections } = deriveTaskProgress(task, this.maxCorrections);
+      // Le plafond est une règle codée : aucune consultation LLM pour un arrêt mécanique.
+      if (corrections + 1 > this.maxCorrections) {
+        task.status = 'failed';
+        const reason = `Plafond de ${this.maxCorrections} corrections atteint pour ${task.id}.`;
+        this.recordDecision(snapshot, task.id, 'STOP', reason);
+        snapshot.criticalFailure = { taskId: task.id, reason, at: new Date().toISOString() };
         await this.save(snapshot);
         return;
       }
-      task.corrections += 1;
-      task.phase = 'correction';
+      const decision = await this.controller.decideAfterReviewFailure(this.controllerView(task, snapshot), snapshot);
+      this.recordDecision(snapshot, task.id, decision.mission, decision.reason);
+      if (decision.mission === 'STOP') {
+        task.status = 'failed';
+        snapshot.controllerStop = { taskId: task.id, reason: decision.reason, at: new Date().toISOString() };
+        await this.save(snapshot);
+        return;
+      }
       task.status = 'pending';
       await this.save(snapshot);
       const prompt = `${task.prompt}\n\nPrevious review failed with findings:\n${verdict.findings.join('\n')}\n\nRequired proofs remain: ${(task.proofContract ?? []).map(p => p.id).join(', ')}.`;
       const originalPrompt = task.prompt;
       task.prompt = prompt;
       const candidate = task.attempts.at(-1)!.checkpoint!;
-      try {
-        await this.executeTask(snapshot, task, candidate.commit, integrationPath, executor, signal, candidate.bundlePath);
-      } finally { task.prompt = originalPrompt; }
+      try { await this.executeTask(snapshot, task, candidate.commit, integrationPath, executor, signal, candidate.bundlePath, 'CORRECT'); }
+      finally { task.prompt = originalPrompt; }
       if (snapshot.tasks.find(t => t.id === task.id)!.status !== 'completed') return;
       task.candidateCommit = task.attempts.at(-1)!.checkpoint?.commit;
-      task.phase = 'review';
       task.status = 'running';
       await this.save(snapshot);
     }
@@ -443,9 +468,9 @@ export class TaskBatchService {
   private controllerView(task: BatchTaskState, snapshot: TaskBatchSnapshot): ControllerTaskView {
     return {
       taskId: task.id,
-      phase: task.phase ?? 'implementation',
+      phase: deriveTaskProgress(task, this.maxCorrections).phase,
       status: task.status,
-      corrections: task.corrections ?? 0,
+      corrections: deriveTaskProgress(task, this.maxCorrections).corrections,
       maxCorrections: this.maxCorrections,
       proofContract: task.proofContract ?? [],
       lastReview: task.lastReview ? { verdict: task.lastReview.verdict, findings: task.lastReview.findings, summary: task.lastReview.summary } : undefined,
@@ -658,7 +683,7 @@ export class TaskBatchService {
       const updatedTask = snapshot.tasks.find(t => t.id === taskId)!;
       // Après l'exécution, intègre si elle a réussi (executeTask place task.status à completed en cas de succès).
       if (updatedTask.status === 'completed') {
-        if (this.review && updatedTask.phase !== 'accepted') {
+        if (this.review && updatedTask.status === 'completed') {
           await this.reviewUntilAcceptedOrStopped(snapshot, updatedTask, workspacePath, executor, options.signal);
         }
         if (updatedTask.status === 'completed') {

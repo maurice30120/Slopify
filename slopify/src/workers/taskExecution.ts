@@ -1,5 +1,5 @@
-import type { TaskAgent, TaskBatchDiagnostic } from './taskBatch.js';
-import type { ProofRequirement, ReviewVerdict } from './missionController.js';
+import type { TaskAgent, TaskBatchDiagnostic } from '../taskBatch.js';
+import type { ProofRequirement, ReviewVerdict } from '../controller/missionController.js';
 
 /** L'identité externe de la sandbox est enregistrée dès sa création, avant l'exécution de l'agent. */
 export interface TaskSandboxResource {

@@ -1,4 +1,4 @@
-import type { TaskBatchDiagnostic } from './taskBatch.js';
+import type { TaskBatchDiagnostic } from '../taskBatch.js';
 
 /** Un transport CLI réussi ne constitue pas le verdict de validation de l'agent. */
 export function agentOutcomeDiagnostics(finalMessage: string): TaskBatchDiagnostic[] {
