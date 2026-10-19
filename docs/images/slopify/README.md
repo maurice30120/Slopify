@@ -1,5 +1,15 @@
 # Sources des infographies Slopify
 
+## Architecture actuelle — 19 octobre 2026
+
+![Architecture V2 actuelle : préparation, exécution isolée, preuves, suivi et intégration Git](04-v2-architecture-actuelle-2026-10-19.png)
+
+Cette nouvelle planche suit le code actuel (`e5f2e49`) : admission continue dans `TaskBatchService`, pool de Workers, conteneur neuf par tentative en mode `reuse`, checkpoints et intégration séquentielle, revue finale ajoutée automatiquement, observations et reprises explicites. Elle accompagne la [visite guidée du code](../../../.tours/slopify-v2-architecture-actuelle.tour). La visite référence le PNG local avec la syntaxe Markdown CodeTour, pour un affichage sans accès réseau.
+
+Les [prompts exacts de cette planche](04-v2-architecture-actuelle.prompt.md) conservent la génération et la retouche des connecteurs avec l’outil intégré imagegen. Les flèches résument les échanges ; les étapes du tour détaillent les appels réels et les limites des contrôles.
+
+## Planches historiques — 8 octobre 2026
+
 Ces trois PNG sont intégrés au [README principal](../../../README.md) par des
 chemins relatifs au dépôt, compatibles avec l’affichage GitHub. Leur contenu est
 fondé sur une inspection statique du code présent dans l’espace de travail le

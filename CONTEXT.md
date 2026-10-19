@@ -10,9 +10,25 @@ Slopify exécute des agents dans des environnements isolés et contrôle explici
 CLI interactive depuis laquelle l'utilisateur pilote Slopify : choisir un pipeline, lancer, suivre et reprendre les runs. Distinct des agents qui exécutent les nœuds d'un pipeline.
 _Avoid_: agent, coordinateur, agent de pipeline
 
+**Controller**:
+Rôle responsable de la progression des lots de tâches, de leur lancement à l’intégration de leurs résultats. Il coordonne les revues et le retour des corrections demandées aux implémenteurs.
+_Avoid_: simple ordonnanceur, reviewer, implémenteur
+
+**Scheduler**:
+Rôle qui affecte le travail admissible aux Workers d’exécution disponibles, selon les dépendances et la capacité du lot.
+_Avoid_: Controller, autoscaler
+
 **Tâche d’implémentation**:
 Travail de développement défini pendant la préparation, accompagné des dépendances qui conditionnent son démarrage.
 _Avoid_: étape de clarification, étape de planification, nœud de pipeline générique
+
+**Worker d’exécution**:
+Environnement isolé réutilisable qui prend en charge au plus une activité d’implémentation, de correction ou de revue à la fois. Son état est contrôlé et nettoyé entre les activités ; un état douteux entraîne son remplacement.
+_Avoid_: slot de concurrence, environnement partagé
+
+**Contexte de tâche**:
+Ensemble du travail vérifié comme exploitable, des retours de revue et de l’historique nécessaires pour poursuivre une tâche. Il reste associé à la tâche lorsque son Worker est réaffecté ou remplacé.
+_Avoid_: état du Worker, slot de concurrence
 
 **Signal d’activité**:
 Phrase courte émise périodiquement pendant un run pour informer l’Agent Hôte de l’action en cours, entre deux transitions d’état durable.
@@ -21,6 +37,14 @@ _Avoid_: heartbeat, progress, log, pulse de vie
 **Revue indépendante**:
 Évaluation d’une tentative par un agent distinct de celui qui a produit le travail.
 _Avoid_: auto-revue, revue par l’agent d’implémentation, revue interne
+
+**Correction après revue**:
+Intervention sur le résultat d’une tâche pour répondre aux constats d’une Revue indépendante, suivie d’une nouvelle revue.
+_Avoid_: relance technique, nouvelle tâche
+
+**Relance technique**:
+Rétablissement de l’exécution d’une tâche après un incident de processus ou d’environnement, en conservant le travail vérifié comme exploitable.
+_Avoid_: correction après revue, recommencer à zéro
 
 ### V1 — vocabulaire du fonctionnement actuel
 

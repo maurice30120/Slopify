@@ -94,6 +94,24 @@ avant de créer le run.
 
 ## Exécution et reprise
 
+Le runtime lit `.slopify/runtime.yaml` à la création du lot et fige sa configuration
+pour les reprises. Sans fichier, il utilise au plus dix workers réutilisables.
+
+```yaml
+workers:
+  size: 10
+  lifecycle: reuse
+  mounts:
+    - /chemin/vers/donnees:ro
+```
+
+`size` vaut de 1 à 10. Les mounts partagés sont des chemins absolus en lecture
+seule. Un worker n’exécute qu’une tâche à la fois ; chaque tentative conserve son
+propre workspace, ses sorties et son checkpoint. `reuse` utilise un environnement
+jetable par tâche et contrôle sa suppression avant de réaffecter le worker.
+`recreate` crée un nouveau sandbox pour chaque tentative. Un échec conserve son
+sandbox pour inspection ; un nettoyage ou contrôle incertain interdit le réemploi.
+
 ```bash
 slopify tasks run batch.json [--base <ref>] [--cwd <repo>] [--store <dir>] [--json]
 slopify tasks status <run-id> [--cwd <repo>] [--store <dir>] [--json]

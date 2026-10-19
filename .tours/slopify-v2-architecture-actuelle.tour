@@ -1,0 +1,244 @@
+{
+  "$schema": "https://aka.ms/codetour-schema",
+  "title": "Slopify V2 actuelle — du lot au résultat Git",
+  "description": "Visite en français de l’architecture V2 réellement implémentée, inspectée le 19 octobre 2026 (HEAD e5f2e49). Sketchnote incorporé, trajet complet d’une tâche, isolation des Workers, état durable, ordonnancement continu, preuves Git, revue finale, suivi et reprises. Les choix de Control Plane proposés sont hors de ce parcours.",
+  "steps": [
+    {
+      "title": "Vue d’ensemble — ce que Slopify fait aujourd’hui",
+      "description": "Slopify exécute un lot de tâches de développement approuvé et rassemble leurs changements dans une branche Git dédiée. L’utilisateur prépare ce lot avec un agent hôte Pi ou Codex, ou appelle directement la CLI ; les agents de tâche travaillent dans des environnements isolés.\n\nCette visite décrit le code V2 actuellement présent dans l’espace de travail, inspecté le 19 octobre 2026, à partir de HEAD `e5f2e49`. Elle suit un lancement normal puis le suivi et les interventions possibles.\n\n**Diagram — Context view**\n\n```mermaid\nflowchart LR\n U[\"Utilisateur : veut faire réaliser un lot\"]\n H[\"Agent hôte Pi ou Codex\"]\n S[\"Slopify V2\"]\n P[\"Fournisseur de modèles\"]\n G[\"Dépôt Git de l'utilisateur\"]\n U -->|\"Décrit et approuve le travail (conversation)\"| H\n H -->|\"Soumet un lot local (CLI)\"| S\n U -->|\"Lance et consulte (CLI)\"| S\n S -->|\"Fait appeler les modèles par les agents (HTTPS via proxy)\"| P\n S -->|\"Lit la base et publie une branche (Git local)\"| G\n U -->|\"Inspecte et récupère les changements (Git)\"| G\n```\n\n**Diagram — Containers**\n\n```mermaid\nflowchart TB\n subgraph R[\"Processus CLI du run\"]\n  C[\"TaskBatchService et exécuteur\"]\n end\n subgraph O[\"Processus CLI de consultation\"]\n  W[\"status ou watch\"]\n end\n subgraph D[\"Store local des runs\"]\n  F[\"Snapshots, contexte et preuves\"]\n  I[\"Clone Git d'intégration\"]\n end\n subgraph S[\"Worker Docker Sandbox, mode reuse\"]\n  subgraph T[\"Conteneur neuf de tentative\"]\n   A[\"Pi ou Codex et clone privé\"]\n  end\n end\n P[\"Fournisseur de modèles\"]\n G[\"Dépôt utilisateur\"]\n C -->|\"Sauvegarde les états (fichiers JSON)\"| F\n W -->|\"Lit les états et journaux (fichiers)\"| F\n C -->|\"Lance les agents (sbx et docker exec)\"| A\n C -->|\"Collecte les sorties et bundles (sbx cp et Git)\"| F\n C -->|\"Fusionne les checkpoints (Git)\"| I\n C -->|\"Publie la ref d'intégration (git fetch local)\"| G\n A -->|\"Appelle le modèle (HTTPS via proxy)\"| P\n```\n\nRepères pour la suite : [CLI, moteur et pool](./slopify/src/), [assets de préparation](./slopify/init/), [skills de l’agent hôte](./slopify/plugin/), [primitives sbx et checkpoints](./acp-sandbox/src/), [tests du moteur](./slopify/test/).\n\nLes packages `acp-pipeline`, `acp-runtime` et `acp-workspace` conservent aussi des moteurs historiques. La route publique `tasks` part directement vers `TaskBatchService` ; leurs noms ne signifient pas qu’un protocole ACP pilote les tâches V2.",
+      "questions": [
+        "Qui prépare le lot et qui exécute réellement les tâches ?",
+        "Où tourne le moteur et où est enregistré son état ?",
+        "Quels composants du dépôt appartiennent au chemin V2 actuel ?"
+      ]
+    },
+    {
+      "title": "Le sketchnote — garder la carte sous les yeux",
+      "description": "Lis la carte de gauche à droite : préparer le lot, lancer le moteur, exécuter les agents, conserver les preuves et observer. Le bandeau inférieur montre le trajet Git jusqu’au résultat récupérable.\n\n![Architecture complète de Slopify V2 actuelle](./docs/images/slopify/04-v2-architecture-actuelle-2026-10-19.png)\n\n[Ouvrir le sketchnote en grand](./docs/images/slopify/04-v2-architecture-actuelle-2026-10-19.png). Le fichier est conservé dans le dépôt ; cette étape ne s’ancre pas sur une image comme sur un fichier de code.\n\nDeux repères à garder : `completed` signifie qu’un checkpoint est disponible ; `succeeded` signifie que ce résultat a été intégré. Le mode `reuse` conserve un Worker pendant le lot, mais donne un conteneur neuf à chaque tentative.",
+      "questions": [
+        "Comment lire les six zones du schéma ?",
+        "Quelle est la différence entre un Worker et une tentative ?",
+        "Quand une tâche est-elle réellement considérée comme intégrée ?"
+      ]
+    },
+    {
+      "title": "Préparer le projet — ce que fait init",
+      "description": "`init` installe des fichiers de démarrage dans le projet cible : exemples de spec et de lot, ainsi que les assets propres à l’hôte sélectionné. Le plan combine le manifeste commun et ceux de Pi et/ou Codex ; `apply` copie ensuite les fichiers.\n\nCela prépare l’agent hôte à construire un lot. Cette étape ne lance aucune tâche de développement ; la préparation et l’approbation de la spec restent extérieures au moteur.\n\nLe guide de coordination est dans `docs/agents/coordinator-pi.md`. La récupération project-scope des skills est déclenchée par `initCli.ts`, distinctement du store global de skills utilisé par sbx.",
+      "file": "slopify/src/initService.ts",
+      "pattern": "async plan\\(target: string, selection: InitHost\\)"
+    },
+    {
+      "title": "Le contrat d’entrée — un DAG explicite",
+      "description": "Un lot contient le chemin de la spec, des tâches, d’éventuels fichiers d’entrée et des valeurs par défaut pour les agents. Chaque tâche porte son identifiant, son prompt complet, sa source et `dependsOn`.\n\nLes dépendances portent sur des tâches, pas sur des groupes implicites. Pour `A1 → B1` et `A2 → B2`, B1 ne doit attendre que A1 intégrée. Des dépendances vers tout un groupe créeraient au contraire une véritable barrière.\n\nPlus bas, `validateBatch` contrôle les identifiants, les agents et surcharges, les références et les cycles. `source` est une référence de provenance ; le moteur ne va pas chercher lui-même le ticket sur GitHub.",
+      "questions": [
+        "Quelles informations sont nécessaires dans batch.json ?",
+        "Une tâche peut-elle dépendre de toute une vague implicitement ?",
+        "Qui transforme les issues GitHub en prompts locaux ?"
+      ],
+      "file": "slopify/src/taskBatch.ts",
+      "pattern": "export interface TaskBatch \\{"
+    },
+    {
+      "title": "Le point d’entrée public — suivre la bonne route",
+      "description": "`main` dirige `tasks` vers `runTaskBatchCli` et `init` vers `runInitCli`. Les anciennes commandes de pipelines `list`, `run` et `resume` à la racine sont explicitement refusées.\n\nPour comprendre V2, le chemin utile commence donc ici : CLI → service de lots → exécuteur Docker. Le fichier `runtimeBackend.ts` et les anciens moteurs ACP ne sont pas appelés par cette branche `tasks`.",
+      "file": "slopify/src/cli.ts",
+      "pattern": "export async function main\\("
+    },
+    {
+      "title": "Une commande porte l’exécution — deux canaux de sortie",
+      "description": "`runTaskBatchCli` lit l’action et ses options, construit un service pour le dépôt et le store choisis, puis attend sa méthode `run`, `resume` ou l’action demandée. Dans ce chemin, le processus CLI porte la boucle d’exécution ; le code ne démarre pas un serveur de contrôle permanent.\n\nLes callbacks écrivent l’avancement et les signaux d’activité sur stderr. stdout reçoit le rapport final, en texte ou JSON. Les signaux SIGINT et SIGTERM sont transmis par un `AbortController`.\n\nLe code de sortie d’une exécution vaut 0 pour `succeeded`, 2 pour un lot échoué/interrompu/en conflit et 1 pour une erreur d’entrée ou de commande. Une consultation `status` peut réussir même si le lot consulté a échoué.",
+      "file": "slopify/src/taskBatchCli.ts",
+      "pattern": "export async function runTaskBatchCli\\("
+    },
+    {
+      "title": "Créer un run — valider puis figer sa base",
+      "description": "`run` valide le JSON, lit la spec, résout le commit de base Git et vérifie les `inputFiles` à ce commit. Il charge aussi `.slopify/runtime.yaml` avant de créer l’identifiant du run.\n\nIl copie la spec et le lot dans `context/`, conserve la configuration des Workers et ajoute automatiquement la tâche de revue finale. La capacité effective est le minimum entre la limite du service et la taille du pool.\n\nLe dossier du run se trouve par défaut dans `~/.local/share/slopify/task-runs/<hash-du-dépôt>/<run-id>/`. Les changements non commités du dépôt utilisateur ne constituent pas la base des tentatives.",
+      "questions": [
+        "Quelles données deviennent figées au démarrage ?",
+        "Pourquoi mes modifications non commitées ne sont-elles pas dans les sandboxes ?",
+        "Comment la capacité effective du lot est-elle calculée ?"
+      ],
+      "file": "slopify/src/taskBatch.ts",
+      "pattern": "  async run\\(batchFile: string"
+    },
+    {
+      "title": "Persister l’état — des snapshots sur fichiers",
+      "description": "`save` sérialise les écritures d’un même run, écrit `state.json.tmp`, puis le renomme en `state.json`. Le callback de progression reçoit une copie de ce qui a été sauvegardé ; une panne de reporting ne remonte pas à l’exécution.\n\nLe snapshot décrit les tâches, leurs tentatives, les ressources, la branche d’intégration et les incidents. Les journaux et bundles vivent à côté ; ce n’est pas une base centrale de Control Plane.\n\nL’écriture atomique évite de publier un JSON partiel. Elle ne constitue pas, à elle seule, une transaction englobant Git, sbx et l’état du run.",
+      "file": "slopify/src/taskBatch.ts",
+      "pattern": "private async save\\("
+    },
+    {
+      "title": "Le cœur — remplir les places en continu",
+      "description": "`runSchedule` garde les exécutions actives et un seul travail d’intégration en cours. À chaque tour, il admet les tâches `pending` dont tous les prérequis sont `succeeded`, dans l’ordre du manifeste et dans la limite de concurrence.\n\nUn checkpoint `completed` peut être intégré pendant qu’un agent indépendant travaille encore. `Promise.race` réveille la boucle dès qu’une exécution ou une intégration se termine : elle n’attend plus toute une vague.\n\nUne tâche lente occupe sa place et retarde ses descendants. Les autres branches admissibles peuvent avancer ; un conflit du lot ou un signal d’arrêt ferme toutefois l’admission.\n\n**Diagram — Une tâche lente et une branche indépendante**\n\n```mermaid\nflowchart LR\n A1[\"A1 intégrée\"] -->|\"Rend admissible (dependsOn)\"| B1[\"B1 peut démarrer\"]\n A2[\"A2 encore active\"] -->|\"Ne satisfait pas encore le prérequis (dependsOn)\"| B2[\"B2 attend\"]\n A3[\"A3 intégrée\"] -->|\"Rend admissible (dependsOn)\"| B3[\"B3 peut démarrer\"]\n```",
+      "questions": [
+        "Pourquoi une tâche lente ne doit-elle pas retenir tout le lot ?",
+        "Quand une tâche devient-elle admissible ?",
+        "Comment les exécutions et l’intégration se chevauchent-elles ?"
+      ],
+      "file": "slopify/src/taskBatch.ts",
+      "pattern": "private async runSchedule\\("
+    },
+    {
+      "title": "Une tâche, plusieurs tentatives identifiables",
+      "description": "Chaque appel crée un `attemptId`, un dossier de preuves et un clone Git propre à la tentative. Le clone part de l’état d’intégration disponible, puis se place sur le `taskBaseCommit` épinglé au démarrage.\n\nLe service envoie à l’exécuteur l’agent choisi, le prompt, la spec figée et les bases Git. Une tentative qui termine avec un checkpoint fait passer la tâche à `completed` ; elle n’est pas encore `succeeded`.\n\nCette séparation conserve une base stable pour un agent déjà au travail, même lorsque des résultats voisins sont intégrés entre-temps.",
+      "file": "slopify/src/taskBatch.ts",
+      "pattern": "private async executeTask\\("
+    },
+    {
+      "title": "Configurer la capacité et le mode de vie des Workers",
+      "description": "La configuration vient de `.slopify/runtime.yaml`. Sans fichier, le pool prend `size: 10`, `lifecycle: reuse` et aucun montage partagé supplémentaire ; la taille doit rester entre 1 et 10.\n\n`reuse` réutilise le Worker avec un conteneur neuf par tentative. `recreate` recrée une sandbox pour chaque tentative. Les montages partagés configurés doivent être absolus et en lecture seule.\n\nCette configuration est figée dans le run. Le plafond concerne les tâches actives ; les éventuels sous-agents de revue d’un agent principal ne sont pas décomptés comme des tâches supplémentaires par cet ordonnanceur.",
+      "file": "slopify/src/taskRuntimeConfig.ts",
+      "pattern": "export async function loadTaskRuntimeConfig\\("
+    },
+    {
+      "title": "L’exécuteur — transformer une tâche en commandes",
+      "description": "`DockerTaskExecutor` possède le lancement, les preuves et le cycle de vie des ressources. Ses adaptateurs Pi et Codex fournissent la préparation et la commande spécifiques à l’agent.\n\n`prepareRun` vérifie Git et sbx via `DockerSandboxRuntime.preflightWorkspace`, puis la présence des skills officiels. Il utilise `workspaceEffects: false` : le run travaille dans ses clones privés et exclut les changements locaux utilisateur.\n\n`execute` prépare stdout, stderr, journal de commandes, spec et harness. Si un pool est configuré, les commandes passent par le Worker loué ; les résultats reviennent au service sous la forme d’un `TaskExecutionResult`.",
+      "file": "slopify/src/dockerTaskExecutor.ts",
+      "pattern": "export class DockerTaskExecutor"
+    },
+    {
+      "title": "Le pool — louer une capacité compatible avec l’agent",
+      "description": "`acquire` cherche un Worker disponible pour l’agent demandé ou en crée un si la capacité le permet. Une nouvelle ressource commence en vérification ; elle ne devient affectée qu’après les sondes prévues.\n\nUn Worker retenu pour inspection sort de la capacité disponible. Un Worker d’un autre agent peut être remplacé lorsqu’il est inactif ; les remplacements après défaillance sont comptés séparément du recyclage planifié.\n\nLe lien Worker ↔ tâche ↔ tentative est remonté au service par `onWorkers`, puis sauvegardé dans le snapshot.",
+      "questions": [
+        "Quelle est la différence entre une place logique et un Worker réel ?",
+        "Quand un Worker est-il disponible pour une autre tâche ?",
+        "Que devient le Worker d’une tentative échouée ?"
+      ],
+      "file": "slopify/src/taskWorkerPool.ts",
+      "pattern": "async acquire\\(request:TaskExecutionRequest\\)"
+    },
+    {
+      "title": "L’isolation réelle — un conteneur neuf dans un Worker réutilisé",
+      "description": "Dans le mode `reuse`, le Worker extérieur est une Docker Sandbox pilotée par `sbx`. Il conserve les assets réutilisables pendant le lot. Chaque tentative reçoit ensuite son propre conteneur Docker intérieur, son clone issu d’un bundle et son volume de contexte.\n\n`rewriteThroughWorker` transforme les opérations de l’exécuteur en `sbx exec … docker exec …` et en transferts de fichiers. Le conteneur de tâche ne reprend pas simplement le répertoire de travail de la tâche précédente.\n\nLe réseau `host` visible ici est celui du conteneur intérieur dans le Worker, utilisé pour joindre le proxy injecté. Le code vérifie l’absence de daemon Docker TCP exposé ; cette architecture actuelle est distincte du candidat Docker Engine discuté pour le futur.",
+      "file": "slopify/src/taskWorkerPool.ts",
+      "pattern": "private async createTask\\("
+    },
+    {
+      "title": "Pi — un sous-processus JSON, avec sa configuration",
+      "description": "L’adaptateur prépare un kit Pi, les skills en lecture seule, le harness et les rôles de reviewers `standards` et `spec`. Dans le code inspecté, il configure le fournisseur Mistral et le modèle `zai-glm-5-3`.\n\nL’appel effectif est `pi … --mode json --print <prompt>` à l’intérieur de la tentative. L’adaptateur extrait les messages, les erreurs de fournisseur et les éventuels résultats de sous-agents, puis construit le rapport.\n\nCette voie utilise la CLI Pi ; elle n’utilise ni Pi RPC ni durable-pi. Les reviewers sont délégués par l’agent principal, sans création par Slopify d’un Worker distinct pour chaque reviewer.",
+      "file": "slopify/src/piTaskAdapter.ts",
+      "pattern": "export function createPiTaskAdapter\\("
+    },
+    {
+      "title": "Codex — une autre stratégie derrière le même contrat",
+      "description": "L’adaptateur Codex vérifie les skills et le binaire, puis lance `codex exec --json` avec le harness. Les champs `model` et `effort` du lot peuvent être transmis comme arguments.\n\nIl extrait le dernier message parent, collecte les rollouts natifs et relève les erreurs observables, y compris celles de collaboration. Le service de lots reçoit le même type de résultat que pour Pi.\n\nLa diversité des agents est encapsulée ici : l’ordonnanceur manipule une tâche et un checkpoint, pas les détails de leurs protocoles de sortie.",
+      "file": "slopify/src/dockerTaskExecutor.ts",
+      "pattern": "const codexAdapter:TaskAgentAdapter="
+    },
+    {
+      "title": "Le verdict — un exit code zéro ne suffit pas",
+      "description": "Le dernier message de l’agent doit contenir exactement une ligne `SLOPIFY_RESULT=` avec un JSON dont le statut est `succeeded` ou `failed`. Le parseur produit un diagnostic si ce verdict manque, est invalide ou déclare un échec.\n\nL’exécuteur combine ce verdict avec l’exit code et les autres diagnostics observés avant de créer le checkpoint réussi. Il ne déduit pas une validation réussie du seul fait que le processus a rendu la main.\n\nCela contrôle la déclaration finale et les erreurs collectées ; cela ne prouve pas, indépendamment de l’agent, que chaque consigne de test ou de revue a été exécutée.",
+      "questions": [
+        "Pourquoi un agent avec exit code zéro peut-il échouer ?",
+        "Qui vérifie que le travail est effectivement terminé ?",
+        "Quelles preuves restent des déclarations de l’agent ?"
+      ],
+      "file": "slopify/src/agentOutcome.ts",
+      "pattern": "export function agentOutcomeDiagnostics\\("
+    },
+    {
+      "title": "Le checkpoint — rendre les changements transportables",
+      "description": "`createAgentCheckpoint` fige les changements du clone de l’agent dans un commit et une ref identifiables. Le résultat contient la base, le commit et un aperçu du diff.\n\n`DockerTaskExecutor` vérifie ensuite l’ascendance de la base, crée `checkpoint.bundle` et publie un reçu `result.json` dans le dossier de la tentative. Ces fichiers permettent de reprendre et d’inspecter le résultat sans dépendre uniquement d’une sandbox encore en vie.\n\nCette primitive d’`acp-sandbox` est utilisée par V2. Les autres fonctions de promotion présentes dans cette bibliothèque ne signifient pas que la CLI V2 applique automatiquement les changements à la branche active de l’utilisateur.",
+      "file": "acp-sandbox/src/gitPromotion.ts",
+      "pattern": "async createAgentCheckpoint\\("
+    },
+    {
+      "title": "Intégrer — le passage de completed à succeeded",
+      "description": "L’intégrateur importe le bundle et vérifie que le checkpoint descend de la base de sa tentative. Si la branche du lot a avancé, il compose les changements avec `git merge-tree` puis crée un commit à deux parents.\n\nIl avance la ref d’intégration avec `update-ref`, enregistre le reçu et publie la branche dans le dépôt hôte. La tâche ne devient `succeeded` qu’après cette publication ; ses descendants peuvent alors devenir admissibles.\n\nUn conflit est enregistré dans le snapshot et laisse la tâche `conflicted`. La composition se fait par objets Git : ce chemin n’applique pas un cherry-pick qui salirait le répertoire utilisateur.",
+      "questions": [
+        "Pourquoi une tâche completed ne débloque-t-elle pas ses descendants ?",
+        "Que se passe-t-il si d’autres tâches ont été intégrées entre-temps ?",
+        "Comment un conflit Git remonte-t-il au moteur ?"
+      ],
+      "file": "slopify/src/taskBatch.ts",
+      "pattern": "private async integrateTask\\("
+    },
+    {
+      "title": "Publier le résultat — une branche, pas le checkout utilisateur",
+      "description": "`publish` fait un `git fetch` local depuis le clone d’intégration vers `feature/slopify-<run-id>` dans le dépôt utilisateur. La branche est actualisée progressivement, pas uniquement à la toute fin du lot.\n\nLa branche courante et les fichiers de travail de l’utilisateur restent inchangés. Après vérification du résultat final, l’utilisateur ou son agent hôte décide comment récupérer les changements.\n\nUne branche existe aussi pendant un lot inachevé : sa présence seule ne signifie pas que la revue finale a réussi.",
+      "file": "slopify/src/taskBatch.ts",
+      "pattern": "private async publish\\("
+    },
+    {
+      "title": "Libérer le Worker — nettoyage puis vérification",
+      "description": "Après intégration, le service demande le nettoyage de la ressource. En mode `reuse`, le pool supprime le conteneur de tentative, son contexte et son staging, vérifie cette suppression et la disponibilité de Docker, puis rend le Worker `available`.\n\nEn mode `recreate`, il retire la sandbox. Si le nettoyage échoue, le Worker sort du service ; une tentative échouée peut au contraire rester `retained` pour inspection.\n\nLes Workers ne sont réutilisés que pendant ce lot ; `close` ferme les Workers encore disponibles en fin d’exécution. Une tâche terminée et une capacité prête à réemploi sont donc deux observations distinctes.",
+      "file": "slopify/src/taskWorkerPool.ts",
+      "pattern": "async cleanup\\(resource:TaskSandboxResource\\):Promise<boolean>"
+    },
+    {
+      "title": "La revue finale — une tâche ajoutée automatiquement",
+      "description": "Le service ajoute une tâche finale qui dépend de toutes les tâches fournies. Son agent suit les defaults du lot, ou à défaut le premier agent du manifeste ; elle emprunte le même circuit d’exécution et d’intégration.\n\nSon prompt demande une revue `Standards` et `Spec` sur le diff du run, la correction des constats dans cette même tâche, puis le build et les tests complets et un commit. Ces validations sont exécutées par l’agent sous ces consignes.\n\nDans la politique actuelle, le moteur n’impose pas une boucle de revue/correction par tâche avant chaque intégration. Un lot n’est globalement réussi que si sa revue finale est elle aussi intégrée avec succès.",
+      "questions": [
+        "Quand la revue finale démarre-t-elle ?",
+        "Qui corrige ses findings ?",
+        "Une tâche d’implémentation réussie a-t-elle forcément reçu une revue indépendante ?"
+      ],
+      "file": "slopify/src/taskBatch.ts",
+      "pattern": "function finalReviewTask\\("
+    },
+    {
+      "title": "Suivre un run — lire l’état sans le piloter",
+      "description": "`watch` relit périodiquement le snapshot et le journal d’activité, calcule une empreinte et n’affiche que les changements jugés significatifs. `status` réalise une consultation ponctuelle ; arrêter `watch` ne commande pas l’arrêt du run.\n\n`taskBatchReport.ts` dérive les compteurs, les prérequis manquants, les ressources, les diagnostics et les prochaines actions. `status` et le bilan exposent aussi l’instantané d’occupation du pool.\n\nLa voie `watch` actuelle ne transmet pas toute la vue du pool : les tickets d’observabilité discutés dans cette conversation sont du travail futur, pas des fonctions créées par le prototype.",
+      "file": "slopify/src/taskBatchCli.ts",
+      "pattern": "async function watchTaskRun\\("
+    },
+    {
+      "title": "Les signaux d’activité — rendre une attente lisible",
+      "description": "Pendant l’exécution, un tick périodique lit la nouvelle portion des logs et des signaux Git des clones hôtes disponibles. Il compose des phrases par tâche, regroupe les tâches sans nouvelles et signale l’intégration en cours.\n\nLe journal `activity.jsonl` conserve ces signaux ; `status` relit les dix derniers et `watch` rattrape les nouveaux. La composition est codée, avec un bornage par minute, sans appel LLM supplémentaire.\n\nUne panne de cette observation ne doit pas interrompre le travail. L’absence de nouvelle phrase ne constitue pas à elle seule une preuve qu’un agent est mort.",
+      "file": "slopify/src/taskBatch.ts",
+      "pattern": "private async emitActivityTick\\("
+    },
+    {
+      "title": "Les blocages — distinguer branche locale et arrêt du lot",
+      "description": "Un échec ou une interruption rend les descendants concernés `blocked`. Les tâches indépendantes peuvent continuer, et aucune relance automatique n’est ajoutée par cette propagation.\n\nUn conflit Git est différent : le drapeau `snapshot.conflict` ferme l’admission et l’intégrateur dans `runSchedule`. Les tentatives déjà actives peuvent finir, mais leurs checkpoints restent en attente ; d’autres descendants peuvent donc être retenus.\n\nUne tâche seulement lente ne doit pas créer cette barrière globale. L’ancien moteur par vagues le faisait ; l’ordonnancement continu l’a remplacé dans le code actuel.",
+      "questions": [
+        "Quelle différence entre une tâche lente, échouée et en conflit ?",
+        "Pourquoi un conflit peut-il retenir une branche indépendante ?",
+        "Pourquoi le lot peut-il être failed alors que plusieurs tâches ont réussi ?"
+      ],
+      "file": "slopify/src/taskBatch.ts",
+      "pattern": "private blockDescendants\\("
+    },
+    {
+      "title": "La panne Docker commune — un arrêt coordonné",
+      "description": "Une erreur d’une commande sbx déclenche une sonde indépendante `sbx ls --json`. Si cette sonde réussit, le code ne conclut pas à une panne commune ; une erreur de résultat d’agent ne suffit donc pas à suspendre toute l’infrastructure.\n\nSi la sonde échoue, le contrôle Docker est considéré indisponible. L’annulation du run est propagée, la suspension est sauvegardée, et le service tente d’arrêter les ressources concernées en conservant leurs preuves.\n\nCette garde est une réaction à des erreurs observées, pas un contrôleur de liveness permanent qui relance les agents.",
+      "file": "slopify/src/dockerRunHealth.ts",
+      "pattern": "private async checkHealth\\("
+    },
+    {
+      "title": "Reprendre un lot — réutiliser avant de réexécuter",
+      "description": "`resume` relit le snapshot et exige un contexte et un clone d’intégration disponibles. Il refuse un conflit non résolu et les tâches encore marquées `running`, afin de ne pas lancer des copies sans avoir traité l’exécution précédente.\n\nIl valide les checkpoints réutilisables, remet les échecs ou interruptions en état admissible et réemploie les résultats durables exploitables. Les tâches déjà intégrées ne sont pas exécutées à nouveau.\n\nLa reprise est une décision explicite. Un statut persistant `running` n’est pas une mesure de l’existence du processus ou de l’activité réelle de l’agent.",
+      "file": "slopify/src/taskBatch.ts",
+      "pattern": "  async resume\\(runId: string"
+    },
+    {
+      "title": "Le garde de reprise — vérifier le bundle et sa base",
+      "description": "La garde vérifie le chemin et la présence du bundle, son contenu, le commit annoncé et son ascendance par rapport à la base de tentative. Elle lit réellement le pack, même si Git connaît déjà l’objet.\n\nUn checkpoint incomplet ou invalide est enregistré comme tel, sans relancer l’agent ni écraser les preuves. Le code exige une intervention explicite plutôt que de transformer un résultat douteux en réussite.\n\nCette validation porte sur l’intégrité Git et la provenance technique du résultat ; elle ne remplace pas les tests fonctionnels de ce qu’il implémente.",
+      "file": "slopify/src/taskBatch.ts",
+      "pattern": "private async validateCheckpointIntegrity\\("
+    },
+    {
+      "title": "Reprendre une tâche précise — conserver l’historique",
+      "description": "`resume-task` cible une tâche échouée, interrompue ou encore marquée en cours après arrêt vérifié de l’exécution précédente. Une nouvelle exécution possède un nouvel identifiant et ses propres preuves.\n\nUn checkpoint durable valide peut être réutilisé sans nouveau passage de l’agent. S’il est inutilisable, `--discard-checkpoint` permet une décision opérateur enregistrée qui l’écarte tout en conservant les preuves de l’ancienne tentative.\n\nCette reprise ciblée ne déroule pas à elle seule tous les descendants : une reprise du lot peut ensuite réadmettre le reste du DAG.",
+      "file": "slopify/src/taskBatch.ts",
+      "pattern": "  async resumeTask\\(runId: string"
+    },
+    {
+      "title": "Résoudre un conflit — préparer puis valider un résultat Git",
+      "description": "`resolve-conflict --strategy manual` prépare un clone local de résolution et un enregistrement durable. Malgré le nom de certaines variables, cette voie crée un répertoire Git local, pas une nouvelle Docker Sandbox via sbx.\n\nL’opérateur ou son agent construit puis committe la combinaison attendue. `validate-resolution` contrôle l’ascendance, crée un bundle de résolution, le rattache à la tentative et reprend l’intégration et l’admission.\n\nCe contrôle ne lance pas lui-même les tests et ne prouve pas que tous les changements ont été préservés sémantiquement. Les stratégies `use-current` et `use-incoming` ont d’autres effets : les lire avant de les choisir.",
+      "file": "slopify/src/taskBatch.ts",
+      "pattern": "  async resolveConflict\\("
+    },
+    {
+      "title": "Relier l’explication à une preuve exécutable",
+      "description": "Ce test utilise le vrai service et de vrais dépôts Git, en remplaçant sbx et les agents par un exécuteur contrôlé. Il garde une tâche active et vérifie qu’un descendant d’une autre tâche démarre avant sa fin, avec la bonne base intégrée.\n\nDans cette conversation, les quatre tests ciblés sur les branches indépendantes, le remplissage et le conflit ont passé. Le diagnostic complémentaire `slopify/prototypes/control-plane/slow-diagnostic.mjs` a aussi passé ses deux cas : six tâches, trois places, dépendances individuelles puis barrière explicitement déclarée.\n\nCes observations vérifient l’ordonnancement avec agents simulés ; elles ne sont pas un essai du runtime Docker réel ni un benchmark des modèles. La carte décrit le chemin actuel : lot figé → admission continue → tentative isolée → checkpoint → intégration → revue finale → inspection et récupération.",
+      "questions": [
+        "Quel test démontre qu’une tâche lente ne bloque pas une branche indépendante ?",
+        "Qu’est-ce qui est réel et qu’est-ce qui est simulé dans cette vérification ?",
+        "Quel fichier relire pour comprendre chaque flèche du sketchnote ?"
+      ],
+      "file": "slopify/test/taskWaves.test.ts",
+      "pattern": "a completed checkpoint unlocks its descendant while an unrelated sibling keeps its pinned base"
+    }
+  ]
+}
