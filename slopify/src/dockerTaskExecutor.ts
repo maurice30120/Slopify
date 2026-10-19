@@ -87,7 +87,15 @@ export class DockerTaskExecutor implements TaskExecutor {
       await mkdir(containerContextPath,{recursive:true});
       await copyFile(request.specFile,path.join(containerContextPath,'spec.md'));
       const isReview = request.mission === 'review';
-      const harness = isReview ? [
+      const isController = request.mission === 'controller';
+      const harness = isController ? [
+        'You are the Slopify mission controller: a decision-maker, not an implementer.',
+        'Read the full frozen spec: '+path.join(containerContextPath,'spec.md'),
+        'You do not execute tests, HTTP requests or code. You decide from the durable state provided.',
+        'Do not edit, commit or create anything in the workspace.',
+        'End your final assistant message with exactly one standalone line: SLOPIFY_DECISION=<valid JSON>.',
+        'A decision without the SLOPIFY_DECISION line is unparsable and triggers a safe fallback.',
+      ].join('\n') : isReview ? [
         'Read the full frozen spec: '+path.join(containerContextPath,'spec.md'),
         'Candidate checkpoint under review: '+request.taskBaseCommit+'; run baseline: '+request.runBaseCommit+'.',
         'Independent review mission: inspect the candidate code read-only, verify the ticket criteria and run the concrete verifications demanded by the proof contract.',
@@ -122,6 +130,9 @@ export class DockerTaskExecutor implements TaskExecutor {
       if (isReview) {
         const verdict = parseReviewVerdict(run.report);
         return {exitCode:run.exitCode,reviewVerdict:verdict,stdoutPath,stderrPath,reportPath,resource,diagnostics};
+      }
+      if (isController) {
+        return {exitCode:run.exitCode,stdoutPath,stderrPath,reportPath,resource,diagnostics};
       }
       if(run.exitCode!==0 || diagnostics.length) return {exitCode:run.exitCode||1,stdoutPath,stderrPath,reportPath,resource,diagnostics};
       const result=await new GitPromotion(logged).createAgentCheckpoint({workspaceCwd:request.workspacePath,sandboxName,runId:request.runId,nodeId:request.taskId,attempt:1,baseCommit:request.taskBaseCommit,signal:request.signal});
@@ -174,7 +185,7 @@ const codexAdapter:TaskAgentAdapter={
         if(event.type==='item.completed'&&event.item?.type==='agent_message')reports.push(event.item.text);
       }catch{/* Non-JSON startup messages remain in the raw log. */}
     }
-    if (context.mission !== 'review') diagnostics.push(...agentOutcomeDiagnostics(reports.at(-1) ?? ''));
+    if (context.mission !== 'review' && context.mission !== 'controller') diagnostics.push(...agentOutcomeDiagnostics(reports.at(-1) ?? ''));
     return {exitCode:run.exitCode,report:reports.join('\n\n')||run.stdout||run.stderr,diagnostics};
   },
 };

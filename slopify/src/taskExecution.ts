@@ -22,7 +22,7 @@ export interface TaskExecutionRequest {
   runBaseCommit: string;
   resultDirectory: string;
   signal?: AbortSignal;
-  mission?: 'implement' | 'review';
+  mission?: 'implement' | 'review' | 'controller';
   proofContract?: ProofRequirement[];
   onResource?: (resource: TaskSandboxResource) => Promise<void>;
 }
