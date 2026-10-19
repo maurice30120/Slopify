@@ -128,7 +128,7 @@ export function createPiTaskAdapter(): TaskAgentAdapter {
           reports.push(`## Observed Pi subagent: ${name}\nExit code: ${String(child.exitCode)}\n${text || String(error)}`);
         }
       }
-      diagnostics.push(...agentOutcomeDiagnostics(finalParentMessage));
+      if (context.mission !== 'review') diagnostics.push(...agentOutcomeDiagnostics(finalParentMessage));
       if (reviews.length) {
         const reviewPath = path.join(context.resultDirectory, 'pi-review-results.json');
         await writeFile(reviewPath, JSON.stringify(reviews, null, 2), { mode: 0o600 });

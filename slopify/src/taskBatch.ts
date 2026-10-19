@@ -7,6 +7,7 @@ import * as path from 'node:path';
 import { createNodeSubprocessExecutor, type SubprocessExecutor } from '@acp-client/sandbox';
 import { DockerTaskExecutor } from './dockerTaskExecutor.js';
 import type { TaskExecutionResult, TaskSandboxResource } from './taskExecution.js';
+import { defaultMissionController, missingProofs, parseReviewVerdict, type ControllerTaskView, type DecisionRecord, type MissionController, type ProofRequirement, type ReviewVerdict } from './missionController.js';
 
 export interface TaskBatchDiagnostic {
   code: string;
@@ -27,6 +28,12 @@ export interface TaskBatchServiceOptions {
   subprocessExecutor?: SubprocessExecutor;
   /** Receives a copy after each durable save, for CLI progress reporting. */
   onUpdate?: (snapshot: TaskBatchSnapshot) => void;
+  review?: ReviewGateOptions;
+}
+
+export interface ReviewGateOptions {
+  controller?: MissionController;
+  maxCorrections?: number;
 }
 
 export interface TaskBatchRunOptions {
@@ -47,6 +54,11 @@ export interface BatchTaskState extends BatchTask {
   status: 'pending' | 'running' | 'completed' | 'conflicted' | 'succeeded' | 'failed' | 'interrupted' | 'blocked';
   attempts: BatchTaskAttempt[];
   blockedBy?: string[];
+  phase?: 'implementation' | 'review' | 'correction' | 'accepted' | 'blocked';
+  corrections?: number;
+  proofContract?: ProofRequirement[];
+  lastReview?: { verdict: 'PASS' | 'FAIL'; findings: string[]; summary: string; proofs?: Record<string, string> };
+  candidateCommit?: string;
 }
 
 export interface TaskBatchConflict {
@@ -76,7 +88,7 @@ export interface TaskBatchSnapshot {
   version: 1;
   runId: string;
   repositoryPath: string;
-  status: 'ready' | 'running' | 'succeeded' | 'failed' | 'interrupted' | 'conflicted';
+  status: 'ready' | 'running' | 'succeeded' | 'failed' | 'interrupted' | 'conflicted' | 'critical_failure';
   runBaseCommit: string;
   integrationCommit?: string;
   integrationBranch: string;
@@ -87,6 +99,8 @@ export interface TaskBatchSnapshot {
   diagnostics: TaskBatchDiagnostic[];
   conflict?: TaskBatchConflict;
   resolution?: TaskBatchResolution;
+  decisions?: DecisionRecord[];
+  criticalFailure?: { taskId: string; reason: string; at: string };
 }
 
 /** An execution stopped after durable state was available; CLI can report its outcome. */
@@ -107,10 +121,16 @@ export class TaskBatchService {
   private readonly subprocessExecutor: SubprocessExecutor;
   private readonly onUpdate?: TaskBatchServiceOptions['onUpdate'];
   private readonly saves = new Map<string, Promise<void>>();
+  private readonly review: ReviewGateOptions | undefined;
+  private readonly controller: MissionController;
+  private readonly maxCorrections: number;
 
   constructor(options: TaskBatchServiceOptions) {
     this.repositoryPath = path.resolve(options.repositoryPath);
     this.onUpdate = options.onUpdate;
+    this.review = options.review;
+    this.controller = options.review?.controller ?? defaultMissionController;
+    this.maxCorrections = options.review?.maxCorrections ?? 3;
     this.subprocessExecutor = options.subprocessExecutor ?? createNodeSubprocessExecutor();
     this.storePath = path.resolve(options.storePath ?? process.env.SLOPIFY_TASK_STORE ?? path.join(
       homedir(), '.local', 'share', 'slopify', 'task-runs',
@@ -224,20 +244,27 @@ export class TaskBatchService {
         if (snapshot.conflict) return;
       }
 
-      while (!signal?.aborted) {
+      while (!signal?.aborted && !snapshot.criticalFailure) {
         this.blockDescendants(snapshot);
         const byId = new Map(snapshot.tasks.map(task => [task.id, task]));
-        const wave = snapshot.tasks.filter(task => task.status === 'pending'
-          && task.dependsOn.every(id => byId.get(id)!.status === 'succeeded')).slice(0, WAVE_SIZE);
+        const ready = snapshot.tasks.filter(task => task.status === 'pending'
+          && task.dependsOn.every(id => byId.get(id)!.status === 'succeeded'));
+        // À priorité égale, préfère le ticket qui débloque le plus de descendants directs, puis l'ordre stable du JSON.
+        const descendants = (id: string) => snapshot.tasks.filter(other => other.dependsOn.includes(id)).length;
+        ready.sort((a, b) => descendants(b.id) - descendants(a.id));
+        const wave = ready.slice(0, WAVE_SIZE);
         if (wave.length === 0) break;
         const taskBaseCommit = snapshot.integrationCommit!;
         // Chaque tentative possède son clone et ses refs de checkpoint. Les nœuds frères ne partagent que leur base figée.
-        await Promise.all(wave.map(task => this.executeTask(snapshot, task, taskBaseCommit, workspacePath, executor, signal)));
+        await Promise.all(wave.map(task => this.review
+          ? this.reconcileTask(snapshot, task, taskBaseCommit, workspacePath, executor, signal)
+          : this.executeTask(snapshot, task, taskBaseCommit, workspacePath, executor, signal)));
         // L'ordre des déclarations reste stable même si les agents externes terminent dans un ordre différent.
         for (const task of wave) {
           if (task.status !== 'completed') continue;
           await this.integrateTask(snapshot, task, workspacePath, executor);
           if (snapshot.conflict) return;
+          if (snapshot.criticalFailure) break;
         }
         await execFileAsync('git', ['-C', workspacePath, 'checkout', '--detach', snapshot.integrationCommit!]);
         await this.save(snapshot);
@@ -252,7 +279,8 @@ export class TaskBatchService {
 
   private async finishExecution(snapshot: TaskBatchSnapshot, signal?: AbortSignal): Promise<void> {
     this.blockDescendants(snapshot);
-    snapshot.status = snapshot.conflict ? 'conflicted'
+    snapshot.status = snapshot.criticalFailure ? 'critical_failure'
+      : snapshot.conflict ? 'conflicted'
       : snapshot.tasks.every(task => task.status === 'succeeded') ? 'succeeded'
       : signal?.aborted || snapshot.tasks.some(task => task.status === 'interrupted') ? 'interrupted'
       : snapshot.tasks.some(task => task.status === 'running') ? 'running' : 'failed';
@@ -273,7 +301,7 @@ export class TaskBatchService {
   }
 
   private async executeTask(snapshot: TaskBatchSnapshot, task: BatchTaskState, taskBaseCommit: string,
-    integrationPath: string, executor: DockerTaskExecutor, signal?: AbortSignal): Promise<void> {
+    integrationPath: string, executor: DockerTaskExecutor, signal?: AbortSignal, baseBundlePath?: string): Promise<void> {
     const attemptId = randomUUID();
     const runDirectory = path.join(this.storePath, snapshot.runId);
     const workspacePath = path.join(runDirectory, 'workspaces', attemptId);
@@ -284,6 +312,7 @@ export class TaskBatchService {
     try {
       await mkdir(path.dirname(workspacePath), { recursive: true });
       await execFileAsync('git', ['clone', '--no-hardlinks', '--quiet', '--', integrationPath, workspacePath]);
+      if (baseBundlePath) await execFileAsync('git', ['-C', workspacePath, 'fetch', '--no-tags', baseBundlePath, taskBaseCommit]);
       await execFileAsync('git', ['-C', workspacePath, 'checkout', '--detach', taskBaseCommit]);
       const result = await executor.execute({ runId: snapshot.runId, taskId: task.id, attemptId, agent: task.agent,
         workspacePath, specFile: snapshot.context.specFile, prompt: task.prompt, taskBaseCommit,
@@ -302,6 +331,116 @@ export class TaskBatchService {
       attempt.diagnostics = [...attempt.diagnostics ?? [], { code: 'execution_failed', message: String(error) }];
     }
     await this.save(snapshot);
+  }
+
+  /** Cycle de réconciliation d'un ticket : implémentation, review indépendante, correction éventuelle, puis acceptation.
+   * Le gate n'est franchi que sur verdict PASS explicite avec toutes les preuves exigées ; l'intégration Git reste inchangée. */
+  private async reconcileTask(snapshot: TaskBatchSnapshot, task: BatchTaskState, taskBaseCommit: string,
+    integrationPath: string, executor: DockerTaskExecutor, signal?: AbortSignal): Promise<void> {
+    if (task.source === 'final-review') {
+      await this.executeTask(snapshot, task, taskBaseCommit, integrationPath, executor, signal);
+      return;
+    }
+    if (!task.proofContract) {
+      const plan = await this.controller.planImplementation(this.controllerView(task, snapshot), snapshot);
+      task.proofContract = plan.proofs;
+      this.recordDecision(snapshot, task.id, 'IMPLEMENT', plan.reason);
+      await this.save(snapshot);
+    }
+    task.phase = task.corrections ? 'correction' : 'implementation';
+    await this.executeTask(snapshot, task, taskBaseCommit, integrationPath, executor, signal);
+    if (snapshot.tasks.find(t => t.id === task.id)!.status !== 'completed') return;
+    task.candidateCommit = task.attempts.at(-1)!.checkpoint?.commit;
+    task.phase = 'review';
+    task.status = 'running';
+    await this.save(snapshot);
+    while (!signal?.aborted) {
+      const verdict = await this.runReviewMission(snapshot, task, executor, signal);
+      if (signal?.aborted) return;
+      task.lastReview = verdict;
+      const missing = [...missingProofs(task.proofContract ?? [], verdict.proofs),
+        ...(verdict.verdict === 'FAIL' ? verdict.findings : [])];
+      if (verdict.verdict === 'PASS' && missing.length === 0) {
+        task.phase = 'accepted';
+        task.status = 'completed';
+        this.recordDecision(snapshot, task.id, 'ACCEPT', 'Review PASS avec toutes les preuves exigées.');
+        await this.save(snapshot);
+        return;
+      }
+      task.corrections = (task.corrections ?? 0);
+      const decision = await this.controller.decideAfterReviewFailure(this.controllerView(task, snapshot), snapshot);
+      this.recordDecision(snapshot, task.id, decision.mission, decision.reason);
+      if (decision.mission === 'STOP' || (task.corrections ?? 0) + 1 > this.maxCorrections) {
+        task.status = 'failed'; task.phase = 'blocked';
+        snapshot.criticalFailure = { taskId: task.id, reason: decision.reason, at: new Date().toISOString() };
+        await this.save(snapshot);
+        return;
+      }
+      task.corrections += 1;
+      task.phase = 'correction';
+      task.status = 'pending';
+      await this.save(snapshot);
+      const prompt = `${task.prompt}\n\nPrevious review failed with findings:\n${verdict.findings.join('\n')}\n\nRequired proofs remain: ${(task.proofContract ?? []).map(p => p.id).join(', ')}.`;
+      const originalPrompt = task.prompt;
+      task.prompt = prompt;
+      const candidate = task.attempts.at(-1)!.checkpoint!;
+      try {
+        await this.executeTask(snapshot, task, candidate.commit, integrationPath, executor, signal, candidate.bundlePath);
+      } finally { task.prompt = originalPrompt; }
+      if (snapshot.tasks.find(t => t.id === task.id)!.status !== 'completed') return;
+      task.candidateCommit = task.attempts.at(-1)!.checkpoint?.commit;
+      task.phase = 'review';
+      task.status = 'running';
+      await this.save(snapshot);
+    }
+  }
+
+  /** Mission REVIEW : le reviewer inspecte le checkpoint candidat sans le muter et rend un verdict structuré. */
+  private async runReviewMission(snapshot: TaskBatchSnapshot, task: BatchTaskState, executor: DockerTaskExecutor,
+    signal?: AbortSignal): Promise<ReviewVerdict> {
+    const attempt = task.attempts.at(-1)!;
+    const checkpoint = attempt.checkpoint!;
+    const attemptId = randomUUID();
+    const runDirectory = path.join(this.storePath, snapshot.runId);
+    const workspacePath = path.join(runDirectory, 'workspaces', attemptId);
+    const resultDirectory = path.join(runDirectory, 'attempts', attemptId);
+    const verdictFallback: ReviewVerdict = { verdict: 'FAIL', proofs: {}, findings: ['Review mission could not run.'], summary: 'Review indisponible.' };
+    try {
+      await mkdir(path.dirname(workspacePath), { recursive: true });
+      await execFileAsync('git', ['clone', '--no-hardlinks', '--quiet', '--', path.join(runDirectory, 'workspaces', attempt.attemptId), workspacePath]);
+      await execFileAsync('git', ['-C', workspacePath, 'fetch', '--no-tags', checkpoint.bundlePath, checkpoint.commit]);
+      await execFileAsync('git', ['-C', workspacePath, 'checkout', '--detach', checkpoint.commit]);
+      const result = await executor.execute({
+        runId: snapshot.runId, taskId: task.id, attemptId, agent: task.agent,
+        workspacePath,
+        specFile: snapshot.context.specFile,
+        prompt: `Review the candidate checkpoint ${attempt.checkpoint!.commit} for ticket ${task.id}: ${task.prompt}`,
+        taskBaseCommit: attempt.checkpoint!.commit, runBaseCommit: snapshot.runBaseCommit,
+        resultDirectory, mission: 'review', proofContract: task.proofContract, signal,
+      });
+      if (result.diagnostics.length) {
+        return { ...verdictFallback, findings: [...verdictFallback.findings, ...result.diagnostics.map(d => `${d.code}: ${d.message}`)] };
+      }
+      return result.reviewVerdict ?? verdictFallback;
+    } catch (error) {
+      return { ...verdictFallback, findings: [...verdictFallback.findings, String(error)] };
+    }
+  }
+
+  private controllerView(task: BatchTaskState, snapshot: TaskBatchSnapshot): ControllerTaskView {
+    return {
+      taskId: task.id,
+      phase: task.phase ?? 'implementation',
+      status: task.status,
+      corrections: task.corrections ?? 0,
+      maxCorrections: this.maxCorrections,
+      proofContract: task.proofContract ?? [],
+      lastReview: task.lastReview ? { verdict: task.lastReview.verdict, findings: task.lastReview.findings, summary: task.lastReview.summary } : undefined,
+    };
+  }
+
+  private recordDecision(snapshot: TaskBatchSnapshot, taskId: string, action: string, reason: string, refs?: string[]): void {
+    snapshot.decisions = [...snapshot.decisions ?? [], { at: new Date().toISOString(), taskId, action, reason, ...(refs ? { refs } : {}) }];
   }
 
   private async integrateTask(snapshot: TaskBatchSnapshot, task: BatchTaskState, workspacePath: string,

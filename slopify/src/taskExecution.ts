@@ -1,4 +1,5 @@
 import type { TaskAgent, TaskBatchDiagnostic } from './taskBatch.js';
+import type { ProofRequirement, ReviewVerdict } from './missionController.js';
 
 /** L'identité externe de la sandbox est enregistrée dès sa création, avant l'exécution de l'agent. */
 export interface TaskSandboxResource {
@@ -21,6 +22,8 @@ export interface TaskExecutionRequest {
   runBaseCommit: string;
   resultDirectory: string;
   signal?: AbortSignal;
+  mission?: 'implement' | 'review';
+  proofContract?: ProofRequirement[];
   onResource?: (resource: TaskSandboxResource) => Promise<void>;
 }
 
@@ -33,6 +36,7 @@ export interface TaskExecutionResult {
   reportPath?: string;
   resource?: TaskSandboxResource;
   diagnostics: TaskBatchDiagnostic[];
+  reviewVerdict?: ReviewVerdict;
 }
 
 /** Contrat fonctionnel de TaskExecutor dans le cycle de vie du pipeline ; il définit les données et invariants observables. */

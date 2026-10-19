@@ -7,6 +7,7 @@ import type { TaskBatchDiagnostic } from './taskBatch.js';
 import type { TaskExecutor, TaskExecutionRequest, TaskExecutionResult, TaskSandboxResource } from './taskExecution.js';
 import { createPiTaskAdapter } from './piTaskAdapter.js';
 import { agentOutcomeDiagnostics } from './agentOutcome.js';
+import { parseReviewVerdict } from './missionController.js';
 
 /** Contrat fonctionnel de TaskAgentContext dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface TaskAgentContext extends TaskExecutionRequest {
@@ -85,7 +86,17 @@ export class DockerTaskExecutor implements TaskExecutor {
       const containerContextPath=path.join(request.resultDirectory,'context');
       await mkdir(containerContextPath,{recursive:true});
       await copyFile(request.specFile,path.join(containerContextPath,'spec.md'));
-      const harness=[
+      const isReview = request.mission === 'review';
+      const harness = isReview ? [
+        'Read the full frozen spec: '+path.join(containerContextPath,'spec.md'),
+        'Candidate checkpoint under review: '+request.taskBaseCommit+'; run baseline: '+request.runBaseCommit+'.',
+        'Independent review mission: inspect the candidate code read-only, verify the ticket criteria and run the concrete verifications demanded by the proof contract.',
+        'Do not edit, commit or fix the code you review.',
+        'Required proofs: '+(request.proofContract??[]).map(p=>`${p.id}: ${p.description}`).join('; ')+'.',
+        'Provide each required proof as a concrete reference (command, output, assertion result) in the proofs object.',
+        'End your final assistant message with exactly one standalone line: SLOPIFY_RESULT_REVIEW={"verdict":"PASS"} or SLOPIFY_RESULT_REVIEW={"verdict":"FAIL","findings":["..."],"proofs":{}}.',
+        'A PASS without every required proof is invalid. A claim without evidence is not a proof.',
+      ].join('\n') : [
         'Read the full frozen spec: '+path.join(containerContextPath,'spec.md'),
         'Task baseline: '+request.taskBaseCommit+'; run baseline: '+request.runBaseCommit+'.',
         'Use the official implement skill and its referenced resources. The ticket prompt is unchanged.',
@@ -105,9 +116,13 @@ export class DockerTaskExecutor implements TaskExecutor {
       await request.onResource?.(resource);
       const head=(await requireSuccess(['exec',sandboxName,'git','rev-parse','HEAD'])).stdout.trim();
       if(head!==request.taskBaseCommit)throw new Error(`Sandbox baseline mismatch: expected ${request.taskBaseCommit}, got ${head}.`);
-      const run=await adapter.run(context);
+      const run = await adapter.run(context);
       diagnostics.push(...run.diagnostics);
       await writeFile(reportPath,run.report,{mode:0o600});
+      if (isReview) {
+        const verdict = parseReviewVerdict(run.report);
+        return {exitCode:run.exitCode,reviewVerdict:verdict,stdoutPath,stderrPath,reportPath,resource,diagnostics};
+      }
       if(run.exitCode!==0 || diagnostics.length) return {exitCode:run.exitCode||1,stdoutPath,stderrPath,reportPath,resource,diagnostics};
       const result=await new GitPromotion(logged).createAgentCheckpoint({workspaceCwd:request.workspacePath,sandboxName,runId:request.runId,nodeId:request.taskId,attempt:1,baseCommit:request.taskBaseCommit,signal:request.signal});
       const ancestry=await logged({command:'git',args:['merge-base','--is-ancestor',request.taskBaseCommit,result.checkpoint.commit],cwd:request.workspacePath,stdin:'ignore'});
@@ -159,7 +174,7 @@ const codexAdapter:TaskAgentAdapter={
         if(event.type==='item.completed'&&event.item?.type==='agent_message')reports.push(event.item.text);
       }catch{/* Non-JSON startup messages remain in the raw log. */}
     }
-    diagnostics.push(...agentOutcomeDiagnostics(reports.at(-1) ?? ''));
+    if (context.mission !== 'review') diagnostics.push(...agentOutcomeDiagnostics(reports.at(-1) ?? ''));
     return {exitCode:run.exitCode,report:reports.join('\n\n')||run.stdout||run.stderr,diagnostics};
   },
 };
