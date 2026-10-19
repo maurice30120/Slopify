@@ -23,6 +23,8 @@ export interface TaskExecutionRequest {
   resultDirectory: string;
   signal?: AbortSignal;
   mission?: 'implement' | 'review' | 'controller';
+  /** Vrai quand une review indépendante validera ce ticket : l'implémenteur n'orchestre alors plus sa propre review finale. */
+  independentReview?: boolean;
   proofContract?: ProofRequirement[];
   onResource?: (resource: TaskSandboxResource) => Promise<void>;
 }

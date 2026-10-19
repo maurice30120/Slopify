@@ -321,7 +321,7 @@ export class TaskBatchService {
       await execFileAsync('git', ['-C', workspacePath, 'checkout', '--detach', taskBaseCommit]);
       const result = await executor.execute({ runId: snapshot.runId, taskId: task.id, attemptId, agent: task.agent,
         workspacePath, specFile: snapshot.context.specFile, prompt: task.prompt, taskBaseCommit,
-        runBaseCommit: snapshot.runBaseCommit, resultDirectory, signal,
+        runBaseCommit: snapshot.runBaseCommit, resultDirectory, independentReview: this.review !== undefined, signal,
         onResource: async (resource: TaskSandboxResource) => {
           attempt.resource = resource; attempt.resourceState = 'active'; await this.save(snapshot);
         } });

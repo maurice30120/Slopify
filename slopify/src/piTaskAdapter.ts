@@ -70,7 +70,9 @@ export function createPiTaskAdapter(): TaskAgentAdapter {
         `Read the complete frozen specification at ${context.containerContextPath}/spec.md.`,
         `Task baseline: ${context.taskBaseCommit}. Run baseline: ${context.runBaseCommit}.`,
         `Official skills and all their resources are mounted readonly at ${context.skillsStore}.`,
-        `Follow implement with TDD at the approved public seams; commit when green. Skip the implement skill's final /code-review step: independent per-ticket Standards/Spec reviews are not required; the batch performs one final combined review of the integration branch.`,
+        context.independentReview
+          ? `Follow implement with TDD at the approved public seams; commit when green. Do not call the code-review skill on your own work: an independent reviewer with a proof contract will validate this ticket after you.`
+          : `Follow implement with TDD at the approved public seams; commit when green. Skip the implement skill's final /code-review step: independent per-ticket Standards/Spec reviews are not required; the batch performs one final combined review of the integration branch.`,
         `If the ticket prompt itself delegates a review, run only that delegation.`,
         `Give a delegated reviewer the chosen fixed point (task baseline for implementation, run baseline for final combined review).`,
         `Actual execution stdout and stderr are streamed to ${evidenceDirectory}/stdout.log and ${evidenceDirectory}/stderr.log; commands at ${evidenceDirectory}/commands.jsonl. Keep them intact as evidence for the final combined review.`,

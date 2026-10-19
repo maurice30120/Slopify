@@ -101,14 +101,17 @@ export class DockerTaskExecutor implements TaskExecutor {
         'Independent review mission: inspect the candidate code read-only, verify the ticket criteria and run the concrete verifications demanded by the proof contract.',
         'Do not edit, commit or fix the code you review.',
         'Required proofs: '+(request.proofContract??[]).map(p=>`${p.id}: ${p.description}`).join('; ')+'.',
-        'Provide each required proof as a concrete reference (command, output, assertion result) in the proofs object.',
+        'Provide each required proof as a verifiable reference: the exact command executed, its observed output or HTTP status, and the assertion result. An affirmation like "it works" is not a proof.',
+        'Concrete verifications you may run: start the relevant server, call the endpoints, execute the required test files and the build. Record command, exit status and output excerpt in the proofs object.',
         'End your final assistant message with exactly one standalone line: SLOPIFY_RESULT_REVIEW={"verdict":"PASS"} or SLOPIFY_RESULT_REVIEW={"verdict":"FAIL","findings":["..."],"proofs":{}}.',
         'A PASS without every required proof is invalid. A claim without evidence is not a proof.',
       ].join('\n') : [
         'Read the full frozen spec: '+path.join(containerContextPath,'spec.md'),
         'Task baseline: '+request.taskBaseCommit+'; run baseline: '+request.runBaseCommit+'.',
         'Use the official implement skill and its referenced resources. The ticket prompt is unchanged.',
-        'TDD interfaces in the ticket are approved. Follow one red/green behavior at a time, targeted validation, full suite, then commit. Independent per-ticket Standards/Spec reviews are not required; the batch performs one final combined review of the integration branch.',
+        request.independentReview
+          ? 'TDD interfaces in the ticket are approved. Follow one red/green behavior at a time, targeted validation, full suite, then commit. Do not call the code-review skill on your own work: an independent reviewer with a proof contract will validate this ticket after you.'
+          : 'TDD interfaces in the ticket are approved. Follow one red/green behavior at a time, targeted validation, full suite, then commit. Independent per-ticket Standards/Spec reviews are not required; the batch performs one final combined review of the integration branch.',
         'Read all applicable AGENTS.md and repository standards before implementation.',
         'Actual live raw execution traces: '+stdoutPath+' and '+stderrPath+'. Observed harness commands: '+eventsPath+'. Keep them intact as evidence for the final combined review.',
         'Codex native parent and reviewer execution rollouts are also in $HOME/.codex/sessions; preserve and inspect them for delegation evidence. Treat reports as declarations; missing process/delegation evidence must be reported as missing. End with factual validations, commits and blockers.',

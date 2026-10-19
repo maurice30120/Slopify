@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdtemp, mkdir, writeFile, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, readdir, rm } from 'node:fs/promises';
 import * as path from 'node:path';
 import { tmpdir } from 'node:os';
 import test from 'node:test';
@@ -371,4 +371,28 @@ test('T7 resume: a completed but unreviewed task goes through REVIEW before inte
   assert.equal(resumedA.corrections ?? 0, 0, 'the crash consumed no business correction');
   assert.equal(resumed.status, 'succeeded');
   assert.ok(f.launched.filter(id => id === 'review:A').length >= 2, 'A was re-reviewed on resume');
+});
+
+test('T9 prompts: implementer keeps TDD and drops self-review only under the independent gate', { timeout: 30000 }, async t => {
+  const f = await fixture(t, [task('A', 'pi')], { missions: { A: { reviews: [PASS_ALL] } } });
+  const state = await f.service.run(f.batchFile);
+  assert.equal(state.status, 'succeeded');
+  const runDirectory = path.join(f.root, 'runs', state.runId);
+  const harnesses: string[] = [];
+  const walk = async (directory: string): Promise<void> => {
+    for (const entry of await readdir(directory, { withFileTypes: true, recursive: true })) {
+      if (entry.name === 'harness.txt') harnesses.push(await readFile(path.join(entry.parentPath ?? (entry as unknown as { path: string }).path, entry.name), 'utf8'));
+    }
+  };
+  await walk(runDirectory);
+  assert.ok(harnesses.length >= 2, 'implement and review missions each write a harness');
+  const implementHarness = harnesses.find(h => h.includes('TDD interfaces in the ticket are approved'));
+  const reviewHarness = harnesses.find(h => h.includes('SLOPIFY_RESULT_REVIEW'));
+  assert.ok(implementHarness, 'implement harness found');
+  assert.ok(implementHarness.includes('Do not call the code-review skill on your own work'), 'implementer no longer self-reviews under the gate');
+  assert.ok(implementHarness.includes('one red/green behavior'), 'TDD and test writing are preserved');
+  assert.ok(reviewHarness, 'review harness found');
+  assert.ok(reviewHarness.includes('Required proofs:'), 'the reviewer receives the proof contract');
+  assert.ok(reviewHarness.includes('verifiable reference'), 'the reviewer must provide verifiable references');
+  assert.ok(reviewHarness.includes('An affirmation like "it works" is not a proof'), 'a bare claim is rejected as a proof');
 });
