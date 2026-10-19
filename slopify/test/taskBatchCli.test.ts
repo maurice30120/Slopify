@@ -121,3 +121,23 @@ test('generic command errors are machine-readable with --json', async () => {
   assert.equal(JSON.parse(sink.messages[0]).diagnostics[0].message, 'Frozen specification is missing');
   assert.deepEqual(sink.errors, []);
 });
+
+test('review flags reach the service only for supported actions', async () => {
+  const seen: unknown[] = [];
+  const factory = (options: Record<string, unknown>) => {
+    seen.push(options);
+    return service(snapshot('succeeded'));
+  };
+  const ok = await runTaskBatchCli(['run', 'batch.json', '--review', '--json'], output(), '/repo', factory as never);
+  assert.equal(ok, 0);
+  assert.equal((seen.at(-1) as { review?: unknown }).review !== undefined, true, 'review gate is wired');
+  await runTaskBatchCli(['resume', 'run', '--review', '--max-corrections', '2', '--json'], output(), '/repo', factory as never);
+  assert.deepEqual((seen.at(-1) as { review?: unknown }).review, { maxCorrections: 2 });
+  await runTaskBatchCli(['resume-task', 'run', 'task', '--max-corrections', '5', '--json'], output(), '/repo', factory as never);
+  assert.deepEqual((seen.at(-1) as { review?: unknown }).review, { maxCorrections: 5 });
+  for (const args of [['status', 'run', '--review'], ['conflict', 'run', '--review'], ['run', 'b', '--max-corrections', '0'],
+    ['run', 'b', '--max-corrections', 'x'], ['run', 'b', '--max-corrections'], ['resolve-conflict', 'run', '--review']]) {
+    const code = await runTaskBatchCli([...args as string[]], output(), '/repo', factory as never);
+    assert.equal(code, 1, `${args.join(' ')} must be rejected`);
+  }
+});

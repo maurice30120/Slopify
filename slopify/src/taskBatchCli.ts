@@ -4,7 +4,7 @@ import { TaskBatchService, TaskBatchValidationError, TaskBatchExecutionError, ty
 
 export const taskBatchHelp = [
   'Task batches (Pi / Codex):',
-  '  slopify tasks run <batch.json> [--cwd <repository>] [--store <directory>] [--base <ref>] [--json]',
+  '  slopify tasks run <batch.json> [--cwd <repository>] [--store <directory>] [--base <ref>] [--review] [--max-corrections <n>] [--json]',
   '  slopify tasks status <run-id> [--cwd <repository>] [--store <directory>] [--json]',
   '  slopify tasks resume <run-id> [--cwd <repository>] [--store <directory>] [--json]',
   '  slopify tasks resume-task <run-id> <task-id> [--cwd <repository>] [--store <directory>] [--json]',
@@ -47,10 +47,25 @@ export async function runTaskBatchCli(
     let storePath: string | undefined;
     let baseRef: string | undefined;
     let strategy: 'use-current' | 'use-incoming' | 'manual' | undefined;
+    let review = false;
+    let maxCorrections: number | undefined;
     const positional: string[] = [];
     for (let index = 1; index < argv.length; index += 1) {
       const value = argv[index];
       if (value === '--json') { json = true; continue; }
+      if (value === '--review') {
+        if (!['run', 'resume', 'resume-task'].includes(action)) throw new Error('--review is only supported by tasks run, resume and resume-task.');
+        review = true;
+        continue;
+      }
+      if (value === '--max-corrections') {
+        if (!['run', 'resume', 'resume-task'].includes(action)) throw new Error('--max-corrections is only supported by tasks run, resume and resume-task.');
+        const next = argv[++index];
+        const parsed = Number(next);
+        if (!next || !/^\d+$/.test(next) || parsed < 1) throw new Error('--max-corrections requires a positive integer.');
+        maxCorrections = parsed;
+        continue;
+      }
       if (value === '--cwd' || value === '--store' || value === '--base' || value === '--strategy') {
         if (value === '--base' && action !== 'run') throw new Error('--base is only supported by tasks run.');
         if (value === '--strategy' && action !== 'resolve-conflict') throw new Error('--strategy is only supported by tasks resolve-conflict.');
@@ -83,7 +98,9 @@ export async function runTaskBatchCli(
             + tasks.map(task => `${task.id}: ${task.status} (${task.agent})`).join(', ')
             + issues.filter(issue => issue.severity !== 'info' && !issue.historical).map(issue => `\n[${issue.code}] ${issue.taskId ?? 'run'}: ${issue.message}`).join(''));
       };
-    const service = createService({ repositoryPath, storePath, onUpdate });
+    const service = createService({ repositoryPath, storePath, onUpdate, ...(review || maxCorrections !== undefined
+      ? { review: { ...(maxCorrections !== undefined ? { maxCorrections } : {}) } }
+      : {}) });
     const [runId, taskId] = positional;
     if (action === 'conflict') {
       const conflict = await service.getConflict(runId);
