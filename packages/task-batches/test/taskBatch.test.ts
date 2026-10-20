@@ -5,7 +5,8 @@ import { mkdtemp, mkdir, readFile, writeFile, readdir, rm, symlink } from 'node:
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import test from 'node:test';
-import { TaskBatchService, TaskBatchValidationError } from '@slopify/task-batches';
+import { TaskBatchValidationError } from '@slopify/task-batches';
+import { TaskBatchService } from './taskBatchTestService.js';
 
 async function fixture(t: { after(fn: () => Promise<void>): void }) {
   const root = await mkdtemp(path.join(tmpdir(), 'slopify-task-batch-'));
