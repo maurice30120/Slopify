@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 
 import { realpathSync } from 'node:fs';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { pathToFileURL } from 'node:url';
 import { NodeCliTerminal } from './terminal.js';
 import { runTaskBatchCli, taskBatchHelp } from '@slopify/task-batches';
-import { initHelp, runInitCli } from '@slopify/project-init';
+import { initHelp, runInitCli, projectInitPackageRoot } from '@slopify/project-init';
 
 const generalHelp = `Slopify V2\n\n${initHelp}\n\n${taskBatchHelp}`;
 
@@ -13,7 +13,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
   try {
     if (argv[0] === 'tasks') return await runTaskBatchCli(argv.slice(1), terminal);
     if (argv[0] === 'init') return await runInitCli(argv.slice(1), terminal, process.cwd(), {
-      packageRoot: fileURLToPath(new URL('../..', import.meta.url)),
+      packageRoot: projectInitPackageRoot(),
     });
     if (['list', 'run', 'resume'].includes(argv[0])) {
       throw new Error(`Legacy command "${argv[0]}" has been removed. Use slopify tasks run <batch.json>, slopify tasks status <run-id> or slopify tasks resume <run-id>. See slopify tasks --help.`);
