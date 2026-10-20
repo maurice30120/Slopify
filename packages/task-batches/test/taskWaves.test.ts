@@ -6,7 +6,8 @@ import { tmpdir } from 'node:os';
 import test from 'node:test';
 import { configureRecreatedWorkers } from './recreatedWorkerFixture.js';
 import type { SubprocessExecutor } from '@slopify/execution';
-import { TaskBatchService, type BatchTask, type TaskBatchSnapshot, type TaskBatchServiceOptions } from '@slopify/task-batches';
+import { type BatchTask, type TaskBatchSnapshot, type TaskBatchServiceOptions } from '@slopify/task-batches';
+import { TaskBatchService } from './taskBatchTestService.js';
 import { taskBatchReport, formatTaskBatchReport } from '@slopify/task-batches';
 
 function git(repo: string, ...args: string[]) {
