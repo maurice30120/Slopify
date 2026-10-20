@@ -2,5 +2,6 @@ export type { ActivitySignal, ActivityTaskSignal, ActivityGroupedSignal, Activit
 export { parseActivitySignal, formatActivitySignalEvent, activitySignalEvent, ACTIVITY_SIGNAL_EVENT_TYPE } from './activitySignal.js';
 export { composeActivitySignal, type ActivityTaskCandidate, type ActivityNewsSource } from './activitySignalComposition.js';
 export { activityTaskPhrase } from './activityTaskPhrase.js';
+export { extractActivityGitSignal, type ActivityGitSnapshot } from './activitySignalGit.js';
 export { activityJournalPath, appendActivitySignal, readActivitySignals, readAllActivitySignals } from './activityJournal.js';
 export { createSystemActivityTickClock, readAttemptLogTail, type ActivityTickClock } from './activityTick.js';

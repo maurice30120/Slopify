@@ -1,0 +1,40 @@
+{
+  "name": "slopify",
+  "version": "0.1.0",
+  "private": false,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/src/cli.d.ts",
+      "default": "./dist/src/cli.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json --incremental false",
+    "test": "npm run build && node --test \"dist/test/**/*.test.js\"",
+    "clean": "node -e \"require('fs').rmSync('dist', { recursive: true, force: true })\""
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "dependencies": {
+    "@slopify/execution": "file:../../packages/execution",
+    "@slopify/task-batches": "file:../../packages/task-batches",
+    "@slopify/project-init": "file:../../packages/project-init"
+  },
+  "description": "Run Pi and Codex task batches in Docker sandboxes or locally with up to ten active tasks.",
+  "main": "./dist/src/cli.js",
+  "types": "./dist/src/cli.d.ts",
+  "bin": {
+    "slopify": "./dist/src/cli.js"
+  },
+  "files": [
+    "dist/src",
+    "init",
+    "plugin"
+  ],
+  "devDependencies": {
+    "@types/node": "^24.13.6",
+    "typescript": "^7.0.2"
+  }
+}
