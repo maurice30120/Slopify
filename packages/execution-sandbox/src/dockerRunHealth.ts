@@ -1,12 +1,7 @@
 import type { SubprocessExecutor, SubprocessRequest, SubprocessResult } from '@slopify/execution';
 
-export interface DockerRunSuspension {
-  kind: 'docker_unavailable';
-  detectedAt: string;
-  failedCommand: { command: string; args: string[]; exitCode?: number; error?: string };
-  healthCheck: { exitCode?: number; stdout: string; stderr: string; error?: string };
-  stops: Array<{ sandboxName: string; exitCode?: number; error?: string }>;
-}
+import type { DockerRunSuspension } from '@slopify/execution';
+export type { DockerRunSuspension } from '@slopify/execution';
 
 /** A run owns cancellation and the health decision; failed agent outcomes alone never enter this boundary. */
 export class DockerRunHealth {
