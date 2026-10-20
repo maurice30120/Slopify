@@ -66,3 +66,22 @@ export async function inspectLocalProcess(identity: LocalProcessIdentity | undef
 export async function isLocalProcessAlive(identity: LocalProcessIdentity | undefined): Promise<boolean> {
   return (await inspectLocalProcess(identity)) !== 'dead';
 }
+
+/** Observe all members of an isolated POSIX process group, including orphan descendants. */
+export async function inspectLocalProcessGroup(groupId: number): Promise<LocalProcessLiveness> {
+  if (process.platform === 'win32' || !Number.isSafeInteger(groupId) || groupId <= 1) return 'unknown';
+  try {
+    const result = await execFileAsync('ps', ['-A', '-o', 'pid=', '-o', 'pgid=', '-o', 'stat='], { encoding: 'utf8', timeout: 2000 });
+    let zombie = false;
+    for (const line of result.stdout.split(/\r?\n/u)) {
+      const values = line.trim().split(/\s+/u);
+      if (values.length < 3 || Number(values[1]) !== groupId) continue;
+      if (values[2]?.startsWith('Z')) zombie = true;
+      else return 'alive';
+    }
+    // Zombies cannot be killed by Slopify: a surviving zombie is a leak, not success.
+    return zombie ? 'unknown' : 'dead';
+  } catch {
+    return 'unknown';
+  }
+}
