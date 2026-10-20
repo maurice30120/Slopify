@@ -1,3 +1,4 @@
+import { TaskBatchService } from './taskBatchTestService.js';
 import assert from 'node:assert/strict';
 import { configureRecreatedWorkers } from './recreatedWorkerFixture.js';
 import { execFileSync, spawnSync } from 'node:child_process';
@@ -6,7 +7,7 @@ import * as path from 'node:path';
 import { tmpdir } from 'node:os';
 import test from 'node:test';
 import { createNodeSubprocessExecutor, type SubprocessExecutor } from '@slopify/execution';
-import { TaskBatchService } from '@slopify/task-batches';
+
 
 function git(repo: string, ...args: string[]) { return execFileSync('git', ['-C', repo, ...args], {encoding:'utf8'}).trim(); }
 async function fixture(t: {after(fn:()=>Promise<void>):void}, failure: boolean | 'parent-zero-error' | 'cleanup' | 'child-error' | 'reported-failure' | 'missing-outcome' = false) {
