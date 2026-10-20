@@ -28,6 +28,8 @@ export interface TaskExecutionRequest {
   resultDirectory: string;
   signal?: AbortSignal;
   onResource?: (resource: TaskExecutionResource) => Promise<void>;
+  /** Persist local agent identity immediately when spawned, before awaiting its result. */
+  onProcessSpawn?: (identity: NonNullable<TaskExecutionResult['processIdentity']>) => Promise<void>;
 }
 
 /** Contrat fonctionnel de TaskExecutionResult : le verdict observable d'une tentative. */
