@@ -45,6 +45,7 @@ slopify tasks run batch.json --cwd /chemin/du/depot --mode local --json  # sans 
 slopify tasks run batch.json --cwd /chemin/du/depot --mode sandbox --json  # défaut
 slopify tasks status <run-id> --cwd /chemin/du/depot --json
 slopify tasks resume <run-id> --cwd /chemin/du/depot --json
+slopify tasks clean <run-id> --cwd /chemin/du/depot --json  # après succès seulement
 ```
 
 `scripts/uninstall.sh` retire le symlink et le bloc PATH correspondant du fichier
@@ -80,6 +81,13 @@ sans modifier la branche de travail de l’utilisateur.
 Codes : **0** pour une exécution ou consultation réussie, **2** pour une exécution
 échouée, interrompue ou en conflit, **1** pour une erreur d’entrée ou de commande.
 Les anciens `list`, `run <pipeline> <prompt>` et `resume --agent` sont retirés.
+
+`tasks clean` reprend la commande proposée dans la PR #153 et l'adapte à la V2.
+Elle supprime **uniquement à la demande** la branche Git d'intégration d'un run
+**réussi** ; elle refuse les runs échoués, interrompus, en conflit ou encore actifs,
+afin de ne pas fragiliser leur reprise. Les preuves, checkpoints et snapshots ne
+sont jamais supprimés. Elle est idempotente si la branche a déjà disparu.
+
 
 `run` annonce son identifiant et son avancement sur stderr. `tasks status` fournit
 les compteurs, les causes d’échec et blocages, les rapports et les commandes utiles
