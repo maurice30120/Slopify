@@ -739,15 +739,30 @@ export class TaskBatchService {
         break;
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-        let holder: Awaited<ReturnType<typeof readLocalProcessIdentity>>;
-        try { holder = JSON.parse(await readFile(path.join(lockPath, 'owner.json'), 'utf8')); }
-        catch { throw new Error('Resume lock has no verifiable owner; inspect it manually: ' + lockPath); }
-        if (await inspectLocalProcess(holder) !== 'dead') {
-          throw new Error('Another launcher may still own this run; resume lock is active or uncertain: ' + lockPath);
-        }
-        try { await rename(lockPath, lockPath + '.stale-' + randomUUID()); }
-        catch (renameError) {
-          if ((renameError as NodeJS.ErrnoException).code !== 'ENOENT') throw renameError;
+        // A second atomic guard prevents two rescuers from each moving a
+        // newly acquired lock when the original launcher died (TOCTOU).
+        const recoveryPath = lockPath + '.recovery';
+        try { await mkdir(recoveryPath); }
+        catch { throw new Error('Resume lock recovery is already active or uncertain: ' + recoveryPath); }
+        try {
+          let holder: Awaited<ReturnType<typeof readLocalProcessIdentity>>;
+          try { holder = JSON.parse(await readFile(path.join(lockPath, 'owner.json'), 'utf8')); }
+          catch (error) {
+            if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue;
+            throw new Error('Resume lock has no verifiable owner; inspect it manually: ' + lockPath);
+          }
+          if (await inspectLocalProcess(holder) !== 'dead') {
+            throw new Error('Another launcher may still own this run; resume lock is active or uncertain: ' + lockPath);
+          }
+          const stale = lockPath + '.stale-' + randomUUID();
+          try { await rename(lockPath, stale); }
+          catch (renameError) {
+            if ((renameError as NodeJS.ErrnoException).code !== 'ENOENT') throw renameError;
+            continue;
+          }
+          await rm(stale, { recursive: true, force: true });
+        } finally {
+          await rm(recoveryPath, { recursive: true, force: true });
         }
       }
     }
