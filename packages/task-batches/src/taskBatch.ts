@@ -1,7 +1,5 @@
 import { mkdir, readFile, writeFile, rename, stat, rm } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
 import { homedir } from 'node:os';
 import * as path from 'node:path';
 import { createNodeSubprocessExecutor, assertWorkerPoolSize, inspectLocalProcess, inspectLocalProcessGroup, readLocalProcessIdentity, type SubprocessExecutor, type TaskDiagnostic, type TaskExecutionResult, type TaskExecutor, type TaskExecutionResource, type TaskAgent, type TaskEffort, type TaskWorkerPoolConfig, type TaskWorkerState, type DockerRunSuspension, type TaskRunRuntimeFactory } from '@slopify/execution';
@@ -165,7 +163,6 @@ export class TaskBatchExecutionError extends Error {
   }
 }
 
-const execFileAsync = promisify(execFile);
 const DEFAULT_MAX_CONCURRENT_TASKS = 10;
 /** Intervalle du tick d'activité par défaut : une minute (ADR 0013). */
 const ACTIVITY_TICK_INTERVAL_MS = 60_000;
@@ -245,7 +242,7 @@ export class TaskBatchService {
     let runBaseCommit: string;
     try {
       const baseRef = options.baseRef ?? 'HEAD';
-      runBaseCommit = (await execFileAsync('git', ['-C', this.repositoryPath, 'rev-parse', '--verify', '--end-of-options', `${baseRef}^{commit}`])).stdout.trim();
+      runBaseCommit = (await this.git.command( ['-C', this.repositoryPath, 'rev-parse', '--verify', '--end-of-options', `${baseRef}^{commit}`])).stdout.trim();
     } catch (error) {
       throw new TaskBatchValidationError([{ code: 'invalid_base', path: 'baseRef', message: `Cannot resolve the run base commit: ${error instanceof Error ? error.message : String(error)}` }]);
     }
@@ -301,7 +298,7 @@ export class TaskBatchService {
       let mode: string | undefined;
       let isDirectory = false;
       try {
-        const entries = (await execFileAsync('git', [
+        const entries = (await this.git.command( [
           '--literal-pathspecs', '-C', this.repositoryPath, 'ls-tree', '-r', '-z', baseCommit, '--', inputFile,
         ])).stdout.split('\0');
         const entry = entries.find(value => {
@@ -397,7 +394,7 @@ export class TaskBatchService {
               // que les clones d'exécution : une seule chaîne Git à la fois sur ce dépôt.
               integration = this.withIntegrationGitLock(async () => {
                 await this.integrateTask(snapshot, ready, workspacePath, executor);
-                await execFileAsync('git', ['-C', workspacePath, 'checkout', '--detach', snapshot.integrationCommit!]);
+                await this.git.command( ['-C', workspacePath, 'checkout', '--detach', snapshot.integrationCommit!]);
               })
                 .finally(() => { integration = undefined; });
             }
@@ -1027,10 +1024,10 @@ export class TaskBatchService {
         await mkdir(resolutionResultDir, { recursive: true });
 
         // Clone le workspace d'intégration vers la sandbox de résolution.
-        await execFileAsync('git', ['clone', '--no-hardlinks', '--quiet', '--', workspacePath, resolutionSandboxPath]);
+        await this.git.command( ['clone', '--no-hardlinks', '--quiet', '--', workspacePath, resolutionSandboxPath]);
 
         // Positionne la sandbox sur le commit d'intégration courant, celui qui porte le conflit.
-        await execFileAsync('git', ['-C', resolutionSandboxPath, 'checkout', '--detach', snapshot.integrationCommit!]);
+        await this.git.command( ['-C', resolutionSandboxPath, 'checkout', '--detach', snapshot.integrationCommit!]);
 
         // Crée l'enregistrement de résolution.
         const resolution: TaskBatchResolution = {
@@ -1143,11 +1140,11 @@ export class TaskBatchService {
       }
 
       // Récupère le HEAD courant de la sandbox de résolution.
-      const resolutionHead = (await execFileAsync('git', ['-C', resolution.sandboxPath, 'rev-parse', 'HEAD'])).stdout.trim();
+      const resolutionHead = (await this.git.command( ['-C', resolution.sandboxPath, 'rev-parse', 'HEAD'])).stdout.trim();
 
       // Vérifie que le commit de résolution descend de la base du conflit.
       try {
-        await execFileAsync('git', ['-C', resolution.sandboxPath, 'merge-base', '--is-ancestor', snapshot.conflict!.taskBaseCommit, resolutionHead]);
+        await this.git.command( ['-C', resolution.sandboxPath, 'merge-base', '--is-ancestor', snapshot.conflict!.taskBaseCommit, resolutionHead]);
       } catch (error) {
         const failure = error as Error & { code?: number; stdout?: string; stderr?: string };
         if (failure.code !== 1) throw error;
@@ -1157,7 +1154,7 @@ export class TaskBatchService {
 
       // Crée un bundle depuis la sandbox de résolution.
       const resolutionBundlePath = path.join(runDirectory, 'resolutions', resolution.resolutionId, 'resolution.bundle');
-      await execFileAsync('git', ['-C', resolution.sandboxPath, 'bundle', 'create', resolutionBundlePath, 'HEAD']);
+      await this.git.command( ['-C', resolution.sandboxPath, 'bundle', 'create', resolutionBundlePath, 'HEAD']);
 
       // Met à jour l'enregistrement de résolution.
       resolution.status = 'validated';
