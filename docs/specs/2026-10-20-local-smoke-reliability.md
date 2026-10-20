@@ -38,9 +38,9 @@ Les preuves d'origine sont conservées localement. Les tests automatisés utilis
 3. Les dépôts disposant de commandes de build/test conservent l'obligation de les exécuter ; un échec de validation applicable reste un échec. Les dépôts sans infrastructure de build/test sont décrits factuellement, avec les vérifications réellement effectuées.
 4. Les choix de validation sont figés pour le run, compatibles avec les états existants, et présents dans le contexte de la revue finale.
 
-## Interfaces de test proposées
+## Interfaces de test approuvées
 
-Confirmation utilisateur demandée avant toute écriture de test :
+Interfaces confirmées explicitement par l'utilisateur le 20 octobre 2026 :
 
 - `LocalTaskExecutor.execute` : faux Pi exécutable pour observer lancement, environnement, diagnostics, checkpoint et preuves. Ne prouve pas l'intégration réelle au fournisseur.
 - `TaskBatchService.run` : exécuteur injecté capturant le contexte de revue finale et les choix persistés. Ne prouve pas le comportement du modèle.
