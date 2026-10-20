@@ -3,7 +3,8 @@
 import { realpathSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { NodeCliTerminal } from './terminal.js';
-import { runTaskBatchCli, taskBatchHelp } from '@slopify/task-batches';
+import { runTaskBatchCli, taskBatchHelp, TaskBatchService } from '@slopify/task-batches';
+import { createModeRuntime } from '@slopify/execution-sandbox';
 import { initHelp, runInitCli, projectInitPackageRoot } from '@slopify/project-init';
 
 const generalHelp = `Slopify V2\n\n${initHelp}\n\n${taskBatchHelp}`;
@@ -11,7 +12,8 @@ const generalHelp = `Slopify V2\n\n${initHelp}\n\n${taskBatchHelp}`;
 export async function main(argv = process.argv.slice(2)): Promise<number> {
   const terminal = new NodeCliTerminal();
   try {
-    if (argv[0] === 'tasks') return await runTaskBatchCli(argv.slice(1), terminal);
+    if (argv[0] === 'tasks') return await runTaskBatchCli(argv.slice(1), terminal, process.cwd(), options =>
+      new TaskBatchService({ ...options, runtimeFactory: createModeRuntime }));
     if (argv[0] === 'init') return await runInitCli(argv.slice(1), terminal, process.cwd(), {
       packageRoot: projectInitPackageRoot(),
     });
