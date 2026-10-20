@@ -9,3 +9,5 @@ export type {
   TaskExecutionResource,
   TaskExecutionResult,
 } from './taskExecution.js';
+
+export { assertWorkerPoolSize, assertSharedWorkerMounts, type TaskWorkerPoolConfig, type TaskWorkerState, type TaskWorkerStatus, type DockerRunSuspension, type TaskRuntimeState, type TaskRunRuntime, type TaskRunRuntimeContext, type TaskRunRuntimeFactory } from './taskRuntime.js';
