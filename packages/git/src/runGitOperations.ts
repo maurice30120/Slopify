@@ -44,6 +44,26 @@ export class RunGitOperations {
     return next;
   }
 
+  /** Initialize/resume the run-private integration clone; never touch user's checkout. */
+  async prepareIntegration(repositoryPath: string, workspacePath: string,
+    integrationBranch: string, baseCommit: string, storedCommit?: string): Promise<string> {
+    let workspaceExists = false;
+    try { workspaceExists = (await stat(workspacePath)).isDirectory(); }
+    catch { /* Create the run-private integration clone below. */ }
+    if (!workspaceExists) {
+      await gitExec('git', ['clone', '--no-hardlinks', '--quiet', '--', repositoryPath, workspacePath]);
+    }
+    const branchResult = await gitExec('git', ['-C', workspacePath, 'branch', '--list', integrationBranch]);
+    const current = branchResult.stdout.trim()
+      ? (await gitExec('git', ['-C', workspacePath, 'rev-parse', integrationBranch])).stdout.trim()
+      : storedCommit ?? baseCommit;
+    await gitExec('git', ['-C', workspacePath, 'checkout', '--detach', current]);
+    if (!branchResult.stdout.trim()) {
+      await gitExec('git', ['-C', workspacePath, 'branch', integrationBranch, current]);
+    }
+    return current;
+  }
+
   async clonePinned(integrationPath: string, workspacePath: string, baseCommit: string): Promise<void> {
     await this.withIntegrationLock(async () => {
       await gitExec('git', ['clone', '--no-hardlinks', '--quiet', '--', integrationPath, workspacePath]);
