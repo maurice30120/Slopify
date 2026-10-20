@@ -1,10 +1,11 @@
 import { appendFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { mkdir, readFile, writeFile, rename, readdir } from 'node:fs/promises';
 import * as path from 'node:path';
 import { createNodeSubprocessExecutor, type SubprocessExecutor, type TaskDiagnostic, type TaskExecutor, type TaskExecutionRequest, type TaskExecutionResult, type TaskExecutionResource, type TaskAgent } from '@slopify/execution';
-import { readLocalProcessIdentity, type LocalProcessIdentity } from './localProcessIdentity.js';
-export { readLocalProcessIdentity, inspectLocalProcess, isLocalProcessAlive } from './localProcessIdentity.js';
+import { readLocalProcessIdentity, inspectLocalProcessGroup, type LocalProcessIdentity } from './localProcessIdentity.js';
+export { readLocalProcessIdentity, inspectLocalProcess, inspectLocalProcessGroup, isLocalProcessAlive } from './localProcessIdentity.js';
 export type { LocalProcessIdentity, LocalProcessLiveness } from './localProcessIdentity.js';
 
 
@@ -232,27 +233,91 @@ export interface LocalAgentRunResult {
 
 export type LocalAgentRunner = (request: LocalAgentRunRequest) => Promise<LocalAgentRunResult>;
 
-/** Lance l'agent local en propre (node:child_process) et publie son identité durable
- * (PID, âge, commande) ; stdout/stderr sont streames vers le flux du runner
- * (persistance des preuves) puis renvoyés comme le fait l'exécuteur de sous-processus. */
+
+/** Signal only a POSIX process group assigned to this agent attempt. */
+function signalAttemptGroup(pid: number, signal: NodeJS.Signals): void {
+  if (process.platform === 'win32' || !Number.isSafeInteger(pid) || pid <= 1 || pid === process.pid) return;
+  try { process.kill(-pid, signal); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error; }
+}
+
+async function waitForAttemptGroupExit(pid: number, maxWaitMs: number): Promise<boolean> {
+  const deadline = Date.now() + maxWaitMs;
+  while (Date.now() < deadline) {
+    const status = await inspectLocalProcessGroup(pid);
+    if (status === 'dead') return true;
+    if (status === 'unknown') return false;
+    await sleep(80);
+  }
+  return (await inspectLocalProcessGroup(pid)) === 'dead';
+}
+
+/** Final guard after agent completion: leaked descendants fail the attempt. */
+async function finishAttemptGroup(pid: number): Promise<boolean> {
+  if (process.platform === 'win32') return true;
+  const status = await inspectLocalProcessGroup(pid);
+  if (status === 'dead') return true;
+  if (status === 'unknown') return false;
+  signalAttemptGroup(pid, 'SIGTERM');
+  if (await waitForAttemptGroupExit(pid, 800)) return true;
+  // Never signal a group whose ownership cannot be checked.
+  if (await inspectLocalProcessGroup(pid) !== 'alive') return false;
+  signalAttemptGroup(pid, 'SIGKILL');
+  return waitForAttemptGroupExit(pid, 800);
+}
+
+/**
+ * Every Pi/Codex process starts as leader of its own POSIX group. Ctrl-C/abort
+ * stops the group, not only the direct agent. Other attempts stay isolated.
+ */
 async function spawnLocalAgent(request: LocalAgentRunRequest, command: string, args: string[]): Promise<{ exitCode: number; stdout: string; stderr: string }> {
+  if (request.signal?.aborted) return { exitCode: 1, stdout: '', stderr: 'Attempt interrupted before agent start.' };
   const startedAtIso = new Date().toISOString();
-  const child = spawn(command, args, { cwd: request.workspacePath, stdio: ['ignore', 'pipe', 'pipe'], signal: request.signal });
-  const identity = await readLocalProcessIdentity(child.pid!, [command, ...args].join(' '), startedAtIso);
-  request.onProcessSpawn?.(identity);
-  return new Promise((resolve, reject) => {
-    let stdout = '';
-    let stderr = '';
+  const isolated = process.platform !== 'win32';
+  const child = spawn(command, args, { cwd: request.workspacePath, stdio: ['ignore', 'pipe', 'pipe'], detached: isolated });
+  const pid = child.pid;
+  let stdout = '';
+  let stderr = '';
+  // Install handlers immediately, before any asynchronous OS inspection.
+  const completion = new Promise<number>((resolve, reject) => {
     child.stdout.setEncoding('utf8');
     child.stderr.setEncoding('utf8');
     child.stdout.on('data', chunk => { stdout += chunk; request.stream('stdout', chunk); });
     child.stderr.on('data', chunk => { stderr += chunk; request.stream('stderr', chunk); });
-    child.once('error', error => {
-      if (request.signal?.aborted) resolve({ exitCode: 1, stdout, stderr: stderr || String(error) });
-      else reject(error);
-    });
-    child.once('close', code => resolve({ exitCode: code ?? 1, stdout, stderr }));
+    child.once('error', reject);
+    child.once('close', code => resolve(code ?? 1));
   });
+  let escalation: ReturnType<typeof setTimeout> | undefined;
+  const onAbort = () => {
+    if (!pid) return;
+    if (!isolated) { child.kill('SIGTERM'); return; }
+    signalAttemptGroup(pid, 'SIGTERM');
+    // A child holding inherited stdout pipes may prevent 'close' until killed.
+    escalation = setTimeout(() => {
+      void inspectLocalProcessGroup(pid).then(status => {
+        if (status === 'alive') signalAttemptGroup(pid, 'SIGKILL');
+      }).catch(() => { /* Uncertain ownership must not cause a blind kill. */ });
+    }, 1200);
+    escalation.unref();
+  };
+  request.signal?.addEventListener('abort', onAbort, { once: true });
+  if (request.signal?.aborted) onAbort();
+  try {
+    if (pid) {
+      const identity = await readLocalProcessIdentity(pid, [command, ...args].join(' '), startedAtIso);
+      if (isolated) identity.processGroupId = pid;
+      request.onProcessSpawn?.(identity);
+    }
+    const exitCode = await completion;
+    const stopped = pid ? await finishAttemptGroup(pid) : true;
+    if (!stopped) {
+      return { exitCode: 1, stdout, stderr: stderr + '\\nLocal agent descendants were not confirmed stopped; inspect the retained attempt.' };
+    }
+    return { exitCode, stdout, stderr };
+  } finally {
+    if (escalation) clearTimeout(escalation);
+    request.signal?.removeEventListener('abort', onAbort);
+  }
 }
 
 /** Pi local : configuration personnelle native conservée (fournisseur, modèle, identifiants) ;
