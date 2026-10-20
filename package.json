@@ -10,7 +10,9 @@
     "build": "npm run build -w @slopify/execution && npm run build -w @slopify/git && npm run build -w @slopify/activity && npm run build -w @slopify/agent-codex && npm run build -w @slopify/agent-pi && npm run build -w @slopify/execution-sandbox && npm run build -w @slopify/execution-local && npm run build -w @slopify/task-batches && npm run build -w @slopify/project-init && npm run build -w slopify --if-present",
     "test": "npm run test --workspaces --if-present --include-workspace-root=false",
     "clean": "npm run clean --workspaces --if-present",
-    "slopify": "npm run build -w slopify && node apps/cli/dist/src/cli.js"
+    "slopify": "npm run build -w slopify && node apps/cli/dist/src/cli.js",
+    "smoke:local": "npm run build && node scripts/smoke-v2.mjs local",
+    "smoke:docker": "npm run build && node scripts/smoke-v2.mjs sandbox"
   },
   "engines": {
     "node": ">=22.19.0"
