@@ -6,10 +6,11 @@ import { homedir } from 'node:os';
 import * as path from 'node:path';
 import { createNodeSubprocessExecutor, type SubprocessExecutor } from '@acp-client/sandbox';
 import { DockerTaskExecutor } from './dockerTaskExecutor.js';
+import { LocalTaskExecutor, type LocalAgentRunner } from './localTaskExecutor.js';
 import { DockerRunHealth, type DockerRunSuspension } from './dockerRunHealth.js';
 import { loadTaskRuntimeConfig } from './taskRuntimeConfig.js';
 import { assertWorkerPoolSize, type TaskWorkerPoolConfig, type TaskWorkerState } from './taskWorkerPool.js';
-import type { TaskExecutionResult, TaskSandboxResource } from './taskExecution.js';
+import type { TaskExecutionResult, TaskSandboxResource, TaskExecutor } from './taskExecution.js';
 import { activityJournalPath, appendActivitySignal, readActivitySignals, readAllActivitySignals } from './activityJournal.js';
 import type { ActivitySignal } from './activitySignal.js';
 import { composeActivitySignal, type ActivityTaskCandidate } from './activitySignalComposition.js';
@@ -30,10 +31,31 @@ export class TaskBatchValidationError extends Error {
   }
 }
 
+export type TaskBatchMode = 'sandbox' | 'local';
+
+export function assertValidMode(mode: string | undefined): asserts mode is TaskBatchMode | undefined {
+  if (mode !== undefined && mode !== 'sandbox' && mode !== 'local') {
+    throw new Error(`Invalid execution mode "${mode}". Use 'sandbox' or 'local'.`);
+  }
+}
+
+/** Lit le mode par défaut du projet dans .slopify/runtime.yaml ; sandbox par défaut. */
+export async function resolveTaskBatchMode(repositoryPath: string, cliMode?: string): Promise<TaskBatchMode> {
+  assertValidMode(cliMode);
+  if (cliMode === 'sandbox' || cliMode === 'local') return cliMode;
+  try {
+    const config = await loadTaskRuntimeConfig(repositoryPath);
+    if (config.mode === 'sandbox' || config.mode === 'local') return config.mode;
+  } catch { /* Une configuration invalide est déjà refusée par la validation du lot. */ }
+  return 'sandbox';
+}
+
 export interface TaskBatchServiceOptions {
   repositoryPath: string;
   storePath?: string;
   subprocessExecutor?: SubprocessExecutor;
+  /** Agent local injecté : requis pour exécuter Pi en mode local ; Codex par défaut. */
+  localAgentRunner?: LocalAgentRunner;
   /** Capacité du lot, entre une et dix tâches actives ; dix par défaut. */
   maxConcurrentTasks?: number;
   /** Reçoit une copie après chaque sauvegarde durable, pour l'avancement de la CLI. */
@@ -50,6 +72,8 @@ export interface TaskBatchRunOptions {
   baseRef?: string;
   execute?: boolean;
   signal?: AbortSignal;
+  /** Mode d'exécution du lot : option CLI prioritaire, sinon configuration du projet. */
+  mode?: string;
 }
 
 /** Résultat durable de la validation d'un checkpoint avant toute réutilisation. */
@@ -125,6 +149,8 @@ export interface TaskBatchSnapshot {
   conflict?: TaskBatchConflict;
   suspension?: DockerRunSuspension;
   resolution?: TaskBatchResolution;
+  /** Mode d'exécution figé à la création du lot ; les anciens états restent sandbox. */
+  mode?: TaskBatchMode;
 }
 
 /** Une exécution arrêtée alors que l'état durable était déjà disponible ; la CLI peut rendre compte de son résultat. */
@@ -159,6 +185,7 @@ export class TaskBatchService {
   readonly storePath: string;
   private readonly subprocessExecutor: SubprocessExecutor;
   private readonly maxConcurrentTasks: number;
+  private readonly localAgentRunner?: LocalAgentRunner;
   private readonly onUpdate?: TaskBatchServiceOptions['onUpdate'];
   private readonly onActivitySignal?: TaskBatchServiceOptions['onActivitySignal'];
   private readonly activityTickIntervalMs: number;
@@ -183,6 +210,7 @@ export class TaskBatchService {
     // Garde partagée avec la configuration du pool de workers : une seule autorité sur l'entier 1–10.
     assertWorkerPoolSize(capacity, 'maxConcurrentTasks');
     this.maxConcurrentTasks = capacity;
+    this.localAgentRunner = options.localAgentRunner;
     this.repositoryPath = path.resolve(options.repositoryPath);
     this.onUpdate = options.onUpdate;
     this.subprocessExecutor = options.subprocessExecutor ?? createNodeSubprocessExecutor();
@@ -228,6 +256,12 @@ export class TaskBatchService {
     try { workerPoolConfig = await loadTaskRuntimeConfig(this.repositoryPath); }
     catch (error) { throw new TaskBatchValidationError([{ code: 'invalid_runtime_config', path: '.slopify/runtime.yaml',
       message: error instanceof Error ? error.message : String(error) }]); }
+    // Le mode concerne tout le lot : option CLI prioritaire, puis configuration du projet, puis sandbox.
+    const mode = await resolveTaskBatchMode(this.repositoryPath, options.mode);
+    if (mode === 'local' && !this.localAgentRunner && batch.tasks.some(task => (task.agent ?? batch.defaults?.agent ?? 'codex') === 'pi')) {
+      throw new TaskBatchValidationError([{ code: 'unsupported_local_agent', path: 'tasks',
+        message: 'Pi local is not supported yet; use sandbox mode or a Codex-only batch.' }]);
+    }
     const runId = randomUUID();
     const runDirectory = path.join(this.storePath, runId);
     const contextDirectory = path.join(runDirectory, 'context');
@@ -238,7 +272,7 @@ export class TaskBatchService {
     await writeFile(frozenBatchFile, JSON.stringify({ ...batch, specFile: 'spec.md' }, null, 2), { mode: 0o600 });
     const now = new Date().toISOString();
     const snapshot: TaskBatchSnapshot = {
-      version: 1, maxConcurrentTasks: Math.min(this.maxConcurrentTasks, workerPoolConfig.size), workerPoolConfig, workers: [], runId, repositoryPath: this.repositoryPath, status: 'ready', runBaseCommit,
+      version: 1, mode, maxConcurrentTasks: Math.min(this.maxConcurrentTasks, workerPoolConfig.size), workerPoolConfig, workers: [], runId, repositoryPath: this.repositoryPath, status: 'ready', runBaseCommit,
       integrationBranch: `feature/slopify-${runId}`, createdAt: now, updatedAt: now,
       context: { specFile: frozenSpecFile, specText, batchFile: frozenBatchFile },
       tasks: [...batch.tasks.map((task) => ({ ...task, status: 'pending' as const, attempts: [] as BatchTaskAttempt[] })), finalReviewTask(batch, runBaseCommit)], diagnostics: [],
@@ -305,6 +339,7 @@ export class TaskBatchService {
   /** Une invocation possède sa décision de santé et arrête le travail externe sans supprimer les sandboxes inspectables. */
   private createExecutionRuntime(snapshot: TaskBatchSnapshot, signal?: AbortSignal) {
     delete snapshot.suspension;
+    if (this.runMode(snapshot) === 'local') return this.createLocalExecutionRuntime(signal);
     const subprocess = this.subprocessExecutor ?? createNodeSubprocessExecutor();
     const previous = new Set(snapshot.tasks.flatMap(task => task.attempts.map(attempt => attempt.attemptId)));
     const stopped = new Set<string>();
@@ -350,6 +385,23 @@ export class TaskBatchService {
       } finally { health.close(); }
     };
     return { executor, health, stopSuspendedResources, close };
+  }
+
+  /** Mode enregistré à la création : les états plus anciens restent sandbox. */
+  private runMode(snapshot: TaskBatchSnapshot): TaskBatchMode {
+    return snapshot.mode ?? 'sandbox';
+  }
+
+  /** Exécution locale : pas de contrôle Docker, pas de pool de Workers ; l'arrêt vient du signal passé aux agents. */
+  private createLocalExecutionRuntime(signal?: AbortSignal) {
+    const executor = new LocalTaskExecutor({ executor: this.subprocessExecutor, ...(this.localAgentRunner ? { agentRunner: this.localAgentRunner } : {}) });
+    const controller = new AbortController();
+    const propagate = () => controller.abort(signal?.reason);
+    if (signal?.aborted) propagate();
+    else signal?.addEventListener('abort', propagate, { once: true });
+    const health = { controller, execute: this.subprocessExecutor, close(): void {} };
+    const close = async () => { try { await executor.close(); } finally { signal?.removeEventListener('abort', propagate); } };
+    return { executor, health, stopSuspendedResources: async () => {}, close };
   }
 
   private async executeSchedule(snapshot: TaskBatchSnapshot, signal?: AbortSignal): Promise<void> {
@@ -558,7 +610,7 @@ export class TaskBatchService {
   }
 
   private async executeTask(snapshot: TaskBatchSnapshot, task: BatchTaskState, taskBaseCommit: string,
-    integrationPath: string, executor: DockerTaskExecutor, signal?: AbortSignal): Promise<void> {
+    integrationPath: string, executor: TaskExecutor, signal?: AbortSignal): Promise<void> {
     const attemptId = randomUUID();
     const runDirectory = path.join(this.storePath, snapshot.runId);
     const workspacePath = path.join(runDirectory, 'workspaces', attemptId);
@@ -680,7 +732,7 @@ export class TaskBatchService {
   }
 
   private async integrateTask(snapshot: TaskBatchSnapshot, task: BatchTaskState, workspacePath: string,
-    executor?: DockerTaskExecutor): Promise<void> {
+    executor?: TaskExecutor): Promise<void> {
     const attempt = task.attempts.at(-1)!;
     const checkpoint = attempt.checkpoint!;
     this.activityIntegrationTaskId = task.id;

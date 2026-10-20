@@ -323,7 +323,7 @@ export function taskBatchReport(snapshot: TaskBatchSnapshot, storePath?: string,
     : counts.running > 0 ? 'executing'
     : counts.completed > 0 ? 'integrating' : 'preparing';
   const progress = {
-    phase, total: snapshot.tasks.length, counts, activeTaskIds, readyTaskIds, waitingOn,
+    phase, total: snapshot.tasks.length, counts, activeTaskIds, readyTaskIds, waitingOn, mode: snapshot.mode ?? 'sandbox',
     awaitingIntegrationTaskIds: snapshot.tasks.filter(task => task.status === 'completed').map(task => task.id),
   };
   const issues: BatchIssue[] = snapshot.diagnostics.map(diagnostic => ({ ...diagnostic,
@@ -492,7 +492,7 @@ export function formatTaskBatchReport(snapshot: TaskBatchSnapshot, storePath?: s
   const report = taskBatchReport(snapshot, storePath);
   const { progress } = report;
   const lines = [
-    `Run ${snapshot.runId}: ${snapshot.status} (${progress.phase})`,
+    `Run ${snapshot.runId}: ${snapshot.status} (${progress.phase}, mode: ${progress.mode})`,
     `Progress: ${progress.counts.succeeded}/${progress.total} integrated; ${progress.counts.running} running; ${progress.counts.completed} awaiting integration; ${progress.counts.pending} pending; ${progress.counts.failed} failed; ${progress.counts.interrupted} interrupted; ${progress.counts.blocked} blocked; ${progress.counts.conflicted} conflicted`,
     `Last durable update: ${snapshot.updatedAt}`,
     formatReliability(report.reliability),

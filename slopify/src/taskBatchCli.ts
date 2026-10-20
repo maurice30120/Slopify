@@ -29,7 +29,7 @@ function emitActivitySignal(signal: ActivitySignal, json: boolean, output: { wri
 
 export const taskBatchHelp = [
   'Task batches (Pi / Codex):',
-  '  slopify tasks run <batch.json> [--cwd <repository>] [--store <directory>] [--base <ref>] [--json]',
+  '  slopify tasks run <batch.json> [--cwd <repository>] [--store <directory>] [--base <ref>] [--mode <sandbox|local>] [--json]',
   '  slopify tasks status <run-id> [--cwd <repository>] [--store <directory>] [--json]',
   '  slopify tasks watch <run-id> [--cwd <repository>] [--store <directory>] [--interval <ms>] [--json]',
   '  slopify tasks resume <run-id> [--cwd <repository>] [--store <directory>] [--json]',
@@ -40,6 +40,7 @@ export const taskBatchHelp = [
   '  slopify tasks resolution <run-id> [--cwd <repository>] [--store <directory>] [--json]',
   '',
   'Runs fill up to ten active task places in JSON ready order and integrate checkpoints as they finish.',
+  'Execution mode: --mode overrides the project runtime configuration; sandbox is the default. The mode is frozen for the whole run and its resumes.',
   'Execution exit codes: 0 succeeded, 2 failed/interrupted/conflicted, 1 invalid input or command.',
   'Status and final output include progress, issues, evidence paths and next actions.',
   'Status and final output also expose worker pool occupancy, the replacement count and per-worker task links.',
@@ -132,20 +133,26 @@ export async function runTaskBatchCli(
     let storePath: string | undefined;
     let baseRef: string | undefined;
     let strategy: 'use-current' | 'use-incoming' | 'manual' | undefined;
+    let mode: string | undefined;
     let discardCheckpoint = false;
     let watchIntervalMs = DEFAULT_WATCH_INTERVAL_MS;
     const positional: string[] = [];
     for (let index = 1; index < argv.length; index += 1) {
       const value = argv[index];
       if (value === '--json') { json = true; continue; }
-      if (value === '--cwd' || value === '--store' || value === '--base' || value === '--strategy' || value === '--interval') {
+      if (value === '--cwd' || value === '--store' || value === '--base' || value === '--strategy' || value === '--interval' || value === '--mode') {
         if (value === '--base' && action !== 'run') throw new Error('--base is only supported by tasks run.');
+        if (value === '--mode' && action !== 'run') throw new Error('--mode is only supported by tasks run.');
         if (value === '--strategy' && action !== 'resolve-conflict') throw new Error('--strategy is only supported by tasks resolve-conflict.');
         if (value === '--interval' && action !== 'watch') throw new Error('--interval is only supported by tasks watch.');
         const next = argv[++index];
         if (!next || next.startsWith('-')) throw new Error(`${value} requires a value.`);
         if (value === '--cwd') repositoryPath = path.resolve(baseCwd, next);
         else if (value === '--store') storePath = path.resolve(baseCwd, next);
+        else if (value === '--mode') {
+          if (next !== 'sandbox' && next !== 'local') throw new Error(`Invalid mode: ${next}. Use 'sandbox' or 'local'.`);
+          mode = next;
+        }
         else if (value === '--base') baseRef = next;
         else if (value === '--interval') {
           const parsed = Number(next);
@@ -212,7 +219,7 @@ export async function runTaskBatchCli(
     let snapshot: TaskBatchSnapshot;
     let activitySignals: ActivitySignal[] | undefined;
     switch (action) {
-      case 'run': snapshot = await service.run(path.resolve(baseCwd, runId), { ...options, baseRef }); break;
+      case 'run': snapshot = await service.run(path.resolve(baseCwd, runId), { ...options, baseRef, ...(mode ? { mode } : {}) }); break;
       case 'status':
         snapshot = await service.status(runId);
         activitySignals = await service.recentActivitySignals(runId);
