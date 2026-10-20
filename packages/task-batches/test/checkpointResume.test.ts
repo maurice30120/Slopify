@@ -5,7 +5,8 @@ import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import test from 'node:test';
 import type { SubprocessExecutor } from '@slopify/execution';
-import { TaskBatchService, TaskBatchExecutionError, type TaskBatchSnapshot } from '@slopify/task-batches';
+import { TaskBatchExecutionError, type TaskBatchSnapshot } from '@slopify/task-batches';
+import { TaskBatchService } from './taskBatchTestService.js';
 import { formatTaskBatchReport } from '@slopify/task-batches';
 
 const git = (repo: string, ...args: string[]) => execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8' }).trim();
