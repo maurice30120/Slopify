@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import { load } from 'js-yaml';
-import { assertSharedWorkerMounts, assertWorkerPoolSize, type TaskWorkerPoolConfig } from '@slopify/execution-sandbox';
+import { assertSharedWorkerMounts, assertWorkerPoolSize, type TaskWorkerPoolConfig } from '@slopify/execution';
 import type { TaskBatchMode } from './taskBatch.js';
 
 export interface TaskRuntimeConfig extends TaskWorkerPoolConfig {
