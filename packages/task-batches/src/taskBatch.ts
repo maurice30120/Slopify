@@ -1327,6 +1327,39 @@ export class TaskBatchService {
     const snapshot = await this.status(runId);
     return snapshot.resolution;
   }
+  
+  /**
+   * Explicitly removes only the host integration branch of a successfully
+   * completed run. Failed, interrupted and conflicted runs remain resumable.
+   * Checkpoints, logs, workspaces and the durable run state are never deleted.
+   *
+   * Ported from PR #153, restricted to successes to avoid losing recovery refs.
+   */
+  async clean(runId: string): Promise<TaskBatchSnapshot> {
+    const snapshot = await this.status(runId);
+    if (snapshot.status !== 'succeeded') {
+      throw new TaskBatchExecutionError(snapshot,
+        'Run ' + runId + ' is ' + snapshot.status + '; only succeeded runs can have their integration branch cleaned.');
+    }
+    // The ref belongs to this run, not merely to whatever branch name is stored.
+    const expected = `feature/slopify-${snapshot.runId}`;
+    if (snapshot.integrationBranch !== expected) {
+      throw new Error('Refusing to clean a noncanonical integration branch: ' + snapshot.integrationBranch);
+    }
+    const ref = 'refs/heads/' + expected;
+    let actual: string;
+    try {
+      actual = (await execFileAsync('git', ['-C', this.repositoryPath, 'rev-parse', '--verify', ref])).stdout.trim();
+    } catch {
+      return snapshot; // Already cleaned: idempotent.
+    }
+    // Do not delete a branch that the user has moved independently of Slopify.
+    if (!snapshot.integrationCommit || actual !== snapshot.integrationCommit) {
+      throw new Error('Integration branch differs from the recorded run commit; refusing to delete ' + ref);
+    }
+    await execFileAsync('git', ['-C', this.repositoryPath, 'branch', '-D', expected]);
+    return snapshot;
+  }
 
 }
 
