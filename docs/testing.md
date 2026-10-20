@@ -52,6 +52,43 @@ npm run smoke:docker
 
 Les deux smoke tests utilisent `--mode` explicite, vérifient le résultat Git, les checkpoints et l'absence de changement dans le workspace hôte. Le répertoire de preuves est affiché au lancement et conservé même en cas d'échec. Ils sont lancés **manuellement** sur le Mac, en dernier ressort pour valider les intégrations réelles, jamais automatiquement dans la CI.
 
+## Validations de la revue finale
+
+Un lot peut définir ses commandes de validation avec le champ facultatif
+`validationCommands` de `batch.json` :
+
+```json
+{
+  "specFile": "spec.md",
+  "validationCommands": ["python3 -m unittest discover"],
+  "tasks": [
+    {
+      "id": "implement",
+      "agent": "codex",
+      "prompt": "Implémenter le ticket selon la spec.",
+      "source": "ticket.md",
+      "dependsOn": []
+    }
+  ]
+}
+```
+
+Chaque commande est une chaîne non vide sur une seule ligne, à exécuter par
+l'agent de revue depuis la racine du dépôt. La liste explicite est non vide ; les
+retours à la ligne et les octets NUL sont refusés. Un échec de commande ou un
+prérequis manquant impose un verdict d'échec, même si les fichiers produits
+semblent corrects. Ces instructions ne constituent pas un nouveau runner de
+commandes côté Controller : les sorties réelles de l'agent restent les preuves
+à examiner.
+
+La liste et le prompt de revue sont figés à la création du run ; modifier le
+batch source ne change pas les validations d'une reprise. Sans liste explicite,
+la revue utilise les commandes documentées dans les instructions, guides et
+manifests versionnés au commit de base du run, puis vérifie les critères de la
+spec. Un dépôt sans infrastructure de build/test est décrit factuellement avec
+les vérifications réellement effectuées ; aucune commande npm n'est présumée.
+Les anciens états conservent leur prompt de revue déjà persisté.
+
 ## Validation des processus et reprises sur macOS/Linux
 
 La surveillance des agents locaux utilise une identité du processus et un groupe POSIX

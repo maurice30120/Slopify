@@ -1214,6 +1214,8 @@ export interface TaskBatch {
   specFile: string;
   /** Fichiers d'entrée locaux, suivis dans le commit de base et lus par les tâches. */
   inputFiles?: string[];
+  /** Commandes de validation du projet, figées pour la revue finale du lot. */
+  validationCommands?: string[];
   defaults?: BatchTaskDefaults;
   tasks: BatchTask[];
 }
@@ -1221,7 +1223,7 @@ export interface TaskBatch {
 /**
  * Étape finale du lot, alignée sur implement-spec (étape 7) : une seule revue combinée
  * de la branche d'intégration une fois tous les tickets intégrés, chaque finding
- * corrigé dans cette même tâche, puis validation complète du monorepo et commit.
+ * corrigé dans cette même tâche, puis validations du projet et commit.
  */
 function finalReviewTask(batch: TaskBatch, runBaseCommit: string): BatchTaskState {
   const used = new Set(batch.tasks.map((task) => task.id));
@@ -1232,6 +1234,12 @@ function finalReviewTask(batch: TaskBatch, runBaseCommit: string): BatchTaskStat
   const agent = batch.defaults?.agent ?? batch.tasks[0].agent;
   const model = agent === 'codex' ? batch.defaults?.model : undefined;
   const effort = agent === 'codex' ? batch.defaults?.effort : undefined;
+  const validation = batch.validationCommands
+    ? `Commandes de validation du lot, à exécuter exactement à la racine du dépôt :\n${batch.validationCommands.map(command => `- ${command}`).join('\n')}\n` +
+      `Chaque commande est obligatoire et doit réussir avec un code de sortie zéro. Une commande en échec ou un prérequis manquant impose un verdict failed ; ne remplace pas une commande pour obtenir un succès. Puis commite.`
+    : `Utilise les commandes de validation documentées dans le dépôt au commit ${runBaseCommit} (instructions, guides et manifests du projet), puis vérifie les critères d'acceptation de la spec figée. ` +
+      `Les commandes de build et de test applicables sont obligatoires : un échec ou un prérequis manquant impose un verdict failed. ` +
+      `Si le dépôt ne définit aucune infrastructure de build ou de test, rapporte cette absence et les vérifications réellement effectuées, sans inventer de commande ni ajouter d'infrastructure pour contourner un échec. Puis commite.`;
   return {
     id,
     agent,
@@ -1243,7 +1251,7 @@ function finalReviewTask(batch: TaskBatch, runBaseCommit: string): BatchTaskStat
       `Tous les tickets du lot sont implémentés et intégrés sur cette branche. ` +
       `Étape finale du lot : applique le skill officiel code-review au diff complet ${runBaseCommit}...HEAD (les deux axes, Standards et Spec), avec le contexte du run (spec figée et tickets d'origine). ` +
       `Corrige chaque finding dans cette même tâche, sans annuler les décisions figées de la spec. ` +
-      `Valide le monorepo complet (npm run build puis npm test à la racine) sans échec, puis commite.`,
+      validation,
     status: 'pending',
     attempts: [],
   };
@@ -1273,6 +1281,19 @@ function validateBatch(input: unknown): TaskBatch {
     throw new TaskBatchValidationError([{ code: 'invalid_batch', path: '$', message: 'Expected a batch object.' }]);
   }
   if (!nonempty(input.specFile)) report('invalid_spec_file', 'specFile', 'Expected a nonempty spec file path.');
+  let validationCommands: string[] | undefined;
+  if (input.validationCommands !== undefined) {
+    if (!Array.isArray(input.validationCommands) || input.validationCommands.length === 0) {
+      report('invalid_validation_commands', 'validationCommands', 'Expected a nonempty list of single-line validation commands.');
+    } else {
+      validationCommands = [];
+      for (const [index, command] of input.validationCommands.entries()) {
+        if (!nonempty(command) || /[\r\n\0]/.test(command)) {
+          report('invalid_validation_command', `validationCommands[${index}]`, 'Expected a nonempty single-line validation command without NUL bytes.');
+        } else validationCommands.push(command);
+      }
+    }
+  }
   let inputFiles: string[] | undefined;
   if (input.inputFiles !== undefined) {
     if (!Array.isArray(input.inputFiles)) report('invalid_input_files', 'inputFiles', 'Expected a list of repository-relative input file paths.');
@@ -1354,6 +1375,7 @@ function validateBatch(input: unknown): TaskBatch {
   // SAFETY: l'entrée a été validée ci-dessus et est nécessairement un TaskBatch (validateBatch rejette tout le reste avant).
   const batch: TaskBatch = {
     specFile: input.specFile as string,
+    ...(validationCommands ? { validationCommands } : {}),
     ...(inputFiles?.length ? { inputFiles } : {}),
     ...(Object.keys(defaults).length > 0 ? { defaults } : {}),
     tasks: input.tasks.map((task) => {
