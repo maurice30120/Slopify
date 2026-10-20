@@ -45,6 +45,11 @@ export class RunGitOperations {
   }
 
   /** Initialize/resume the run-private integration clone; never touch user's checkout. */
+  /** Safe host-Git invocation used by high-level task and conflict decisions. */
+  async command(args: string[]): Promise<{ stdout: string; stderr: string }> {
+    return gitExec('git', args);
+  }
+
   async prepareIntegration(repositoryPath: string, workspacePath: string,
     integrationBranch: string, baseCommit: string, storedCommit?: string): Promise<string> {
     let workspaceExists = false;
