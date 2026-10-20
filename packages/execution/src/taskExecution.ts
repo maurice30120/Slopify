@@ -40,7 +40,7 @@ export interface TaskExecutionResult {
   resource?: TaskExecutionResource;
   diagnostics: TaskDiagnostic[];
   /** Identité du processus agent local, quand l'exécution est locale ; distinguée d'un PID réutilisé. */
-  processIdentity?: { pid: number; startedAtIso: string; command: string; startTimeTicks?: number };
+  processIdentity?: { pid: number; startedAtIso: string; command: string; startTimeTicks?: number; startTimeTag?: string; observedCommand?: string; processGroupId?: number };
 }
 
 /**
