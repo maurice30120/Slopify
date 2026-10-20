@@ -24,7 +24,7 @@ export class LocalTaskExecutor implements TaskExecutor {
 
   constructor(options: LocalTaskExecutorOptions = {}) {
     this.executor = options.executor ?? createNodeSubprocessExecutor();
-    this.runner = options.agentRunner ?? createLocalAgentRunner(this.executor);
+    this.runner = options.agentRunner ?? createLocalAgentRunner();
   }
 
   async prepareRun(request: { runId: string }): Promise<void> {
@@ -145,6 +145,19 @@ export class LocalTaskExecutor implements TaskExecutor {
   }
 }
 
+function record(value: unknown): Record<string, unknown> | undefined {
+  return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+}
+
+function assistantText(value: unknown): string {
+  const message = record(value);
+  if (message?.role !== 'assistant' || !Array.isArray(message.content)) return '';
+  return message.content.map(value => {
+    const item = record(value);
+    return item?.type === 'text' && typeof item.text === 'string' ? item.text : '';
+  }).filter(Boolean).join('\n');
+}
+
 function object(value: unknown): Record<string, unknown> | undefined {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
     ? value as Record<string, unknown> : undefined;
@@ -202,11 +215,58 @@ export interface LocalAgentRunResult {
 
 export type LocalAgentRunner = (request: LocalAgentRunRequest) => Promise<LocalAgentRunResult>;
 
-function createLocalAgentRunner(executor: SubprocessExecutor): LocalAgentRunner {
-  return async request => {
-    if (request.agent === 'pi') {
-      throw new Error('Pi local is not supported yet.');
+/** Pi local : configuration personnelle native conservée (fournisseur, modèle, identifiants) ;
+ * Slopify n'impose pas Mistral et ne réécrit jamais la configuration de l'utilisateur.
+ * Les événements Pi sont traités comme en sandbox : erreurs fournisseur et de sous-agent
+ * visibles, verdict explicite requis. */
+async function runPiLocal(request: LocalAgentRunRequest): Promise<LocalAgentRunResult> {
+  const piArgs = ['--print'];
+  piArgs.push('--append-system-prompt', path.join(request.contextPath, 'harness.txt'));
+  piArgs.push('--mode', 'json', request.prompt);
+  const run = await request.logged({ command: 'pi', args: piArgs, cwd: request.workspacePath, stdin: 'ignore', signal: request.signal });
+  const diagnostics: TaskBatchDiagnostic[] = [];
+  const reports: string[] = [];
+  let finalParentMessage = '';
+  for (const line of run.stdout.split(/\r?\n/)) {
+    let event: Record<string, unknown> | undefined;
+    try { event = record(JSON.parse(line)); } catch { continue; }
+    if (!event) continue;
+    const completedMessages = event.type === 'message_end' ? [event.message]
+      : event.type === 'agent_end' && Array.isArray(event.messages) ? event.messages : [];
+    for (const value of completedMessages) {
+      const text = assistantText(value);
+      if (text) { reports.push(text); finalParentMessage = text; }
+      const message = record(value);
+      if (message?.stopReason === 'error' || message?.stopReason === 'aborted' || message?.errorMessage) {
+        diagnostics.push({ code: 'pi_provider_error', message: String(message.errorMessage || message.stopReason) });
+        reports.push(`Observed Pi provider error: ${String(message.errorMessage || message.stopReason)}`);
+      }
     }
+    if (event.type !== 'tool_execution_end' || event.toolName !== 'subagent') continue;
+    if (event.isError === true) diagnostics.push({ code: 'pi_subagent_error', message: 'Pi subagent tool failed.' });
+    const toolResult = record(event.result);
+    const details = record(toolResult?.details);
+    const children = Array.isArray(details?.results) ? details.results : [];
+    for (const value of children) {
+      const child = record(value);
+      if (!child) continue;
+      const name = typeof child.agent === 'string' ? child.agent : 'unknown';
+      const error = child.errorMessage || child.stderr || child.stopReason || 'unknown child failure';
+      if (child.exitCode !== 0 || child.stopReason === 'error' || child.stopReason === 'aborted' || child.errorMessage) {
+        diagnostics.push({ code: 'pi_subagent_error', message: `${name}: ${String(error)} (observed exit ${String(child.exitCode)})` });
+      }
+      const messages = Array.isArray(child.messages) ? child.messages : [];
+      const text = messages.map(assistantText).filter(Boolean).join('\n\n');
+      reports.push(`## Observed Pi subagent: ${name}\nExit code: ${String(child.exitCode)}\n${text || String(error)}`);
+    }
+  }
+  diagnostics.push(...agentOutcomeDiagnostics(finalParentMessage));
+  return { exitCode: run.exitCode, report: reports.join('\n\n') || run.stdout || run.stderr, diagnostics };
+}
+
+function createLocalAgentRunner(): LocalAgentRunner {
+  return async request => {
+    if (request.agent === 'pi') return runPiLocal(request);
     const harness = await readFile(path.join(request.contextPath, 'harness.txt'), 'utf8');
     const codexArgs = ['exec', '--dangerously-bypass-approvals-and-sandbox', '--json'];
     if (request.model) codexArgs.push('--model', request.model);

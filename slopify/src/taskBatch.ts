@@ -258,10 +258,6 @@ export class TaskBatchService {
       message: error instanceof Error ? error.message : String(error) }]); }
     // Le mode concerne tout le lot : option CLI prioritaire, puis configuration du projet, puis sandbox.
     const mode = await resolveTaskBatchMode(this.repositoryPath, options.mode);
-    if (mode === 'local' && !this.localAgentRunner && batch.tasks.some(task => (task.agent ?? batch.defaults?.agent ?? 'codex') === 'pi')) {
-      throw new TaskBatchValidationError([{ code: 'unsupported_local_agent', path: 'tasks',
-        message: 'Pi local is not supported yet; use sandbox mode or a Codex-only batch.' }]);
-    }
     const runId = randomUUID();
     const runDirectory = path.join(this.storePath, runId);
     const contextDirectory = path.join(runDirectory, 'context');
@@ -636,7 +632,7 @@ export class TaskBatchService {
         } });
       Object.assign(attempt, result);
       attempt.resourceState = result.resource ? 'retained' : undefined;
-      if (result.exitCode !== 0 || !result.checkpoint) {
+      if (result.exitCode !== 0 || !result.checkpoint || result.diagnostics.some(d => d.code !== 'codex_evidence_unavailable')) {
         task.status = signal?.aborted ? 'interrupted' : 'failed'; attempt.status = task.status;
       } else { task.status = 'completed'; attempt.status = 'succeeded'; }
     } catch (error) {

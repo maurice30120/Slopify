@@ -42,6 +42,16 @@ async function localFixture(t: { after(fn: () => Promise<void>): void }, tasks: 
   return { root, repo, head, dirty, batchFile, seen, service };
 }
 
+
+/** Exécuteur subprocess minimal de repli : git réel, refus net sinon. */
+async function fakeSubprocess(request: { command: string; args: string[]; cwd: string }): Promise<{ exitCode: number; stdout: string; stderr: string }> {
+  if (request.command === 'git') {
+    const r = spawnSync('git', request.args, { cwd: request.cwd, encoding: 'utf8' });
+    return { exitCode: r.status ?? 1, stdout: r.stdout ?? '', stderr: r.stderr ?? '' };
+  }
+  return { exitCode: 1, stdout: '', stderr: `unexpected command ${request.command}` };
+}
+
 const task = (id: string, agent: 'pi' | 'codex', dependsOn: string[] = []): BatchTask => ({ id, agent, dependsOn, prompt: id, source: `${id}.md` });
 
 test('a local Codex batch runs without sbx or Docker, keeps the user workspace intact and cleans integrated clones', async t => {
@@ -176,4 +186,59 @@ test('resume reuses the recorded local mode and succeeds', { timeout: 15000 }, a
   assert.equal(resumed.status, 'succeeded');
   assert.equal(resumed.mode, 'local');
   assert.equal(git(f.repo, 'show', `${resumed.integrationBranch}:implemented.txt`), 'retry result');
+});
+
+test('a local Pi task reuses native configuration without imposing Mistral or rewriting it', async t => {
+  const f = await localFixture(t, [task('piwork', 'pi')], async (id, clone) => {
+    await writeFile(path.join(clone, 'pi.txt'), 'pi local result');
+    return 0;
+  });
+  const state = await f.service().run(f.batchFile, { mode: 'local' });
+  assert.equal(state.status, 'succeeded');
+  assert.equal(state.mode, 'local');
+  assert.equal(git(f.repo, 'show', `${state.integrationBranch}:pi.txt`), 'pi local result');
+  assert.equal(f.seen.length, 2); // implémentation + revue finale
+  assert.ok(f.seen.every(req => req.agent === 'pi' || req.agent === 'codex'));
+});
+
+test('a mixed local Pi/Codex batch respects dependencies and integrates both results', { timeout: 15000 }, async t => {
+  const f = await localFixture(t, [task('codex-part', 'codex'), task('pi-part', 'pi', ['codex-part'])], async (id, clone) => {
+    if (id === 'pi-part') assert.equal(await readFile(path.join(clone, 'codex-part.txt'), 'utf8'), 'codex part');
+    await writeFile(path.join(clone, `${id}.txt`), id === 'pi-part' ? 'pi part' : 'codex part');
+    return 0;
+  });
+  const state = await f.service().run(f.batchFile, { mode: 'local' });
+  assert.equal(state.status, 'succeeded');
+  assert.equal(git(f.repo, 'show', `${state.integrationBranch}:codex-part.txt`), 'codex part');
+  assert.equal(git(f.repo, 'show', `${state.integrationBranch}:pi-part.txt`), 'pi part');
+  const agents = f.seen.map(req => req.agent).sort();
+  assert.ok(agents.includes('pi') && agents.includes('codex'), 'both agents ran locally');
+});
+
+test('Pi local provider errors are visible and fail the attempt even with a zero exit', async t => {
+  const f = await localFixture(t, [task('pifail', 'pi')], async () => 0);
+  const service = new TaskBatchService({ repositoryPath: f.repo, storePath: path.join(f.root, 'runs'), localAgentRunner: async () => {
+    return { exitCode: 0, report: '', diagnostics: [{ code: 'pi_provider_error', message: 'Observed provider failure' }] };
+  }});
+  const state = await service.run(f.batchFile, { mode: 'local' });
+  assert.equal(state.status, 'failed');
+  const attempt = state.tasks[0].attempts[0];
+  assert.ok(attempt.diagnostics?.some(d => d.code === 'pi_provider_error'));
+});
+
+test('a missing or invalid Pi verdict fails the local attempt', async t => {
+  // Le vrai runner Pi local est exercé : le processus pi simulé sort un message final
+  // sans ligne SLOPIFY_RESULT ; le verdict explicite manque et la tentative échoue
+  // malgré un code de sortie zéro (createNodeSubprocessExecutor remplace par un faux pi).
+  const f = await localFixture(t, [task('no-verdict', 'pi')], async () => 0);
+  const piProcess = async (request: { command: string; args: string[] }) => {
+    if (request.command !== 'pi') return undefined;
+    return { exitCode: 0, stdout: JSON.stringify({ type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: 'work done, no verdict' }] } }) + '\n', stderr: '' };
+  };
+  const service = new TaskBatchService({ repositoryPath: f.repo, storePath: path.join(f.root, 'runs'),
+    subprocessExecutor: async request => (await piProcess(request)) ?? fakeSubprocess(request),
+  });
+  const state = await service.run(f.batchFile, { mode: 'local' });
+  assert.equal(state.status, 'failed');
+  assert.ok(state.tasks[0].attempts[0].diagnostics?.some(d => /SLOPIFY_RESULT/.test(d.message)));
 });
