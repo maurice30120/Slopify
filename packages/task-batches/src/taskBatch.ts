@@ -9,6 +9,7 @@ import { DockerTaskExecutor, assertWorkerPoolSize } from '@slopify/execution-san
 import { LocalTaskExecutor, inspectLocalProcess, inspectLocalProcessGroup, readLocalProcessIdentity, type LocalAgentRunner } from '@slopify/execution-local';
 import { DockerRunHealth, type DockerRunSuspension, type TaskWorkerPoolConfig, type TaskWorkerState } from '@slopify/execution-sandbox';
 import { loadTaskRuntimeConfig } from './taskRuntimeConfig.js';
+import { RunGitOperations } from '@slopify/git';
 
 
 import { activityJournalPath, appendActivitySignal, readActivitySignals, readAllActivitySignals } from '@slopify/activity';
@@ -193,16 +194,11 @@ export class TaskBatchService {
   /** Tâche en cours d'intégration, observée par le tick (phrase d'intégration). */
   private activityIntegrationTaskId?: string;
   private readonly saves = new Map<string, Promise<void>>();
-  /** Exclusion mutuelle des opérations Git sur le dépôt d'intégration : un `git clone --no-hardlinks`
-   * copie le .git source fichier par fichier et échoue si une intégration crée ou supprime un
-   * fichier transitoire (tmp_idx_* des fetchs) pendant la copie. Les clones d'exécution et la
-   * chaîne d'intégration partagent ce verrou ; les tentatives actives ne touchent pas ce dépôt. */
-  private integrationGitLock: Promise<void> = Promise.resolve();
-  /** Sérialise l'opération passée avec toutes les autres opérations protégées par le verrou Git. */
+  private readonly git = new RunGitOperations();
+
+  /** Clones and integrations share a single Git lock for the integration repository. */
   private withIntegrationGitLock<T>(operation: () => Promise<T>): Promise<T> {
-    const operationWithLock = this.integrationGitLock.then(operation, operation);
-    this.integrationGitLock = operationWithLock.then(() => undefined, () => undefined);
-    return operationWithLock;
+    return this.git.withIntegrationLock(operation);
   }
 
   constructor(options: TaskBatchServiceOptions) {
@@ -619,10 +615,7 @@ export class TaskBatchService {
       // Le clone copie le .git de l'intégration fichier par fichier : il ne doit pas
       // chevaucher une intégration, sinon un fichier transitoire du dépôt source
       // disparaît pendant la copie et la tentative échoue pour de faux.
-      await this.withIntegrationGitLock(async () => {
-        await execFileAsync('git', ['clone', '--no-hardlinks', '--quiet', '--', integrationPath, workspacePath]);
-        await execFileAsync('git', ['-C', workspacePath, 'checkout', '--detach', taskBaseCommit]);
-      });
+      await this.git.clonePinned(integrationPath, workspacePath, taskBaseCommit);
       const result = await executor.execute({ runId: snapshot.runId, taskId: task.id, attemptId, agent: task.agent,
         ...(task.model ? { model: task.model } : {}), ...(task.effort ? { effort: task.effort } : {}),
         workspacePath, specFile: snapshot.context.specFile, prompt: task.prompt, taskBaseCommit,
@@ -657,48 +650,12 @@ export class TaskBatchService {
    * invalide ou incomplet n'est jamais traité comme réussi ni écrasé.
    */
   private async validateCheckpointIntegrity(snapshot: TaskBatchSnapshot, attempt: BatchTaskAttempt): Promise<CheckpointIntegrity> {
-    const checkedAt = new Date().toISOString();
-    const checkpoint = attempt.checkpoint;
-    const metadata: Pick<CheckpointIntegrity, 'commit' | 'bundlePath'> = {};
-    if (checkpoint?.commit && /^[0-9a-f]{40,64}$/.test(checkpoint.commit)) metadata.commit = checkpoint.commit;
-    if (checkpoint?.bundlePath && !checkpoint.bundlePath.startsWith('-')) metadata.bundlePath = checkpoint.bundlePath;
-    if (!metadata.commit) {
-      return { status: 'invalid', checkedAt, reason: 'Checkpoint commit is missing or is not a full Git object ID.' };
-    }
-    if (!metadata.bundlePath) {
-      return { status: 'incomplete', checkedAt, ...metadata, reason: 'Checkpoint bundle path is missing or unsafe.' };
-    }
-    let bundleStat;
-    try { bundleStat = await stat(metadata.bundlePath); }
-    catch (error) {
-      return { status: 'incomplete', checkedAt, ...metadata, reason: `Checkpoint bundle is not readable: ${error instanceof Error ? error.message : String(error)}` };
-    }
-    if (!bundleStat.isFile() || bundleStat.size === 0) {
-      return { status: 'incomplete', checkedAt, ...metadata, reason: 'Checkpoint bundle is not a non-empty regular file.' };
-    }
-    const commit = metadata.commit;
-    const bundlePath = metadata.bundlePath;
-    const workspacePath = path.join(this.storePath, snapshot.runId, 'integration');
-    const git = async (args: string[]): Promise<{ ok: true; stdout: string } | { ok: false; error: Error & { code?: number } }> => {
-      try { return { ok: true, stdout: (await execFileAsync('git', ['-C', workspacePath, ...args])).stdout }; }
-      catch (error) { return { ok: false, error: error as Error & { code?: number } }; }
-    };
-    const invalid = (reason: string, error?: { message?: string }): CheckpointIntegrity =>
-      ({ status: 'invalid', checkedAt, ...metadata, reason: error ? `${reason}: ${error.message}` : reason });
-    const verify = await git(['bundle', 'verify', bundlePath]);
-    if (!verify.ok) return invalid('git bundle verify failed', verify.error);
-    const heads = await git(['bundle', 'list-heads', bundlePath]);
-    if (!heads.ok) return invalid('git bundle list-heads failed', heads.error);
-    const advertised = heads.stdout.split('\n').some(line => line.slice(0, 40).toLowerCase() === commit.toLowerCase());
-    if (!advertised) return invalid('Checkpoint commit is not advertised by the bundle.');
-    const unbundle = await git(['bundle', 'unbundle', bundlePath]);
-    if (!unbundle.ok) return invalid('git bundle unbundle failed; the pack is unreadable', unbundle.error);
-    const type = await git(['cat-file', '-t', commit]);
-    if (!type.ok) return invalid('Checkpoint object is not readable', type.error);
-    if (type.stdout.trim() !== 'commit') return invalid('Checkpoint object is not a commit.');
-    const ancestry = await git(['merge-base', '--is-ancestor', attempt.taskBaseCommit, commit]);
-    if (!ancestry.ok) return invalid('Checkpoint does not descend from the task base commit.', ancestry.error);
-    return { status: 'valid', checkedAt, ...metadata };
+    return this.git.validateCheckpoint({
+      workspacePath: path.join(this.storePath, snapshot.runId, 'integration'),
+      commit: attempt.checkpoint?.commit,
+      bundlePath: attempt.checkpoint?.bundlePath,
+      taskBaseCommit: attempt.taskBaseCommit,
+    });
   }
 
   /**
@@ -737,36 +694,24 @@ export class TaskBatchService {
     const checkpoint = attempt.checkpoint!;
     this.activityIntegrationTaskId = task.id;
     try {
-      await execFileAsync('git', ['-C', workspacePath, 'fetch', '--no-tags', checkpoint.bundlePath, checkpoint.commit]);
-      await execFileAsync('git', ['-C', workspacePath, 'merge-base', '--is-ancestor', attempt.taskBaseCommit, checkpoint.commit]);
-      const current = snapshot.integrationCommit!;
-      const alreadyIntegrated = await execFileAsync('git', ['-C', workspacePath, 'merge-base', '--is-ancestor', checkpoint.commit, current])
-        .then(() => true, error => { if (error.code === 1) return false; throw error; });
-      let integratedCommit = alreadyIntegrated ? current : checkpoint.commit;
-      if (!alreadyIntegrated && current !== attempt.taskBaseCommit) {
-        let output: string;
-        try {
-          output = (await execFileAsync('git', ['-C', workspacePath, 'merge-tree', '--write-tree', '--name-only', '-z', current, checkpoint.commit])).stdout;
-        } catch (error) {
-          const failure = error as Error & { code?: number; stdout?: string; stderr?: string };
-          if (failure.code !== 1) throw error;
-          output = failure.stdout ?? '';
-          const files = output.split('\0').slice(1).filter((value, index, values) => value !== '' && !values.slice(0, index).includes(''));
-          snapshot.conflict = { taskId: task.id, attemptId: attempt.attemptId, taskBaseCommit: attempt.taskBaseCommit,
-            currentCommit: current, incomingCommit: checkpoint.commit, files, output: output + (failure.stderr ?? '') };
-          task.status = 'conflicted'; snapshot.status = 'conflicted';
-          await this.save(snapshot); return;
-        }
-        const tree = output.split('\0')[0].trim();
-        if (!/^[0-9a-f]{40,64}$/.test(tree)) throw new Error('Integration did not return a valid Git tree.');
-        const date = (await execFileAsync('git', ['-C', workspacePath, 'show', '-s', '--format=%cI', snapshot.runBaseCommit])).stdout.trim();
-        integratedCommit = (await execFileAsync('git', ['-C', workspacePath, 'commit-tree', tree,
-          '-p', current, '-p', checkpoint.commit, '-m', 'chore(slopify): integrate task checkpoint',
-          '-m', `Slopify-Run: ${snapshot.runId}`, '-m', `Slopify-Task: ${task.id}`, '-m', `Slopify-Attempt: ${attempt.attemptId}`],
-        { env: { ...process.env, GIT_AUTHOR_NAME: 'Slopify', GIT_AUTHOR_EMAIL: 'slopify@localhost',
-          GIT_COMMITTER_NAME: 'Slopify', GIT_COMMITTER_EMAIL: 'slopify@localhost', GIT_AUTHOR_DATE: date, GIT_COMMITTER_DATE: date } })).stdout.trim();
+      const integration = await this.git.integrate({
+        workspacePath, integrationBranch: snapshot.integrationBranch,
+        currentCommit: snapshot.integrationCommit!, taskBaseCommit: attempt.taskBaseCommit,
+        checkpointCommit: checkpoint.commit, bundlePath: checkpoint.bundlePath,
+        runBaseCommit: snapshot.runBaseCommit, runId: snapshot.runId,
+        taskId: task.id, attemptId: attempt.attemptId,
+      });
+      if (integration.status === 'conflicted') {
+        snapshot.conflict = {
+          taskId: task.id, attemptId: attempt.attemptId, taskBaseCommit: attempt.taskBaseCommit,
+          currentCommit: integration.currentCommit, incomingCommit: integration.incomingCommit,
+          files: integration.files, output: integration.output,
+        };
+        task.status = 'conflicted'; snapshot.status = 'conflicted';
+        await this.save(snapshot);
+        return;
       }
-      await execFileAsync('git', ['-C', workspacePath, 'update-ref', `refs/heads/${snapshot.integrationBranch}`, integratedCommit, current]);
+      const integratedCommit = integration.commit;
       snapshot.integrationCommit = integratedCommit; attempt.integratedCommit = integratedCommit;
       // Persiste le reçu privé avant publication ; les checkpoints terminés restent inspectables en cas d'échec.
       await this.save(snapshot);
@@ -788,8 +733,7 @@ export class TaskBatchService {
   }
 
   private async publish(snapshot: TaskBatchSnapshot, workspacePath: string): Promise<void> {
-    await execFileAsync('git', ['-C', this.repositoryPath, 'fetch', '--no-tags', workspacePath,
-      `refs/heads/${snapshot.integrationBranch}:refs/heads/${snapshot.integrationBranch}`]);
+    await this.git.publish(this.repositoryPath, workspacePath, snapshot.integrationBranch);
   }
 
   /**
@@ -1346,18 +1290,7 @@ export class TaskBatchService {
     if (snapshot.integrationBranch !== expected) {
       throw new Error('Refusing to clean a noncanonical integration branch: ' + snapshot.integrationBranch);
     }
-    const ref = 'refs/heads/' + expected;
-    let actual: string;
-    try {
-      actual = (await execFileAsync('git', ['-C', this.repositoryPath, 'rev-parse', '--verify', ref])).stdout.trim();
-    } catch {
-      return snapshot; // Already cleaned: idempotent.
-    }
-    // Do not delete a branch that the user has moved independently of Slopify.
-    if (!snapshot.integrationCommit || actual !== snapshot.integrationCommit) {
-      throw new Error('Integration branch differs from the recorded run commit; refusing to delete ' + ref);
-    }
-    await execFileAsync('git', ['-C', this.repositoryPath, 'branch', '-D', expected]);
+    await this.git.removeCompletedBranch(this.repositoryPath, expected, snapshot.integrationCommit);
     return snapshot;
   }
 
