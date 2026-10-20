@@ -539,3 +539,42 @@ test('AC3c: resumeTask can resume stale running task', { timeout: 15000 }, async
   // The new attempt should have been created
   assert.ok(state.tasks[0].attempts[1].attemptId !== 'attempt-1');
 });
+
+
+test('manual clean removes only a succeeded run branch and preserves the durable state', async t => {
+  const f = await fixture(t, mockExecutor);
+  await writeFile(path.join(f.root, 'spec.md'), '# Spec');
+  await writeFile(f.batchFile, JSON.stringify(batch()));
+  const snapshot = await f.service.run(f.batchFile, { execute: false });
+  execFileSync('git', ['-C', f.repo, 'branch', snapshot.integrationBranch, snapshot.runBaseCommit]);
+  snapshot.integrationCommit = snapshot.runBaseCommit;
+  snapshot.status = 'succeeded';
+  await writeState(f.service, snapshot);
+  const cleaned = await f.service.clean(snapshot.runId);
+  assert.equal(cleaned.runId, snapshot.runId);
+  assert.throws(() => execFileSync('git', ['-C', f.repo, 'rev-parse', '--verify', 'refs/heads/' + snapshot.integrationBranch], { stdio: 'pipe' }));
+  const retained = await f.service.status(snapshot.runId);
+  assert.equal(retained.status, 'succeeded');
+  assert.equal(retained.integrationCommit, snapshot.runBaseCommit);
+  await f.service.clean(snapshot.runId); // idempotent
+});
+
+test('manual clean rejects failed/interrupted/conflicted/running runs and independently moved refs', async t => {
+  const f = await fixture(t, mockExecutor);
+  await writeFile(path.join(f.root, 'spec.md'), '# Spec');
+  await writeFile(f.batchFile, JSON.stringify(batch()));
+  const snapshot = await f.service.run(f.batchFile, { execute: false });
+  execFileSync('git', ['-C', f.repo, 'branch', snapshot.integrationBranch, snapshot.runBaseCommit]);
+  snapshot.integrationCommit = snapshot.runBaseCommit;
+  for (const status of ['ready', 'running', 'failed', 'interrupted', 'conflicted'] as const) {
+    snapshot.status = status;
+    await writeState(f.service, snapshot);
+    await assert.rejects(f.service.clean(snapshot.runId), /only succeeded runs/);
+    assert.equal(execFileSync('git', ['-C', f.repo, 'rev-parse', 'refs/heads/' + snapshot.integrationBranch], { encoding: 'utf8' }).trim(), snapshot.runBaseCommit);
+  }
+  snapshot.status = 'succeeded';
+  snapshot.integrationCommit = '0'.repeat(40);
+  await writeState(f.service, snapshot);
+  await assert.rejects(f.service.clean(snapshot.runId), /differs from the recorded run commit/);
+  assert.equal(execFileSync('git', ['-C', f.repo, 'rev-parse', 'refs/heads/' + snapshot.integrationBranch], { encoding: 'utf8' }).trim(), snapshot.runBaseCommit);
+});
