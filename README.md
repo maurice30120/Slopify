@@ -1,7 +1,8 @@
 # Slopify V2
 
 Slopify reçoit une spec et un lot JSON préparés à l’extérieur, puis exécute les
-tâches avec Pi ou Codex dans des sandboxes Docker distincts. Dès qu’une place se
+tâches avec Pi ou Codex, soit en Docker Sandboxes (mode `sandbox` par défaut),
+soit directement sur la machine (mode `local`, sans Docker). Dès qu’une place se
 libère, la première tâche prête dans l’ordre du JSON démarre, avec au plus dix
 tâches actives. Chaque tâche garde sa base épinglée au démarrage. Les checkpoints
 s’intègrent un à un dès leur disponibilité ; leurs descendants deviennent alors
@@ -11,7 +12,8 @@ s’intègrent un à un dès leur disponibilité ; leurs descendants deviennent 
 
 Les trois planches ci-dessous illustrent le fonctionnement historique par vagues.
 L’ordonnanceur actuel admet jusqu’à **10 tâches prêtes en parallèle**, chacune avec
-son agent principal et sa sandbox. Les sous-agents de revue ne sont pas comptés
+son agent principal et son exécution isolée. En mode sandbox seulement, elles
+s'appuient sur des sandboxes Docker. Les sous-agents de revue ne sont pas comptés
 dans ce plafond.
 
 ### 1. Utilisateur, agent hôte, CLI et sous-agents
@@ -30,22 +32,26 @@ Voir les [sources du code et les précisions de lecture](docs/images/slopify/REA
 
 ## Installation et utilisation
 
-Prérequis : Node.js >= 22.19, npm, Docker Sandboxes (`sbx`), agents Pi/Codex
-configurés et skills `implement`, `tdd`, `code-review` disponibles en lecture seule.
+Prérequis communs : Node.js >= 22.19, npm, Git et agents Pi/Codex configurés.
+Le mode `local` utilise leurs configurations natives et **ne nécessite pas Docker**.
+Le mode `sandbox` requiert Docker Sandboxes (`sbx`) et les skills officiels
+`implement`, `tdd`, `code-review` disponibles en lecture seule.
 
 ```bash
 scripts/install.sh      # npm install si besoin + build + symlink slopify dans ~/.local/bin (PATH)
 slopify --help
 slopify init --host all --yes
-slopify tasks run batch.json --cwd /chemin/du/depot --json
+slopify tasks run batch.json --cwd /chemin/du/depot --mode local --json  # sans Docker
+slopify tasks run batch.json --cwd /chemin/du/depot --mode sandbox --json  # défaut
 slopify tasks status <run-id> --cwd /chemin/du/depot --json
 slopify tasks resume <run-id> --cwd /chemin/du/depot --json
 ```
 
 `scripts/uninstall.sh` retire le symlink et le bloc PATH correspondant du fichier
 rc du shell (dist/ est conservé ; `npm run clean` le supprime). L'install
-expose un symlink vers le repo : le CLI résout ses assets (`plugin/`, `init/`)
-relativement à sa propre position, donc le lien doit pointer dans le repo.
+expose un symlink vers `apps/cli/dist/src/cli.js` dans le repo : la CLI charge
+les assets `plugin/` et `init/` depuis le package `@slopify/project-init`,
+indépendamment du répertoire de travail courant.
 
 Sans installation globale : `npm run slopify -- tasks run batch.json --json`.
 
@@ -60,7 +66,8 @@ store global `sbx`.
 
 Cette commande adapte l'intention de l'issue historique #45 au contrat V2 : aucun
 asset `.acp`, Vibe ou Copilot et aucune restauration des anciennes commandes. Les
-ADR historiques restent inchangées.
+ADR historiques restent archivées ; l'ADR dual-mode de la V2 remplace les
+anciennes décisions exclusivement Docker/ACP.
 
 Le lot contient `specFile`, des `defaults` facultatifs et `tasks`. Init propose
 `agent: "codex"`, `model: "gpt-6-luna"`, `effort: "medium"` comme base ; l'Agent
@@ -78,14 +85,22 @@ Les anciens `list`, `run <pipeline> <prompt>` et `resume --agent` sont retirés.
 les compteurs, les causes d’échec et blocages, les rapports et les commandes utiles
 pour la suite, en texte ou JSON.
 
-Voir le [contrat JSON et les commandes V2](slopify/README.md) et le
+Voir la commande `slopify tasks --help` et le
 [guide Pi](docs/agents/coordinator-pi.md) pour les reprises et conflits.
 
 ## Monorepo et validation
 
-`slopify` expose uniquement les lots V2. Les bibliothèques `acp-pipeline`,
-`acp-runtime`, `acp-sandbox`, `acp-workspace` et leurs tests hérités sont conservés.
-Les configurations historiques nécessaires aux tests vivent dans leurs fixtures.
+`slopify` expose uniquement les lots V2. Le monorepo contient `apps/cli`
+et les packages fonctionnels `execution`, `execution-local`, `execution-sandbox`,
+`task-batches`, `git`, `activity`, `agent-pi`, `agent-codex` et `project-init`.
+Les quatre anciens packages ACP/V1 ne font plus partie du build V2.
+
+Le package d'exécution est sélectionné pour **tout un run** : `--mode` a priorité
+sur `.slopify/runtime.yaml`, puis `sandbox` est utilisé par défaut. La reprise
+conserve le mode enregistré dans le run. Les tentatives locales opèrent dans des
+clones Git privés, jamais dans les modifications non commitées du workspace.
+Une reprise locale refuse toute tentative dont l'agent ou ses descendants ne
+sont pas confirmés arrêtés (voir la [spécification corrective #155](https://github.com/maurice30120/Slopify/issues/155)).
 
 ```bash
 npm run build
