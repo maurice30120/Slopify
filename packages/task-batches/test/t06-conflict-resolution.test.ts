@@ -6,7 +6,8 @@ import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import test from 'node:test';
 import type { SubprocessExecutor } from '@slopify/execution';
-import { TaskBatchService, type BatchTask, type TaskBatchConflict } from '@slopify/task-batches';
+import { type BatchTask, type TaskBatchConflict } from '@slopify/task-batches';
+import { TaskBatchService } from './taskBatchTestService.js';
 
 /** T06: Suspend and resolve conflicts on explicit action */
 
