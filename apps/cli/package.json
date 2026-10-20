@@ -20,7 +20,8 @@
   "dependencies": {
     "@slopify/execution": "file:../../packages/execution",
     "@slopify/task-batches": "file:../../packages/task-batches",
-    "@slopify/project-init": "file:../../packages/project-init"
+    "@slopify/project-init": "file:../../packages/project-init",
+    "@slopify/execution-sandbox": "file:../../packages/execution-sandbox"
   },
   "description": "Run Pi and Codex task batches in Docker sandboxes or locally with up to ten active tasks.",
   "main": "./dist/src/cli.js",
