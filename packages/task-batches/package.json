@@ -16,7 +16,9 @@
   },
   "devDependencies": {
     "@types/node": "^24.13.6",
-    "typescript": "^7.0.2"
+    "typescript": "^7.0.2",
+    "@slopify/execution-local": "file:../execution-local",
+    "@slopify/execution-sandbox": "file:../execution-sandbox"
   },
   "engines": {
     "node": ">=22.19.0"
@@ -25,8 +27,6 @@
     "@slopify/execution": "file:../execution",
     "@slopify/git": "file:../git",
     "@slopify/activity": "file:../activity",
-    "@slopify/execution-local": "file:../execution-local",
-    "@slopify/execution-sandbox": "file:../execution-sandbox",
     "js-yaml": "^5.4.2"
   }
 }
