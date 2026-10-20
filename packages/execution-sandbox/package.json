@@ -25,6 +25,7 @@
     "@slopify/execution": "file:../execution",
     "@slopify/git": "file:../git",
     "@slopify/agent-codex": "file:../agent-codex",
-    "@slopify/agent-pi": "file:../agent-pi"
+    "@slopify/agent-pi": "file:../agent-pi",
+    "@slopify/execution-local": "file:../execution-local"
   }
 }
