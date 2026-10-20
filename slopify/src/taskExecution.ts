@@ -38,6 +38,8 @@ export interface TaskExecutionResult {
   reportPath?: string;
   resource?: TaskSandboxResource;
   diagnostics: TaskBatchDiagnostic[];
+  /** Identité du processus agent local, quand l'exécution est locale ; distinguée d'un PID réutilisé. */
+  processIdentity?: { pid: number; startedAtIso: string; command: string };
 }
 
 /** Contrat fonctionnel de TaskExecutor dans le cycle de vie du pipeline ; il définit les données et invariants observables. */

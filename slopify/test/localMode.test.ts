@@ -43,15 +43,6 @@ async function localFixture(t: { after(fn: () => Promise<void>): void }, tasks: 
 }
 
 
-/** Exécuteur subprocess minimal de repli : git réel, refus net sinon. */
-async function fakeSubprocess(request: { command: string; args: string[]; cwd: string }): Promise<{ exitCode: number; stdout: string; stderr: string }> {
-  if (request.command === 'git') {
-    const r = spawnSync('git', request.args, { cwd: request.cwd, encoding: 'utf8' });
-    return { exitCode: r.status ?? 1, stdout: r.stdout ?? '', stderr: r.stderr ?? '' };
-  }
-  return { exitCode: 1, stdout: '', stderr: `unexpected command ${request.command}` };
-}
-
 const task = (id: string, agent: 'pi' | 'codex', dependsOn: string[] = []): BatchTask => ({ id, agent, dependsOn, prompt: id, source: `${id}.md` });
 
 test('a local Codex batch runs without sbx or Docker, keeps the user workspace intact and cleans integrated clones', async t => {
@@ -227,18 +218,67 @@ test('Pi local provider errors are visible and fail the attempt even with a zero
 });
 
 test('a missing or invalid Pi verdict fails the local attempt', async t => {
-  // Le vrai runner Pi local est exercé : le processus pi simulé sort un message final
-  // sans ligne SLOPIFY_RESULT ; le verdict explicite manque et la tentative échoue
-  // malgré un code de sortie zéro (createNodeSubprocessExecutor remplace par un faux pi).
+  // Le vrai runner Pi local est exercé avec un faux exécutable pi sur le PATH : il sort un
+  // message final sans ligne SLOPIFY_RESULT ; le verdict explicite manque et la tentative
+  // échoue malgré un code de sortie zéro.
   const f = await localFixture(t, [task('no-verdict', 'pi')], async () => 0);
-  const piProcess = async (request: { command: string; args: string[] }) => {
-    if (request.command !== 'pi') return undefined;
-    return { exitCode: 0, stdout: JSON.stringify({ type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: 'work done, no verdict' }] } }) + '\n', stderr: '' };
-  };
-  const service = new TaskBatchService({ repositoryPath: f.repo, storePath: path.join(f.root, 'runs'),
-    subprocessExecutor: async request => (await piProcess(request)) ?? fakeSubprocess(request),
+  const bin = path.join(f.root, 'bin');
+  await mkdir(bin, { recursive: true });
+  await writeFile(path.join(bin, 'pi'), '#!/bin/sh\ncat <<EOF\n' + JSON.stringify({ type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: 'work done, no verdict' }] } }) + '\nEOF\n', { mode: 0o755 });
+  const service = new TaskBatchService({ repositoryPath: f.repo, storePath: path.join(f.root, 'runs') });
+  const previousPath = process.env.PATH;
+  process.env.PATH = `${bin}:${previousPath}`;
+  try {
+    const state = await service.run(f.batchFile, { mode: 'local' });
+    assert.equal(state.status, 'failed');
+    assert.ok(state.tasks[0].attempts[0].diagnostics?.some(d => /SLOPIFY_RESULT/.test(d.message)));
+  } finally {
+    process.env.PATH = previousPath;
+  }
+});
+
+test('resume refuses to double an attempt whose local agent process is still alive', { timeout: 15000 }, async t => {
+  // La tentative running porte l'identité du processus courant (vivant) : la reprise
+  // doit refuser de doubler l'agent encore actif, sans l'arrêter ni le prendre pour un autre.
+  const f = await localFixture(t, [task('survivor', 'codex')], async () => 0);
+  const service = f.service();
+  const created = await service.run(f.batchFile, { mode: 'local', execute: false });
+  const task = created.tasks[0];
+  task.status = 'running';
+  task.attempts.push({
+    attemptId: 'attempt-survivor', taskBaseCommit: created.runBaseCommit, status: 'running',
+    startedAt: new Date().toISOString(),
+    processIdentity: { pid: process.pid, startedAtIso: new Date(Date.now() - 1000).toISOString(),
+      command: [process.argv[0], process.argv[1]].join(' ') },
   });
-  const state = await service.run(f.batchFile, { mode: 'local' });
-  assert.equal(state.status, 'failed');
-  assert.ok(state.tasks[0].attempts[0].diagnostics?.some(d => /SLOPIFY_RESULT/.test(d.message)));
+  const { writeFile: wf } = await import('node:fs/promises');
+  const statePath = path.join(f.root, 'runs', created.runId, 'state.json');
+  const state = JSON.parse(await readFile(statePath, 'utf8'));
+  state.tasks[0] = task;
+  await wf(statePath, JSON.stringify(state, null, 2));
+  await assert.rejects(service.resume(created.runId), /live local agent process/i);
+});
+
+test('a reused PID is never mistaken for the original local agent', async t => {
+  const { isLocalProcessAlive } = await import('../src/localTaskExecutor.js');
+  // Une identité plausible mais dont la commande ne correspond à aucun processus vivant.
+  assert.equal(await isLocalProcessAlive({ pid: process.pid, startedAtIso: new Date().toISOString(), command: 'definitely-not-this-command --xyz' }), false);
+  // L'identité du processus courant correspond réellement : vivant.
+  assert.equal(await isLocalProcessAlive({ pid: process.pid, startedAtIso: new Date(Date.now() - 2000).toISOString(), command: [process.argv[0], process.argv[1]].join(' ') }), true);
+});
+
+test('a durable successful checkpoint is integrated on resume without replaying the agent', { timeout: 15000 }, async t => {
+  let executions = 0;
+  const f = await localFixture(t, [task('durable', 'codex')], async (id, clone) => {
+    executions++;
+    await writeFile(path.join(clone, 'durable.txt'), 'durable result');
+    return 0;
+  });
+  const first = await f.service().run(f.batchFile, { mode: 'local' });
+  assert.equal(first.status, 'succeeded');
+  assert.equal(executions, 1);
+  // resume d'un run réussi ne rejoue aucun agent : les résultats durables sont réutilisés.
+  const again = await f.service().resume(first.runId);
+  assert.equal(again.status, 'succeeded');
+  assert.equal(executions, 1, 'the durable success is not replayed');
 });

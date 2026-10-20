@@ -1,4 +1,5 @@
 import { appendFileSync } from 'node:fs';
+import { spawn } from 'node:child_process';
 import { mkdir, readFile, writeFile, rename, readdir } from 'node:fs/promises';
 import * as path from 'node:path';
 import { createNodeSubprocessExecutor, type SubprocessExecutor } from '@acp-client/sandbox';
@@ -70,6 +71,7 @@ export class LocalTaskExecutor implements TaskExecutor {
     // n'est jamais touché.
     const clonePath = request.workspacePath;
     const contextPath = path.join(request.resultDirectory, 'context');
+    let attemptIdentity: LocalProcessIdentity | undefined;
     try {
       const head = (await this.requireGit(clonePath, ['rev-parse', 'HEAD'], request.signal)).trim();
       if (head !== request.taskBaseCommit) throw new Error(`Clone baseline mismatch: expected ${request.taskBaseCommit}, got ${head}.`);
@@ -95,11 +97,17 @@ export class LocalTaskExecutor implements TaskExecutor {
       ].join('\n');
       await writeFile(path.join(contextPath, 'spec.md'), await readFile(request.specFile, 'utf8'), { mode: 0o600 });
       await writeFile(path.join(contextPath, 'harness.txt'), harness, { mode: 0o600 });
-      const run = await this.runner({ ...request, workspacePath: clonePath, logged, contextPath });
+      let streamed = { stdout: false, stderr: false };
+      const stream = (target: 'stdout' | 'stderr', chunk: string) => {
+        streamed[target] = true;
+        appendFileSync(target === 'stdout' ? stdoutPath : stderrPath, chunk);
+      };
+      const onProcessSpawn = (identity: LocalProcessIdentity) => { attemptIdentity = identity; };
+      const run = await this.runner({ ...request, workspacePath: clonePath, logged, contextPath, onProcessSpawn, stream });
       diagnostics.push(...run.diagnostics);
       await writeFile(reportPath, run.report, { mode: 0o600 });
       if (run.exitCode !== 0 || diagnostics.some(d => d.code !== 'codex_evidence_unavailable')) {
-        return { exitCode: run.exitCode || 1, stdoutPath, stderrPath, reportPath, resource, diagnostics };
+        return { exitCode: run.exitCode || 1, stdoutPath, stderrPath, reportPath, resource, diagnostics, ...(attemptIdentity ? { processIdentity: attemptIdentity } : {}) };
       }
       // Checkpoint durable depuis le clone privé, sans toucher au workspace utilisateur.
       await this.requireGit(clonePath, ['add', '--all'], request.signal);
@@ -123,13 +131,13 @@ export class LocalTaskExecutor implements TaskExecutor {
       const receipt = path.join(request.resultDirectory, 'result.json');
       await writeFile(receipt + '.tmp', JSON.stringify({ runId: request.runId, taskId: request.taskId, attemptId: request.attemptId, taskBaseCommit: request.taskBaseCommit, completedAt: new Date().toISOString(), exitCode: 0, checkpoint, resource, stdoutPath, stderrPath, reportPath, diagnostics }, null, 2), { mode: 0o600 });
       await rename(receipt + '.tmp', receipt);
-      return { exitCode: 0, checkpoint, stdoutPath, stderrPath, reportPath, resource, diagnostics };
+      return { exitCode: 0, checkpoint, stdoutPath, stderrPath, reportPath, resource, diagnostics, ...(attemptIdentity ? { processIdentity: attemptIdentity } : {}) };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       diagnostics.push({ code: request.signal?.aborted ? 'interrupted' : 'execution_failed', message });
       appendFileSync(stderrPath, message + '\n');
       await writeFile(reportPath, 'Execution failed: ' + message, { mode: 0o600 });
-      return { exitCode: 1, checkpoint, stdoutPath, stderrPath, reportPath, resource, diagnostics };
+      return { exitCode: 1, checkpoint, stdoutPath, stderrPath, reportPath, resource, diagnostics, ...(attemptIdentity ? { processIdentity: attemptIdentity } : {}) };
     }
   }
 
@@ -201,19 +209,73 @@ export async function nativeCodexSessionFailures(directory: string): Promise<Tas
   return diagnostics;
 }
 
+/** Identité persistée du processus local d'une tentative : distingue l'agent d'origine
+ * d'un PID réutilisé par le système après la disparition du lanceur. */
+export interface LocalProcessIdentity {
+  pid: number;
+  startedAtIso: string;
+  command: string;
+}
+
+/** Un processus vivant correspond à l'identité enregistrée : PID, âge cohérent et même ligne de commande. */
+export async function isLocalProcessAlive(identity: LocalProcessIdentity | undefined): Promise<boolean> {
+  if (!identity) return false;
+  try {
+    const statText = (await readFile(path.join('/proc', String(identity.pid), 'stat'), 'utf8')).trim();
+    const fields = statText.slice(statText.lastIndexOf(')') + 2).split(' ');
+    const startedTicks = Number(fields[19]);
+    const bootTicks = Number((await readFile('/proc/stat', 'utf8')).split('\n')[0].split(' ')[1]);
+    if (!Number.isFinite(startedTicks) || !Number.isFinite(bootTicks) || bootTicks <= 0) return false;
+    const hz = 100;
+    const startedMs = Date.now() - ((startedTicks - bootTicks) / hz) * 1000;
+    const recordedMs = Date.parse(identity.startedAtIso);
+    if (Number.isFinite(recordedMs) && Math.abs(startedMs - recordedMs) > 5000) return false;
+    const cmd = (await readFile(path.join('/proc', String(identity.pid), 'cmdline'), 'utf8')).replace(/\0/g, ' ').trim();
+    return cmd === identity.command;
+  } catch { return false; }
+}
+
 export interface LocalAgentRunRequest extends TaskExecutionRequest {
   workspacePath: string;
   logged: SubprocessExecutor;
   contextPath: string;
+  /** Reçoit l'identité du processus agent local dès son lancement, pour persistance durable. */
+  onProcessSpawn?: (identity: LocalProcessIdentity) => void;
+  /** Streame un fragment brut de l'agent local vers les preuves persistées de la tentative. */
+  stream: (stream: 'stdout' | 'stderr', chunk: string) => void;
 }
 
 export interface LocalAgentRunResult {
   exitCode: number;
   report: string;
   diagnostics: TaskBatchDiagnostic[];
+  /** Identité du processus agent local, persistée pour distinguer la tentative d'un PID réutilisé. */
+  processIdentity?: LocalProcessIdentity;
 }
 
 export type LocalAgentRunner = (request: LocalAgentRunRequest) => Promise<LocalAgentRunResult>;
+
+/** Lance l'agent local en propre (node:child_process) et publie son identité durable
+ * (PID, âge, commande) ; stdout/stderr sont streames vers le flux du runner
+ * (persistance des preuves) puis renvoyés comme le fait l'exécuteur de sous-processus. */
+function spawnLocalAgent(request: LocalAgentRunRequest, command: string, args: string[]): Promise<{ exitCode: number; stdout: string; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    const startedAtIso = new Date().toISOString();
+    const child = spawn(command, args, { cwd: request.workspacePath, stdio: ['ignore', 'pipe', 'pipe'], signal: request.signal });
+    request.onProcessSpawn?.({ pid: child.pid!, startedAtIso, command: [command, ...args].join(' ') });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', chunk => { stdout += chunk; request.stream('stdout', chunk); });
+    child.stderr.on('data', chunk => { stderr += chunk; request.stream('stderr', chunk); });
+    child.once('error', error => {
+      if (request.signal?.aborted) resolve({ exitCode: 1, stdout, stderr: stderr || String(error) });
+      else reject(error);
+    });
+    child.once('close', code => resolve({ exitCode: code ?? 1, stdout, stderr }));
+  });
+}
 
 /** Pi local : configuration personnelle native conservée (fournisseur, modèle, identifiants) ;
  * Slopify n'impose pas Mistral et ne réécrit jamais la configuration de l'utilisateur.
@@ -223,7 +285,7 @@ async function runPiLocal(request: LocalAgentRunRequest): Promise<LocalAgentRunR
   const piArgs = ['--print'];
   piArgs.push('--append-system-prompt', path.join(request.contextPath, 'harness.txt'));
   piArgs.push('--mode', 'json', request.prompt);
-  const run = await request.logged({ command: 'pi', args: piArgs, cwd: request.workspacePath, stdin: 'ignore', signal: request.signal });
+  const run = await spawnLocalAgent(request, 'pi', piArgs);
   const diagnostics: TaskBatchDiagnostic[] = [];
   const reports: string[] = [];
   let finalParentMessage = '';
@@ -272,7 +334,7 @@ function createLocalAgentRunner(): LocalAgentRunner {
     if (request.model) codexArgs.push('--model', request.model);
     if (request.effort) codexArgs.push('-c', `model_reasoning_effort=${request.effort}`);
     codexArgs.push('-c', `developer_instructions=${JSON.stringify(harness)}`, request.prompt);
-    const run = await request.logged({ command: 'codex', args: codexArgs, cwd: request.workspacePath, stdin: 'ignore', signal: request.signal });
+    const run = await spawnLocalAgent(request, 'codex', codexArgs);
     const diagnostics: TaskBatchDiagnostic[] = [];
     const reports: string[] = [];
     for (const line of run.stdout.split(/\r?\n/)) {

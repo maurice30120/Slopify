@@ -6,7 +6,7 @@ import { homedir } from 'node:os';
 import * as path from 'node:path';
 import { createNodeSubprocessExecutor, type SubprocessExecutor } from '@acp-client/sandbox';
 import { DockerTaskExecutor } from './dockerTaskExecutor.js';
-import { LocalTaskExecutor, type LocalAgentRunner } from './localTaskExecutor.js';
+import { LocalTaskExecutor, isLocalProcessAlive, type LocalAgentRunner } from './localTaskExecutor.js';
 import { DockerRunHealth, type DockerRunSuspension } from './dockerRunHealth.js';
 import { loadTaskRuntimeConfig } from './taskRuntimeConfig.js';
 import { assertWorkerPoolSize, type TaskWorkerPoolConfig, type TaskWorkerState } from './taskWorkerPool.js';
@@ -821,8 +821,28 @@ export class TaskBatchService {
    */
   async resume(runId: string, options: { signal?: AbortSignal } = {}): Promise<TaskBatchSnapshot> {
     const snapshot = await this.status(runId);
+    // Mode local : une tentative encore vivante (processus d'origine identifié) ne peut pas
+    // être doublée ; un PID réutilisé par un autre processus n'est jamais pris pour l'agent.
+    if (this.runMode(snapshot) === 'local') {
+      for (const task of snapshot.tasks) {
+        if (task.status !== 'running' && task.status !== 'interrupted') continue;
+        const attempt = task.attempts.at(-1);
+        if (attempt?.status === 'running' && await isLocalProcessAlive(attempt.processIdentity)) {
+          throw new Error(`Task "${task.id}" still has a live local agent process (pid ${attempt.processIdentity!.pid}); stop it before resuming to avoid running the same work twice.`);
+        }
+      }
+    }
     if (snapshot.tasks.some(task => task.status === 'running')) {
-      throw new Error('Run has running tasks. Stop the previous agents and use tasks resume-task for each interrupted task before resuming.');
+      // En local, une tentative running dont le processus a disparu est obsolète : reprise autorisée.
+      if (this.runMode(snapshot) === 'local') {
+        for (const task of snapshot.tasks) {
+          if (task.status !== 'running') continue;
+          const attempt = task.attempts.at(-1);
+          if (attempt) { task.status = 'interrupted'; attempt.status = 'interrupted'; }
+        }
+      } else {
+        throw new Error('Run has running tasks. Stop the previous agents and use tasks resume-task for each interrupted task before resuming.');
+      }
     }
     if (snapshot.conflict) {
       throw new TaskBatchExecutionError(snapshot, 'Run has an unresolved conflict. Validate an explicit resolution before resuming.');
