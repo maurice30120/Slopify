@@ -7,7 +7,8 @@ import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import test from 'node:test';
 import type { SubprocessExecutor } from '@slopify/execution';
-import { TaskBatchService, type TaskBatchSnapshot } from '@slopify/task-batches';
+import { type TaskBatchSnapshot } from '@slopify/task-batches';
+import { TaskBatchService } from './taskBatchTestService.js';
 
 /** T05: Durable state and explicit resume tests */
 
