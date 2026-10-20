@@ -215,24 +215,34 @@ export interface LocalProcessIdentity {
   pid: number;
   startedAtIso: string;
   command: string;
+  /** Champ starttime de /proc/<pid>/stat au lancement : inchangé pour un même processus,
+   * différent pour un PID réutilisé par un autre processus. */
+  startTimeTicks?: number;
 }
 
-/** Un processus vivant correspond à l'identité enregistrée : PID, âge cohérent et même ligne de commande. */
+/** Un processus vivant correspond à l'identité enregistrée : PID existant, même starttime
+ * kernel (un PID réutilisé a forcément un starttime différent) et même ligne de commande. */
 export async function isLocalProcessAlive(identity: LocalProcessIdentity | undefined): Promise<boolean> {
   if (!identity) return false;
   try {
     const statText = (await readFile(path.join('/proc', String(identity.pid), 'stat'), 'utf8')).trim();
     const fields = statText.slice(statText.lastIndexOf(')') + 2).split(' ');
     const startedTicks = Number(fields[19]);
-    const bootTicks = Number((await readFile('/proc/stat', 'utf8')).split('\n')[0].split(' ')[1]);
-    if (!Number.isFinite(startedTicks) || !Number.isFinite(bootTicks) || bootTicks <= 0) return false;
-    const hz = 100;
-    const startedMs = Date.now() - ((startedTicks - bootTicks) / hz) * 1000;
-    const recordedMs = Date.parse(identity.startedAtIso);
-    if (Number.isFinite(recordedMs) && Math.abs(startedMs - recordedMs) > 5000) return false;
+    if (!Number.isFinite(startedTicks)) return false;
+    if (Number.isFinite(identity.startTimeTicks) && identity.startTimeTicks !== startedTicks) return false;
     const cmd = (await readFile(path.join('/proc', String(identity.pid), 'cmdline'), 'utf8')).replace(/\0/g, ' ').trim();
     return cmd === identity.command;
   } catch { return false; }
+}
+
+/** Lit le starttime kernel d'un PID vivant, pour l'enregistrer avec l'identité. */
+export async function readProcessStartTimeTicks(pid: number): Promise<number | undefined> {
+  try {
+    const statText = (await readFile(path.join('/proc', String(pid), 'stat'), 'utf8')).trim();
+    const fields = statText.slice(statText.lastIndexOf(')') + 2).split(' ');
+    const startedTicks = Number(fields[19]);
+    return Number.isFinite(startedTicks) ? startedTicks : undefined;
+  } catch { return undefined; }
 }
 
 export interface LocalAgentRunRequest extends TaskExecutionRequest {
@@ -258,11 +268,12 @@ export type LocalAgentRunner = (request: LocalAgentRunRequest) => Promise<LocalA
 /** Lance l'agent local en propre (node:child_process) et publie son identité durable
  * (PID, âge, commande) ; stdout/stderr sont streames vers le flux du runner
  * (persistance des preuves) puis renvoyés comme le fait l'exécuteur de sous-processus. */
-function spawnLocalAgent(request: LocalAgentRunRequest, command: string, args: string[]): Promise<{ exitCode: number; stdout: string; stderr: string }> {
+async function spawnLocalAgent(request: LocalAgentRunRequest, command: string, args: string[]): Promise<{ exitCode: number; stdout: string; stderr: string }> {
+  const startedAtIso = new Date().toISOString();
+  const child = spawn(command, args, { cwd: request.workspacePath, stdio: ['ignore', 'pipe', 'pipe'], signal: request.signal });
+  const startTimeTicks = await readProcessStartTimeTicks(child.pid!);
+  request.onProcessSpawn?.({ pid: child.pid!, startedAtIso, command: [command, ...args].join(' '), ...(startTimeTicks !== undefined ? { startTimeTicks } : {}) });
   return new Promise((resolve, reject) => {
-    const startedAtIso = new Date().toISOString();
-    const child = spawn(command, args, { cwd: request.workspacePath, stdio: ['ignore', 'pipe', 'pipe'], signal: request.signal });
-    request.onProcessSpawn?.({ pid: child.pid!, startedAtIso, command: [command, ...args].join(' ') });
     let stdout = '';
     let stderr = '';
     child.stdout.setEncoding('utf8');

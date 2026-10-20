@@ -243,18 +243,18 @@ test('resume refuses to double an attempt whose local agent process is still ali
   const f = await localFixture(t, [task('survivor', 'codex')], async () => 0);
   const service = f.service();
   const created = await service.run(f.batchFile, { mode: 'local', execute: false });
-  const task = created.tasks[0];
-  task.status = 'running';
-  task.attempts.push({
+  const survivor = created.tasks[0];
+  survivor.status = 'running';
+  survivor.attempts.push({
     attemptId: 'attempt-survivor', taskBaseCommit: created.runBaseCommit, status: 'running',
     startedAt: new Date().toISOString(),
     processIdentity: { pid: process.pid, startedAtIso: new Date(Date.now() - 1000).toISOString(),
-      command: [process.argv[0], process.argv[1]].join(' ') },
+      command: (await readFile(path.join('/proc', String(process.pid), 'cmdline'), 'utf8')).replace(/\0/g, ' ').trim() },
   });
   const { writeFile: wf } = await import('node:fs/promises');
   const statePath = path.join(f.root, 'runs', created.runId, 'state.json');
   const state = JSON.parse(await readFile(statePath, 'utf8'));
-  state.tasks[0] = task;
+  state.tasks[0] = survivor;
   await wf(statePath, JSON.stringify(state, null, 2));
   await assert.rejects(service.resume(created.runId), /live local agent process/i);
 });
@@ -264,7 +264,8 @@ test('a reused PID is never mistaken for the original local agent', async t => {
   // Une identité plausible mais dont la commande ne correspond à aucun processus vivant.
   assert.equal(await isLocalProcessAlive({ pid: process.pid, startedAtIso: new Date().toISOString(), command: 'definitely-not-this-command --xyz' }), false);
   // L'identité du processus courant correspond réellement : vivant.
-  assert.equal(await isLocalProcessAlive({ pid: process.pid, startedAtIso: new Date(Date.now() - 2000).toISOString(), command: [process.argv[0], process.argv[1]].join(' ') }), true);
+  const realCommand = (await readFile(path.join('/proc', String(process.pid), 'cmdline'), 'utf8')).replace(/\0/g, ' ').trim();
+  assert.equal(await isLocalProcessAlive({ pid: process.pid, startedAtIso: new Date(Date.now() - 2000).toISOString(), command: realCommand }), true);
 });
 
 test('a durable successful checkpoint is integrated on resume without replaying the agent', { timeout: 15000 }, async t => {
@@ -276,9 +277,11 @@ test('a durable successful checkpoint is integrated on resume without replaying 
   });
   const first = await f.service().run(f.batchFile, { mode: 'local' });
   assert.equal(first.status, 'succeeded');
-  assert.equal(executions, 1);
+  // Implémentation + revue finale : deux exécutions d'agent la première fois.
+  const firstRunExecutions = executions;
+  assert.equal(firstRunExecutions, 2);
   // resume d'un run réussi ne rejoue aucun agent : les résultats durables sont réutilisés.
   const again = await f.service().resume(first.runId);
   assert.equal(again.status, 'succeeded');
-  assert.equal(executions, 1, 'the durable success is not replayed');
+  assert.equal(executions, firstRunExecutions, 'the durable success is not replayed');
 });
