@@ -90,8 +90,13 @@ Les configurations historiques nécessaires aux tests vivent dans leurs fixtures
 ```bash
 npm run build
 npm test
-node slopify/smoke/task-batch.mjs
 ```
 
-L’essai Docker utilise un dépôt temporaire et conserve ses preuves dans le chemin
-affiché. Il nécessite les accès aux fournisseurs des deux agents.
+La suite automatisée et la CI n'utilisent **ni Docker ni fournisseurs réels**.
+Pour un changement ciblé, préférer d'abord le test concerné (par exemple
+`npm run test -w @slopify/task-batches -- dist/test/localMode.test.js`).
+
+Les smoke tests réels ne sont **jamais exécutés en CI** : sur le poste de
+développement uniquement, lancer `npm run smoke:local` (sans Docker) ou
+`npm run smoke:docker` (Docker Sandboxes). Les deux nécessitent des accès Pi/Codex
+et conservent leurs preuves dans un dépôt temporaire. Voir [Tests et smoke tests](docs/testing.md).
