@@ -5,31 +5,11 @@ import * as path from 'node:path';
 import type { SubprocessExecutor, SubprocessRequest, SubprocessResult } from '@slopify/execution';
 import type { TaskExecutionRequest, TaskExecutionResource } from '@slopify/execution';
 
-export interface TaskWorkerPoolConfig {
-  size: number;
-  mounts: string[];
-  lifecycle: 'reuse' | 'recreate';
-  image?: string;
-}
-export type TaskWorkerStatus = 'available' | 'assigned' | 'cleaning' | 'verifying' | 'retired' | 'retained';
-/** Shared guard and single authority over TaskWorkerPoolConfig: the worker pool size is an integer from 1 to 10. */
-export function assertWorkerPoolSize(size:number,label='Worker pool size'):void{
-  if(!Number.isInteger(size)||size<1||size>10)throw new Error(`${label} must be an integer from 1 to 10.`);
-}
-/** Shared guard and single authority over TaskWorkerPoolConfig: shared mounts are absolute readonly paths. */
-export function assertSharedWorkerMounts(mounts:string[],label='Shared worker mounts'):void{
-  if(mounts.some(mount=>!mount.endsWith(':ro')||!path.isAbsolute(mount.slice(0,-3))))throw new Error(`${label} must contain absolute readonly paths ending in :ro.`);
-}
-export interface TaskWorkerState {
-  workerId: string;
-  sandboxName: string;
-  agent: string;
-  status: TaskWorkerStatus;
-  taskId?: string;
-  attemptId?: string;
-  /** Remplacements réels constatés à la création de ce worker : workers sortis du service à cause d'un échec ET déjà remplacés à cet instant. */
-  replacements: number;
-}
+import { assertWorkerPoolSize, assertSharedWorkerMounts } from '@slopify/execution';
+import type { TaskWorkerPoolConfig, TaskWorkerState, TaskWorkerStatus } from '@slopify/execution';
+export { assertWorkerPoolSize, assertSharedWorkerMounts } from '@slopify/execution';
+export type { TaskWorkerPoolConfig, TaskWorkerState, TaskWorkerStatus } from '@slopify/execution';
+
 interface Worker extends TaskWorkerState { created: boolean; assetsVolume: string; image: string; sharedMounts: string[]; outOfServiceByFailure?: boolean; replaced?: boolean; }
 export interface WorkerLease { worker: Worker; container: string; contextVolume: string; seed: string; stage: string; request: TaskExecutionRequest; skillsStore?:string; }
 const quote=(value:string)=>"'"+value.replaceAll("'", "'\\''")+"'";
