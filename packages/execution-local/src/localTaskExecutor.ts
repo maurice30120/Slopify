@@ -106,7 +106,10 @@ export class LocalTaskExecutor implements TaskExecutor {
         streamed[target] = true;
         appendFileSync(target === 'stdout' ? stdoutPath : stderrPath, chunk);
       };
-      const onProcessSpawn = (identity: LocalProcessIdentity) => { attemptIdentity = identity; };
+      const onProcessSpawn = async (identity: LocalProcessIdentity) => {
+        attemptIdentity = identity;
+        await request.onProcessSpawn?.(identity);
+      };
       const run = await this.runner({ ...request, workspacePath: clonePath, logged, contextPath, onProcessSpawn, stream });
       diagnostics.push(...run.diagnostics);
       await writeFile(reportPath, run.report, { mode: 0o600 });
@@ -218,7 +221,7 @@ export interface LocalAgentRunRequest extends TaskExecutionRequest {
   logged: SubprocessExecutor;
   contextPath: string;
   /** Reçoit l'identité du processus agent local dès son lancement, pour persistance durable. */
-  onProcessSpawn?: (identity: LocalProcessIdentity) => void;
+  onProcessSpawn?: (identity: LocalProcessIdentity) => Promise<void>;
   /** Streame un fragment brut de l'agent local vers les preuves persistées de la tentative. */
   stream: (stream: 'stdout' | 'stderr', chunk: string) => void;
 }
@@ -306,7 +309,7 @@ async function spawnLocalAgent(request: LocalAgentRunRequest, command: string, a
     if (pid) {
       const identity = await readLocalProcessIdentity(pid, [command, ...args].join(' '), startedAtIso);
       if (isolated) identity.processGroupId = pid;
-      request.onProcessSpawn?.(identity);
+      await request.onProcessSpawn?.(identity);
     }
     const exitCode = await completion;
     const stopped = pid ? await finishAttemptGroup(pid) : true;
@@ -314,6 +317,12 @@ async function spawnLocalAgent(request: LocalAgentRunRequest, command: string, a
       return { exitCode: 1, stdout, stderr: stderr + '\\nLocal agent descendants were not confirmed stopped; inspect the retained attempt.' };
     }
     return { exitCode, stdout, stderr };
+  } catch (error) {
+    // Failure to durably record identity must not leave an unmanaged agent running.
+    onAbort();
+    await completion.catch(() => undefined);
+    if (pid) await finishAttemptGroup(pid);
+    throw error;
   } finally {
     if (escalation) clearTimeout(escalation);
     request.signal?.removeEventListener('abort', onAbort);
