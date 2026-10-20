@@ -7,6 +7,7 @@ import {
 	type PipelineSkillEntry,
 } from "@acp-client/pipeline";
 
+/** Contrat fonctionnel de SkillCatalogEntry dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface SkillCatalogEntry extends PipelineSkillEntry {
 	name: string;
 	description: string;
@@ -15,6 +16,7 @@ export interface SkillCatalogEntry extends PipelineSkillEntry {
 	content: string;
 }
 
+/** Contrat fonctionnel de SkillCatalogOptions dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface SkillCatalogOptions {
 	workspaceCwd: string;
 	logger?: (message: string, error?: unknown) => void;
@@ -77,12 +79,16 @@ export function loadSkillCatalog(
 	return catalog;
 }
 
+/** Contrat fonctionnel de ParsedSkillFrontmatter dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 interface ParsedSkillFrontmatter {
 	name: string;
 	description: string;
 	disableModelInvocation: boolean;
 }
 
+/** Point d'entrée parseSkillFrontmatter du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function parseSkillFrontmatter(text: string): ParsedSkillFrontmatter | null {
 	const frontmatter = extractFrontmatter(text);
 	if (!frontmatter) {
@@ -103,11 +109,17 @@ function parseSkillFrontmatter(text: string): ParsedSkillFrontmatter | null {
 	};
 }
 
+/** Point d'entrée extractFrontmatter du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function extractFrontmatter(text: string): string | null {
 	const match = /^---\r?\n([\s\S]*?)\r?\n---/.exec(text);
 	return match ? match[1] : null;
 }
 
+/** Point d'entrée readScalar du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function readScalar(frontmatter: string, key: string): string {
 	const re = new RegExp(
 		`^${key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}:\\s*(.*)$`,

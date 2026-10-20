@@ -184,6 +184,7 @@ function command(cwd: string): CliRunCommand {
     kind: 'run',
     pipelineName: 'grill-spec-tickets-implement-review',
     prompt: 'ship feature',
+    agent: 'Codex CLI',
     cwd,
     json: false,
     verbose: false,

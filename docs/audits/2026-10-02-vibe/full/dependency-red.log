@@ -1,0 +1,95 @@
+npm notice run @acp-client/sandbox@0.0.0 test
+npm notice run npm run build && node --test "dist/test/**/*.test.js"
+npm notice run @acp-client/sandbox@0.0.0 build
+npm notice run tsc -p tsconfig.json --incremental false
+✔ Vibe bridge publishes only the last assistant message and preserves raw diagnostics (0.697708ms)
+✔ Codex bridge preserves plain text output (0.082375ms)
+✔ Vibe bridge reports malformed output rather than publishing the transcript (0.171375ms)
+✔ routes every public sandbox ACP extension to an active handler (0.80975ms)
+✔ rejects unknown or inactive sandbox extension methods explicitly (1.120416ms)
+✔ exposes the four pipeline Promotion policies (0.614917ms)
+✔ integrates Agent Checkpoints in the supplied deterministic order without mutating the host workspace (0.691791ms)
+✔ reports an Integration Conflict without publishing or mutating the host workspace (0.697375ms)
+✔ an empty checkpoint remains attributed but does not create an integration commit (0.089458ms)
+✔ ask presents one global preview and explicit approval applies one atomic fast-forward (0.444625ms)
+✔ auto-apply promotes the complete change set without prompting (0.103ms)
+▶ discard, auto-reject, user rejection and cancellation never mutate the host workspace
+  ✔ discard (0.071166ms)
+  ✔ auto-reject (0.055208ms)
+  ✔ user rejection (0.10375ms)
+  ✔ cancellation (0.094583ms)
+✔ discard, auto-reject, user rejection and cancellation never mutate the host workspace (0.585458ms)
+✔ no_changes skips the global Promotion decision entirely (0.072291ms)
+✔ a divergent Git base blocks Promotion before any workspace mutation (0.127583ms)
+✔ replaying an already completed Promotion is idempotent (0.073833ms)
+✔ late workspace changes block Promotion before any workspace mutation (0.08425ms)
+✔ exports only the neutral ACP sandbox extension methods (0.744542ms)
+✔ creates and previews an attributed Agent Checkpoint without mutating the host workspace (2.7835ms)
+✔ replaces an internal checkpoint when a new interview prompt starts from the same base (0.628ms)
+✔ launches Mistral Vibe programmatically inside a Vibe sandbox (0.299708ms)
+✖ prepares a descendant from multiple parent checkpoints without mutating the host worktree (0.63425ms)
+✔ reports a real Integration Conflict before launching the descendant agent (0.784958ms)
+✔ creates an empty technical checkpoint and returns no_changes when its preview is empty (0.264958ms)
+✔ stops after a checkpoint failure and never fetches or previews implicitly (0.256667ms)
+✔ stops after a checkpoint fetch failure and never produces an implicit preview or Promotion (0.25475ms)
+✔ rejects a dirty workspace before creating a sandbox with corrective guidance (0.146625ms)
+✔ ignores Slopify run state created before the clean-workspace preflight (0.332625ms)
+✔ does not apply the clean-workspace check to a read-only pipeline node (0.221792ms)
+✔ requires sbx 0.35.0 and required clone/list capabilities (0.138791ms)
+✔ accepts the installed sbx version output format (0.0945ms)
+✔ rejects an occupied planned sandbox name before creation (0.144916ms)
+▶ initializes each Docker global network preset from the exact CLI choices without per-sandbox rules
+  ✔ Open (0.36575ms)
+  ✔ Balanced (4.723666ms)
+  ✔ Locked Down (0.216833ms)
+✔ initializes each Docker global network preset from the exact CLI choices without per-sandbox rules (5.551833ms)
+✔ reuses an initialized global network policy without prompting again (0.134667ms)
+✔ cancelling one preflight does not abort global policy initialization shared with another run (0.194334ms)
+✔ cancelling the last preflight aborts its global policy subprocess (0.155042ms)
+✔ fails before sandbox creation when global network policy initialization fails (0.142167ms)
+✔ fails with corrective guidance when policy initialization needs a non-interactive choice (0.083375ms)
+✔ cleans the sandbox when Codex fails (0.180958ms)
+✔ an already absent sandbox does not turn successful cleanup into a pipeline failure (5.321458ms)
+✔ external cancellation aborts the active sbx exec process and still cleans the sandbox (0.364167ms)
+✔ timeout aborts the active sbx exec process and exports a timed_out diagnostic (12.957583ms)
+✔ a hung cleanup is aborted on its own deadline and recorded without blocking the run (11.71375ms)
+▶ keepSandbox preserves resources and reports copyable commands after success and failure
+  ✔ success (1.458375ms)
+  ✔ failure (1.315208ms)
+✔ keepSandbox preserves resources and reports copyable commands after success and failure (3.014083ms)
+✔ reconciles a persisted sandbox only when its stable identity and checkpoint base match (0.187042ms)
+✔ resumes a matching sandbox after creation without creating a second resource (0.219833ms)
+✔ resumes after checkpoint persistence without relaunching Codex or requiring the removed resource (0.104084ms)
+✔ repeats cleanup idempotently when a checkpointed sandbox disappeared before removed state persisted (0.099041ms)
+✔ suspends an uncheckpointed sandbox with partial worktree changes (0.130125ms)
+▶ suspends reconciliation on identity or base divergence without relaunch, cleanup, or Promotion
+  ✔ identity (0.11ms)
+  ✔ base (0.052042ms)
+✔ suspends reconciliation on identity or base divergence without relaunch, cleanup, or Promotion (0.273041ms)
+ℹ tests 60
+ℹ suites 0
+ℹ pass 59
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 146.039125
+
+✖ failing tests:
+
+test at dist/test/runtime.test.js:213:1
+✖ prepares a descendant from multiple parent checkpoints without mutating the host worktree (0.63425ms)
+  Error: Unable to publish dependency checkpoints to the descendant sandbox: repository not exported
+      at DockerSandboxRuntime.assertSuccess (file:///Users/dhuyet/Documents/POC/Slopify/acp-sandbox/dist/src/runtime.js:500:19)
+      at DockerSandboxRuntime.requireSuccess (file:///Users/dhuyet/Documents/POC/Slopify/acp-sandbox/dist/src/runtime.js:494:14)
+      at async DockerSandboxRuntime.runCodex (file:///Users/dhuyet/Documents/POC/Slopify/acp-sandbox/dist/src/runtime.js:127:21)
+      at async TestContext.<anonymous> (file:///Users/dhuyet/Documents/POC/Slopify/acp-sandbox/dist/test/runtime.test.js:235:5)
+      at async Test.run (node:internal/test_runner/test:1332:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:911:7)
+npm error Lifecycle script `test` failed with error:
+npm error code 1
+npm error path /Users/dhuyet/Documents/POC/Slopify/acp-sandbox
+npm error workspace @acp-client/sandbox@0.0.0
+npm error location /Users/dhuyet/Documents/POC/Slopify/acp-sandbox
+npm error command failed
+npm error command sh -c npm run build && node --test "dist/test/**/*.test.js"

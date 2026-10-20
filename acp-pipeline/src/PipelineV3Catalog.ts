@@ -4,11 +4,13 @@ import * as path from "node:path";
 import { compilePipelineV3Definition } from "./PipelineV3DefinitionCompiler";
 import type { CompiledPipelineProgram } from "./PipelineV3Types";
 
+/** Contrat fonctionnel de PipelineV3CatalogSource dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface PipelineV3CatalogSource {
   filePath: string;
   definition: unknown;
 }
 
+/** Contrat fonctionnel de PipelineV3CatalogOptions dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface PipelineV3CatalogOptions {
   workspaceCwd: string;
   configRoot?: string;
@@ -18,16 +20,21 @@ export interface PipelineV3CatalogOptions {
   agentConfigs?: Record<string, unknown>;
 }
 
+/** Contrat fonctionnel de PipelineV3CatalogError dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface PipelineV3CatalogError {
   filePath: string;
   errors: string[];
 }
 
+/** Contrat fonctionnel de PipelineV3CatalogResult dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface PipelineV3CatalogResult {
   programs: CompiledPipelineProgram[];
   errors: PipelineV3CatalogError[];
 }
 
+/** Point d'entrée compilePipelineV3Catalog du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 export function compilePipelineV3Catalog(
   sources: PipelineV3CatalogSource[],
   options: PipelineV3CatalogOptions,
@@ -80,6 +87,7 @@ export function compilePipelineV3Catalog(
   return { programs, errors };
 }
 
+/** Contrat fonctionnel de PipelineV3InstructionFileResolveOptions dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface PipelineV3InstructionFileResolveOptions {
   workspaceCwd: string;
   configRoot?: string;
@@ -87,6 +95,7 @@ export interface PipelineV3InstructionFileResolveOptions {
   pipelineFilePath: string;
 }
 
+/** Contrat fonctionnel de PipelineV3InstructionFileResolveError dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface PipelineV3InstructionFileResolveError {
   nodeId: string;
   error: string;
@@ -175,6 +184,9 @@ export type PipelineV3PromptFileResolveOptions = PipelineV3InstructionFileResolv
 /** @deprecated Utiliser `PipelineV3InstructionFileResolveError`. */
 export type PipelineV3PromptFileResolveError = PipelineV3InstructionFileResolveError;
 
+/** Point d'entrée rejectUnsupportedVersion du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function rejectUnsupportedVersion(definition: unknown): string | null {
   if (!isRecord(definition)) {
     return null;
@@ -188,6 +200,9 @@ function rejectUnsupportedVersion(definition: unknown): string | null {
   return null;
 }
 
+/** Point d'entrée readInstructionsFile du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function readInstructionsFile(
   relativePath: string,
   options: PipelineV3InstructionFileResolveOptions,
@@ -219,6 +234,9 @@ function readInstructionsFile(
   }
 }
 
+/** Point d'entrée resolveSafePath du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function resolveSafePath(
   relativePath: string,
   options: PipelineV3InstructionFileResolveOptions,
@@ -246,10 +264,16 @@ function resolveSafePath(
   return { absolutePath: candidate };
 }
 
+/** Point d'entrée compareSources du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function compareSources(a: PipelineV3CatalogSource, b: PipelineV3CatalogSource): number {
   return a.filePath < b.filePath ? -1 : a.filePath > b.filePath ? 1 : 0;
 }
 
+/** Point d'entrée isRecord du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }

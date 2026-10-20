@@ -5,8 +5,12 @@ const INTERVIEW_STATE_RE = /<interview_state>\s*(question|ready)\s*<\/interview_
 const CLARIFICATION_QUESTION_RE = /<clarification_question>\s*([\s\S]*?)\s*<\/clarification_question>/i;
 const RECOMMENDED_ANSWER_RE = /<recommended_answer>\s*([\s\S]*?)\s*<\/recommended_answer>/i;
 
+/** Type métier ProposedPlanInterviewState utilisé pour représenter une étape ou un résultat du cycle de vie du pipeline. */
 export type ProposedPlanInterviewState = 'question' | 'ready' | null;
 
+/** Point d'entrée extractSingleProposedPlan du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 export function extractSingleProposedPlan(text: string): string {
   const matches = text.match(PROPOSED_PLAN_RE) ?? [];
   if (matches.length !== 1) {
@@ -19,26 +23,41 @@ export function extractSingleProposedPlan(text: string): string {
   return matches[0].trim();
 }
 
+/** Point d'entrée getProposedPlanInterviewState du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 export function getProposedPlanInterviewState(text: string): ProposedPlanInterviewState {
   const plan = extractSingleProposedPlan(text);
   const match = plan.match(INTERVIEW_STATE_RE);
   return (match?.[1]?.toLowerCase() as Exclude<ProposedPlanInterviewState, null> | undefined) ?? null;
 }
 
+/** Point d'entrée isProposedPlanAwaitingAnswer du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 export function isProposedPlanAwaitingAnswer(text: string): boolean {
   return getProposedPlanInterviewState(text) === 'question';
 }
 
+/** Point d'entrée extractClarificationQuestion du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 export function extractClarificationQuestion(text: string): string | null {
   const plan = extractSingleProposedPlan(text);
   return plan.match(CLARIFICATION_QUESTION_RE)?.[1]?.trim() || null;
 }
 
+/** Point d'entrée extractRecommendedAnswer du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 export function extractRecommendedAnswer(text: string): string | null {
   const plan = extractSingleProposedPlan(text);
   return plan.match(RECOMMENDED_ANSWER_RE)?.[1]?.trim() || null;
 }
 
+/** Point d'entrée assertSingleProposedPlan du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 export function assertSingleProposedPlan(text: string): void {
   const matches = text.match(PROPOSED_PLAN_RE) ?? [];
   if (matches.length !== 1) {

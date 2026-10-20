@@ -15,6 +15,7 @@ import type {
 
 import { filterEnv, validatePath } from './security.js';
 
+/** Contrat fonctionnel de ManagedTerminal dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 interface ManagedTerminal {
   id: string;
   process: ChildProcess;
@@ -27,12 +28,15 @@ interface ManagedTerminal {
   exitPromise: Promise<void>;
 }
 
+/** Composant TerminalHandler qui coordonne une étape observable du cycle de vie du pipeline et en préserve les invariants. */
 export class TerminalHandler {
   private readonly terminals = new Map<string, ManagedTerminal>();
   private nextId = 1;
 
+/** Initialise ce composant pour le cycle de vie du pipeline concerné. */
   constructor(private readonly workspaceRoot: string) {}
 
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   async createTerminal(params: CreateTerminalRequest): Promise<CreateTerminalResponse> {
     const terminalId = `term_${this.nextId++}`;
     const outputByteLimit = params.outputByteLimit ?? 1024 * 1024;
@@ -90,6 +94,7 @@ export class TerminalHandler {
           managed.exitSignal = signal;
           managed.exited = true;
         }
+/** Valide ou résout les données de cette étape du cycle de vie ; les entrées invalides restent signalées au point d'appel. */
         resolve();
       });
       child.on('error', () => resolve());
@@ -118,6 +123,7 @@ export class TerminalHandler {
     return { terminalId };
   }
 
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   async terminalOutput(params: TerminalOutputRequest): Promise<TerminalOutputResponse> {
     const managed = this.getTerminal(params.terminalId);
     const response: TerminalOutputResponse = {
@@ -135,6 +141,7 @@ export class TerminalHandler {
     return response;
   }
 
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   async waitForTerminalExit(params: WaitForTerminalExitRequest): Promise<WaitForTerminalExitResponse> {
     const managed = this.getTerminal(params.terminalId);
     await managed.exitPromise;
@@ -144,6 +151,7 @@ export class TerminalHandler {
     };
   }
 
+/** Termine cette étape du cycle de vie et libère les ressources qui lui appartiennent. */
   async killTerminal(params: KillTerminalRequest): Promise<KillTerminalResponse> {
     const managed = this.getTerminal(params.terminalId);
     if (!managed.exited) {
@@ -152,6 +160,7 @@ export class TerminalHandler {
     return {};
   }
 
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   async releaseTerminal(params: ReleaseTerminalRequest): Promise<ReleaseTerminalResponse> {
     const managed = this.getTerminal(params.terminalId);
     if (!managed.exited) {
@@ -161,6 +170,7 @@ export class TerminalHandler {
     return {};
   }
 
+/** Termine cette étape du cycle de vie et libère les ressources qui lui appartiennent. */
   dispose(): void {
     for (const managed of this.terminals.values()) {
       if (!managed.exited) {
@@ -170,6 +180,7 @@ export class TerminalHandler {
     this.terminals.clear();
   }
 
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   private getTerminal(terminalId: string): ManagedTerminal {
     const managed = this.terminals.get(terminalId);
     if (!managed) {

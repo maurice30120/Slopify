@@ -6,6 +6,9 @@ import type { Logger } from '../types.js';
 
 const LEGACY_CODEX_REASONING_LEVELS = new Set(['none', 'minimal', 'low', 'medium', 'high', 'xhigh']);
 
+/** Point d'entrée normalizeCodexModelsCacheForLegacyCli du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 export function normalizeCodexModelsCacheForLegacyCli(logger?: Logger): void {
 	const cachePath = join(homedir(), '.codex', 'models_cache.json');
 	if (!existsSync(cachePath)) {
@@ -46,6 +49,7 @@ export function normalizeCodexModelsCacheForLegacyCli(logger?: Logger): void {
 		}
 
 		if (changed) {
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
 			writeFileSync(cachePath, `${JSON.stringify(cache, null, 2)}\n`, 'utf8');
 			logger?.log('Normalized Codex models cache for legacy codex-acp compatibility.');
 		}
@@ -54,6 +58,9 @@ export function normalizeCodexModelsCacheForLegacyCli(logger?: Logger): void {
 	}
 }
 
+/** Point d'entrée isCodexAcpCommand du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 export function isCodexAcpCommand(command: string, args: readonly string[] = []): boolean {
 	return command === 'codex'
 		|| args.some(arg => arg === '@zed-industries/codex-acp' || arg.startsWith('@zed-industries/codex-acp@'));

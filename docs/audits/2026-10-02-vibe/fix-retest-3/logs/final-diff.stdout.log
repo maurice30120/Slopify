@@ -1,0 +1,7 @@
+diff --git a/audit-marker.txt b/audit-marker.txt
+new file mode 100644
+index 0000000..61159ff
+--- /dev/null
++++ b/audit-marker.txt
+@@ -0,0 +1 @@
++slopify audit ok

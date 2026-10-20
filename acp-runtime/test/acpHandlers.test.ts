@@ -492,7 +492,7 @@ test("ConnectionManager times out initialize when the agent is silent", async ()
 	}
 });
 
-test("ConnectionManager removeConnection and dispose clear tracked clients", () => {
+test("ConnectionManager dispose clears tracked clients", () => {
 	const manager = new ConnectionManager(new SessionUpdateHandler(), {
 		getPermissionContext: () => undefined,
 	});
@@ -505,11 +505,23 @@ test("ConnectionManager removeConnection and dispose clear tracked clients", () 
 		client: { dispose: () => disposed.push("agent-2") },
 	});
 
-	manager.removeConnection("agent-1");
 	manager.dispose();
 
-	assert.deepEqual(disposed, ["agent-2"]);
+	assert.deepEqual(disposed, ["agent-1", "agent-2"]);
 	assert.equal((manager as any).connections.size, 0);
+});
+
+test("defaultAcpConnector rejects when processConfig is missing", async () => {
+	await assert.rejects(
+		() =>
+			defaultAcpConnector({
+				agentName: "Codex",
+				workspaceCwd: createTempWorkspace(),
+				sessionUpdateHandler: new SessionUpdateHandler(),
+				getPermissionContext: () => undefined,
+			}),
+		/requires a processConfig/,
+	);
 });
 
 test("defaultAcpConnector kills a spawned agent when connection fails", async () => {

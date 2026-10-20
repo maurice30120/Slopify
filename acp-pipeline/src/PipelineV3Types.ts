@@ -2,12 +2,16 @@ import type { NormalizedPipelinePolicy, NormalizedPromotionPolicy } from "./Pipe
 import type { PipelineIntegrationConflict, PipelineSandboxResumeDivergence } from "./PipelineAgentRunner";
 import type { ExecutionPlanSnapshot } from "./ExecutionPlan";
 
+/** Type métier PipelineArtifactFormat utilisé pour représenter une étape ou un résultat du cycle de vie du pipeline. */
 export type PipelineArtifactFormat = "text" | "markdown" | "json";
 
+/** Type métier PipelinePauseType utilisé pour représenter une étape ou un résultat du cycle de vie du pipeline. */
 export type PipelinePauseType = "approval" | "question" | "promotion";
 
+/** Type métier PipelinePauseFormat utilisé pour représenter une étape ou un résultat du cycle de vie du pipeline. */
 export type PipelinePauseFormat = "text" | "markdown" | "json" | "proposed-plan";
 
+/** Contrat fonctionnel de PipelineArtifact dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface PipelineArtifact<T = unknown> {
   name: string;
   type: string;
@@ -16,6 +20,7 @@ export interface PipelineArtifact<T = unknown> {
   producerNodeId: string;
 }
 
+/** Contrat fonctionnel de PipelineNodeInputDefinition dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface PipelineNodeInputDefinition {
   name: string;
   from: string;
@@ -23,22 +28,26 @@ export interface PipelineNodeInputDefinition {
   format?: PipelineArtifactFormat;
 }
 
+/** Contrat fonctionnel de PipelineNodeOutputDefinition dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface PipelineNodeOutputDefinition {
   name: string;
   type: string;
   format: PipelineArtifactFormat;
 }
 
+/** Contrat fonctionnel de PipelineRetryDefinition dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface PipelineRetryDefinition {
   maxAttempts: number;
   backoffMs?: number;
 }
 
+/** Contrat fonctionnel de PipelineInteractionDefinition dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface PipelineInteractionDefinition {
   protocol: string;
   repairAttempts: number;
 }
 
+/** Contrat fonctionnel de PipelinePolicyReference dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface PipelinePolicyReference {
   profile?: string;
   filesystem?: "read-only" | "workspace-write";
@@ -47,16 +56,19 @@ export interface PipelinePolicyReference {
   promotion?: "discard" | "ask" | "auto-apply" | "auto-reject";
 }
 
+/** Contrat fonctionnel de PipelineWorkspaceHandoffDefinition dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface PipelineWorkspaceHandoffDefinition {
   kind: "workspace-files";
   minimumReferences?: number;
   layout?: "delivery";
 }
 
+/** Contrat fonctionnel de PipelineAgentNodeDefinition dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface PipelineAgentNodeDefinition {
   id: string;
   type?: "agent";
-  agent: string;
+  /** Surcharge legacy facultative ; l'hôte lie normalement l'agent choisi par la CLI. */
+  agent?: string;
   /** Tâche et données propres au run. */
   prompt?: string;
   /** Rôle et règles invariants, chargés séparément de la tâche. */
@@ -75,6 +87,7 @@ export interface PipelineAgentNodeDefinition {
   policy?: string | PipelinePolicyReference;
 }
 
+/** Contrat fonctionnel de PipelinePauseNodeDefinition dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface PipelinePauseNodeDefinition {
   id: string;
   type: "pause";
@@ -90,15 +103,19 @@ export interface PipelinePauseNodeDefinition {
   policy?: string | PipelinePolicyReference;
 }
 
+/** Type métier PipelineNodeDefinition utilisé pour représenter une étape ou un résultat du cycle de vie du pipeline. */
 export type PipelineNodeDefinition =
   | PipelineAgentNodeDefinition
   | PipelinePauseNodeDefinition;
 
+/** Contrat fonctionnel de PipelineV3Definition dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface PipelineV3Definition {
   version: 3;
   id: string;
   title: string;
   promotion?: NormalizedPromotionPolicy;
+  /** Nombre maximal de nœuds agent actifs simultanément dans un run de ce pipeline. */
+  maxConcurrency?: number;
   agents?: Record<string, unknown>;
   policies?: Record<string, PipelinePolicyReference>;
   nodes: PipelineNodeDefinition[];
@@ -106,6 +123,7 @@ export interface PipelineV3Definition {
   filePath?: string;
 }
 
+/** Contrat fonctionnel de CompiledPipelineNode dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface CompiledPipelineNode {
   id: string;
   kind: "agent" | "pause";
@@ -127,11 +145,14 @@ export interface CompiledPipelineNode {
   policy: NormalizedPipelinePolicy;
 }
 
+/** Contrat fonctionnel de CompiledPipelineProgram dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface CompiledPipelineProgram {
   version: 3;
   id: string;
   title: string;
   promotion: NormalizedPromotionPolicy;
+  /** Nombre maximal de nœuds agent actifs simultanément dans un run de ce pipeline. */
+  maxConcurrency?: number;
   nodes: readonly CompiledPipelineNode[];
   nodesById: ReadonlyMap<string, CompiledPipelineNode>;
   dependentsById: ReadonlyMap<string, readonly string[]>;
@@ -139,11 +160,13 @@ export interface CompiledPipelineProgram {
   terminalNodeIds: readonly string[];
 }
 
+/** Contrat fonctionnel de PipelineCompileResult dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface PipelineCompileResult {
   program?: CompiledPipelineProgram;
   errors: string[];
 }
 
+/** Contrat fonctionnel de PipelineRuntimeSnapshot dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface PipelineRuntimeSnapshot {
   runId: string;
   pipelineId: string;
@@ -156,16 +179,17 @@ export interface PipelineRuntimeSnapshot {
   nodeInterviewHistories?: Record<string, PipelineInterviewSnapshot>;
   finalArtifact?: PipelineArtifact;
   diagnostics: PipelineRuntimeDiagnostic[];
-  /** Maximum number of agent nodes that may be active in this run. */
+  /** Nombre maximal de nœuds agent actifs simultanément dans ce run. */
   maxConcurrency?: number;
-  /** Durable adapter state required to resume isolated workspace effects. */
+  /** État durable de l'adaptateur requis pour reprendre les effets isolés sur le workspace. */
   sandboxRuns?: Record<string, PipelineSandboxRunSnapshot>;
-  /** Frozen dynamic plan and durable proof of whether it has already expanded. */
+  /** Plan dynamique figé et preuve durable de son éventuelle expansion. */
   executionPlan?: ExecutionPlanSnapshot;
   createdAt: string;
   updatedAt: string;
 }
 
+/** Type métier PipelineSandboxIntegrationState utilisé pour représenter une étape ou un résultat du cycle de vie du pipeline. */
 export type PipelineSandboxIntegrationState =
   | "sandbox_created"
   | "checkpointed"
@@ -174,6 +198,7 @@ export type PipelineSandboxIntegrationState =
   | "resume_divergence"
   | "integrated";
 
+/** Contrat fonctionnel de PipelineSandboxCheckpointSnapshot dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface PipelineSandboxCheckpointSnapshot {
   status: "checkpointed" | "no_changes";
   commit: string;
@@ -188,6 +213,7 @@ export interface PipelineSandboxCheckpointSnapshot {
   };
 }
 
+/** Contrat fonctionnel de PipelineSandboxRunSnapshot dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface PipelineSandboxRunSnapshot {
   sandboxName: string;
   sandboxId?: string;
@@ -206,6 +232,7 @@ export interface PipelineSandboxRunSnapshot {
   resumeDiagnostic?: string;
 }
 
+/** Contrat fonctionnel de PipelineRuntimeNodeSnapshot dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface PipelineRuntimeNodeSnapshot {
   status: "pending" | "running" | "paused" | "completed" | "failed" | "cancelled";
   attempts: number;
@@ -213,6 +240,7 @@ export interface PipelineRuntimeNodeSnapshot {
   completedAt?: string;
 }
 
+/** Contrat fonctionnel de PipelinePauseSnapshot dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface PipelinePauseSnapshot {
   id: string;
   nodeId: string;
@@ -226,13 +254,16 @@ export interface PipelinePauseSnapshot {
   sandboxResumeDivergence?: PipelineSandboxResumeDivergence;
 }
 
+/** Type métier PipelineInterviewState utilisé pour représenter une étape ou un résultat du cycle de vie du pipeline. */
 export type PipelineInterviewState = "question";
 
+/** Contrat fonctionnel de PipelineInterviewTurn dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface PipelineInterviewTurn {
   role: "agent" | "user";
   content: string;
 }
 
+/** Contrat fonctionnel de PipelineInterviewSnapshot dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface PipelineInterviewSnapshot {
   nodeId: string;
   protocol: string;
@@ -245,14 +276,18 @@ export interface PipelineInterviewSnapshot {
   finalOutputRequestsUsed?: number;
 }
 
+/** Constante PIPELINE_NODE_ACP_HISTORY_ARTIFACT_NAME qui fixe un contrat partagé du pipeline. */
 export const PIPELINE_NODE_ACP_HISTORY_ARTIFACT_NAME = "acpNodeHistory";
+/** Constante PIPELINE_NODE_ACP_HISTORY_ARTIFACT_TYPE qui fixe un contrat partagé du pipeline. */
 export const PIPELINE_NODE_ACP_HISTORY_ARTIFACT_TYPE = "acp.node-history/v1";
 
+/** Contrat fonctionnel de PipelineInterviewStructuredOutput dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface PipelineInterviewStructuredOutput {
   state: "ready";
   content: string;
 }
 
+/** Contrat fonctionnel de PipelineRuntimeDiagnostic dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface PipelineRuntimeDiagnostic {
   nodeId?: string;
   attempt?: number;
@@ -260,6 +295,7 @@ export interface PipelineRuntimeDiagnostic {
   message: string;
 }
 
+/** Type métier PipelineRuntimeResult utilisé pour représenter une étape ou un résultat du cycle de vie du pipeline. */
 export type PipelineRuntimeResult =
   | { status: "completed"; runId: string; artifact?: PipelineArtifact; snapshot: PipelineRuntimeSnapshot }
   | { status: "paused"; runId: string; pause: PipelinePauseSnapshot; snapshot: PipelineRuntimeSnapshot }
@@ -271,12 +307,14 @@ export type PipelineRuntimeResult =
       promotion?: "rejected" | "cancelled";
     };
 
+/** Contrat fonctionnel de PipelineResumeDecision dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface PipelineResumeDecision {
   pauseId: string;
   kind: "approve" | "answer" | "complete-interview" | "reject";
   value?: unknown;
 }
 
+/** Contrat fonctionnel de PipelineNodeExecutionInput dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface PipelineNodeExecutionInput {
   runId: string;
   attempt?: number;
@@ -286,10 +324,11 @@ export interface PipelineNodeExecutionInput {
   signal: AbortSignal;
   onSandboxRunState?: (state: PipelineSandboxRunSnapshot) => void | Promise<void>;
   resumeSandboxRun?: PipelineSandboxRunSnapshot;
-  /** Latest retained Agent Checkpoint for each satisfied direct dependency. */
+  /** Dernier Agent Checkpoint conservé pour chaque dépendance directe satisfaite. */
   dependencyCheckpoints?: PipelineDependencyCheckpoint[];
 }
 
+/** Contrat fonctionnel de PipelineDependencyCheckpoint dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface PipelineDependencyCheckpoint {
   runId: string;
   nodeId: string;
@@ -299,48 +338,60 @@ export interface PipelineDependencyCheckpoint {
   checkpoint: PipelineSandboxCheckpointSnapshot;
 }
 
+/** Contrat fonctionnel de AgentNodeSessionTurnInput dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface AgentNodeSessionTurnInput extends PipelineNodeExecutionInput {
   replay?: boolean;
 }
 
+/** Contrat fonctionnel de AgentNodeSessionActivity dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface AgentNodeSessionActivity {
   kind: "message" | "thought" | "status";
   content: string;
 }
 
+/** Contrat fonctionnel de PipelineNodeExecutionSuccess dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface PipelineNodeExecutionSuccess {
   artifact: Omit<PipelineArtifact, "producerNodeId">;
 }
 
+/** Contrat fonctionnel de PipelineNodeExecutionFailure dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface PipelineNodeExecutionFailure {
   code: string;
   message: string;
   retryable?: boolean;
 }
 
+/** Type métier PipelineNodeExecutionResult utilisé pour représenter une étape ou un résultat du cycle de vie du pipeline. */
 export type PipelineNodeExecutionResult =
   | PipelineNodeExecutionSuccess
   | PipelineNodeExecutionFailure;
 
+/** Contrat fonctionnel de AgentNodeSession dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface AgentNodeSession {
   readonly runId: string;
   readonly nodeId: string;
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
   send(input: AgentNodeSessionTurnInput): Promise<PipelineNodeExecutionResult>;
   onActivity?(handler: (activity: AgentNodeSessionActivity) => void): () => void;
+/** Termine cette étape du cycle de vie et libère les ressources qui lui appartiennent. */
   cancel(): Promise<void>;
+/** Termine cette étape du cycle de vie et libère les ressources qui lui appartiennent. */
   close(): Promise<void>;
 }
 
+/** Contrat fonctionnel de AgentNodeSessionFactoryInput dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface AgentNodeSessionFactoryInput {
   runId: string;
   node: CompiledPipelineNode;
   signal: AbortSignal;
 }
 
+/** Type métier AgentNodeSessionFactory utilisé pour représenter une étape ou un résultat du cycle de vie du pipeline. */
 export type AgentNodeSessionFactory = (
   input: AgentNodeSessionFactoryInput,
 ) => Promise<AgentNodeSession>;
 
+/** Contrat fonctionnel de PipelineRuntimeAdapter dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface PipelineRuntimeAdapter {
   createSession: AgentNodeSessionFactory;
   execute?(input: PipelineNodeExecutionInput): Promise<PipelineNodeExecutionResult>;

@@ -1,6 +1,8 @@
+> Document historique de conception. Le parcours CLI actuel est documenté dans [README.md](README.md) et utilise uniquement `slopify tasks`.
+
 # Roadmap Slopify
 
-> Dernière mise à jour : 24 juillet 2026
+> Dernière mise à jour : 13 octobre 2026
 
 ## Vision
 
@@ -844,6 +846,30 @@ Les runners GitHub standards peuvent ne pas disposer de la virtualisation requis
 | Cursor | Oui | ACP à étudier | Non pour v1 |
 | Pi | Oui | À étudier | Non pour v1 |
 | Vibe | Oui | À étudier | Non pour v1 |
+
+---
+
+## P10 — Étude : exécution Pi uniquement
+
+**Priorité : à évaluer après stabilisation du lot `slopify tasks`**
+
+### Contexte
+
+Le runtime d'exécution des tâches (`dockerTaskExecutor` + adaptateurs `piTaskAdapter` et `codexAdapter`) supporte aujourd'hui deux agents. Les lots et la revue combinée finale tournent sur Pi. Si le support Codex n'apporte plus de cas d'usage réels, le restreindre à Pi uniquement peut simplifier nettement le code.
+
+### Actions
+
+- [ ] comparer la complexité réelle des deux adaptateurs (branches, diagnostics, code spécifique) ;
+- [ ] lister ce que la suppression de `codexAdapter` simplifierait : harness distinct, copie des sessions `$HOME/.codex/sessions`, `nativeCodexFailures`, double couverture de tests ;
+- [ ] vérifier les cas d'usage qui exigent encore Codex (modèles disponibles, coût, tickets existants) ;
+- [ ] si le gain est net : restreindre le champ `agent` du batch à `pi` uniquement, simplifier le code et la suite de tests ;
+- [ ] conserver le contrat `TaskAgentAdapter` pour pouvoir réintroduire un second agent plus tard sans refonte.
+
+### Critères d'acceptation
+
+- [ ] une décision explicite « Pi uniquement » ou « multi-agents » est documentée ici avec sa justification ;
+- [ ] la validation du champ `agent` reste stricte et actionnable ;
+- [ ] la suite de tests couvre le chemin retenu sans duplication d'adaptateurs.
 
 ---
 

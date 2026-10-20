@@ -1,0 +1,9 @@
+[main (root-commit) 779a273] Initialize isolated Vibe audit fixture
+ 7 files changed, 77 insertions(+)
+ create mode 100644 .acp/acp-agents.json
+ create mode 100644 .acp/agents/simple-implementer.md
+ create mode 100644 .acp/pipelines/simple.yaml
+ create mode 100644 .agents/skills/implement/SKILL.md
+ create mode 100644 .agents/skills/implement/agents/openai.yaml
+ create mode 100644 .gitignore
+ create mode 100644 README.md

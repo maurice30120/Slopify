@@ -1,6 +1,7 @@
 import * as assert from "node:assert/strict";
 import { test } from "node:test";
 
+import { renderRuntimeTemplate } from "../dist/PipelineRuntime.js";
 import {
   PipelineRuntime,
   compilePipelineV3Definition,
@@ -22,6 +23,7 @@ const agents = { Codex: {} };
 
 function sessionAdapter(
   execute: (input: PipelineNodeExecutionInput) => Promise<PipelineNodeExecutionResult>,
+  checkpointDiff = "",
 ): PipelineRuntimeAdapter {
   const executeWithCheckpoint = async (input: PipelineNodeExecutionInput): Promise<PipelineNodeExecutionResult> => {
     const result = await execute(input);
@@ -40,7 +42,7 @@ function sessionAdapter(
           commit: `checkpoint-${input.node.id}-${attempt}`,
           remote: `remote-${input.node.id}`,
           ref: `refs/checkpoints/${input.node.id}-${attempt}`,
-          preview: { baseCommit: "base", checkpointCommit: `checkpoint-${input.node.id}-${attempt}`, fileCount: 0, files: [], diff: "" },
+          preview: { baseCommit: "base", checkpointCommit: `checkpoint-${input.node.id}-${attempt}`, fileCount: checkpointDiff ? 1 : 0, files: checkpointDiff ? ["runtime.ts"] : [], diff: checkpointDiff },
         },
       });
     }
@@ -826,6 +828,7 @@ test("PipelineRuntime pauses an interview question, records the answer, then pro
         id: "plan",
         agent: "Codex",
         prompt: "Plan {{userPrompt}}",
+        policy: { filesystem: "workspace-write", terminal: "none", network: "disabled", promotion: "auto-apply" },
         interaction: { protocol: "proposed-plan", repairAttempts: 0 },
         output: { name: "plan", type: "acp.grill-decision/v1", format: "markdown" },
       },
@@ -842,8 +845,9 @@ test("PipelineRuntime pauses an interview question, records the answer, then pro
     ],
   }, agents).program!;
   const prompts: string[] = [];
-  const runtime = new PipelineRuntime(sessionAdapter(async ({ prompt }) => {
+  const runtime = new PipelineRuntime(sessionAdapter(async ({ prompt, resumeSandboxRun }) => {
       prompts.push(prompt);
+      assert.equal(resumeSandboxRun, undefined, 'a completed checkpoint must not replay the previous interview answer');
       if (prompts.length === 1) {
         return { artifact: { name: "plan", type: "acp.grill-decision/v1", format: "markdown", value: proposedQuestion("Which API?", "Use the public API.") } };
       }
@@ -2205,3 +2209,37 @@ class RecordingRunStore implements PipelineRunStore {
     return this.delegate.listResumable();
   }
 }
+
+
+test("dynamic tickets inherit approved delivery checkpoints and explicit output contracts", async () => {
+  const program = compilePipelineV3Definition({ version: 3, id: "delivery-context", title: "Delivery context", nodes: [
+    { id: "tasks", agent: "Codex", prompt: "Tasks", policy: { filesystem: "workspace-write" }, output: { name: "graph", type: "acp.ticket-graph/v1", format: "json" } },
+    { id: "approval", type: "pause", pause: "approval", needs: ["tasks"], content: "Read `.scratch/example/spec.md`: [stderr] then [stdout].", output: { name: "approved", type: "acp.sequential-delivery/v1", format: "markdown" } },
+  ] }, agents).program!;
+  const runtime = new PipelineRuntime(sessionAdapter(async input => {
+    if (input.node.id === "tasks") return { artifact: { name: "graph", type: "acp.ticket-graph/v1", format: "json", value: { contract: "acp.ticket-graph/v1", tickets: [{ id: "ticket", title: "Ticket", scope: [], needs: [], validation: [] }] } } };
+    assert.match(input.prompt, /acp\.(implementation-result|verification-report)\/v1/);
+    assert.match(input.prompt, /\[stderr\] then \[stdout\]/);
+    if (input.node.id === "final-review") {
+      assert.match(input.prompt, /fixed review base is base/);
+      assert.match(input.prompt, /Complete retained checkpoint evidence/);
+      assert.ok(input.prompt.includes("@@ -1 +1 @@\n-before\n+after"));
+      assert.match(input.prompt, /Do not reread files or run exploratory tools/);
+    }
+    if (input.node.id === "ticket") assert.deepEqual(input.dependencyCheckpoints?.map(item => item.nodeId), ["tasks"]);
+    return executionPlanArtifact(input.node.id);
+  }, "diff --git a/runtime.ts b/runtime.ts\n@@ -1 +1 @@\n-before\n+after"));
+  const paused = await runtime.start(program);
+  assert.equal(paused.status, "paused");
+  if (paused.status !== "paused") return;
+  const completed = await runtime.resume(paused.snapshot.runId, { pauseId: paused.pause.id, kind: "approve", value: paused.pause.content });
+  assert.equal(completed.status, "completed");
+});
+
+
+test("typed ticket documentation paths remain visible to Markdown handoff readers", () => {
+  const graph = { contract: "acp.ticket-graph/v1", documentation: ".scratch/example/issues/", tickets: [] };
+  const rendered = renderRuntimeTemplate("{{inputs.tickets}}", {}, { tickets: { name: "tickets", type: "acp.ticket-graph/v1", format: "json", value: graph, producerNodeId: "tasks" } });
+  assert.match(rendered, /`\.scratch\/example\/issues\/`/);
+  assert.deepEqual(JSON.parse(rendered.split("\n")[0]), graph);
+});

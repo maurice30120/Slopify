@@ -1,6 +1,6 @@
 # Docker Sandboxes face au contrat `acp-sandcastle`
 
-Date de vérification : 2026-07-24.
+Date de vérification : 2026-09-23.
 
 ## Synthèse
 
@@ -64,7 +64,18 @@ La surface publique documentée est la CLI autonome `sbx`, distincte de `docker 
 
 ## Disponibilité locale vérifiée
 
-L'environnement courant possède `sbx` version `0.35.0`. Le binaire Docker est en version `29.1.2` (build `890dcca877`), mais `docker sandbox --help` affiche l'aide générale : Docker Sandboxes n'est pas une sous-commande disponible via ce binaire. L'intégration doit donc détecter et invoquer `sbx`, et vérifier sa version/capacité indépendamment de la présence de Docker.
+L'environnement courant utilise Colima comme runtime Docker, avec le contexte Docker `colima` ; Docker Desktop n'est donc pas la référence locale. Les versions observées et les références officielles sont :
+
+| Composant | Version locale | Référence officielle |
+|---|---:|---:|
+| Runtime Docker | Colima `0.10.3` | — |
+| Docker CLI | `29.1.2` | Docker Engine `29.8.1` |
+| Docker Compose | `2.40.3` | Projet Compose `5.5.1` |
+| Docker Sandboxes (`sbx`) | `0.42.1` | Dernière stable `0.45.1` |
+
+La version `29.8.1` est une référence de version officielle de Docker Engine, pas une mesure du daemon Colima. Lors du contrôle, le client Docker répondait mais le daemon Colima n'était pas démarré ; la version effective de l'Engine local reste donc à vérifier après démarrage de Colima. Les versions de référence proviennent des [notes de version Docker Engine](https://docs.docker.com/engine/release-notes/29/), des [releases Docker Compose](https://github.com/docker/compose/releases) et des [releases Docker Sandboxes](https://github.com/docker/sbx-releases/releases).
+
+`docker sandbox` n'est pas une sous-commande disponible via ce binaire : Docker Sandboxes est piloté par la CLI autonome `sbx`. L'intégration doit donc détecter et invoquer `sbx`, puis vérifier sa version et ses capacités indépendamment de Docker CLI, de Docker Engine et de Docker Desktop.
 
 Cette distinction correspond à la documentation : Docker présente Sandboxes sous la commande `sbx`, installée séparément, et non comme une garantie liée à une version donnée du Docker CLI. Sources : [Docker Sandboxes](https://docs.docker.com/ai/sandboxes/) et [Get started](https://docs.docker.com/ai/sandboxes/get-started/).
 

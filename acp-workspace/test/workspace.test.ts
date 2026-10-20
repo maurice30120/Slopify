@@ -27,18 +27,24 @@ test('public entry point parses native configuration', () => {
   assert.deepEqual(config.errors, []);
 });
 
-test('accepts only Codex for the sandbox transport with corrective errors', () => {
+test('accepts Codex and Vibe for the sandbox transport with corrective errors', () => {
   const accepted = parseAcpConfig(JSON.stringify({ agents: {
     Isolated: { transport: 'sandbox', agent: 'codex', model: 'gpt-5.6-codex', effort: 'high' },
   } }));
   assert.deepEqual(accepted.errors, []);
   assert.equal(accepted.agents.Isolated.transport, 'sandbox');
 
+  const vibe = parseAcpConfig(JSON.stringify({ agents: {
+    Vibe: { transport: 'sandbox', agent: 'vibe', model: 'mistral-medium-latest' },
+  } }));
+  assert.deepEqual(vibe.errors, []);
+  assert.equal('agent' in vibe.agents.Vibe ? vibe.agents.Vibe.agent : undefined, 'vibe');
+
   const rejected = parseAcpConfig(JSON.stringify({ agents: {
     Other: { transport: 'sandbox', agent: 'pi', model: 'pi-model' },
   } }));
   assert.equal(rejected.agents.Other, undefined);
-  assert.match(rejected.errors.join('\n'), /must be "codex".*other Docker Sandbox agents are not supported yet/);
+  assert.match(rejected.errors.join('\n'), /must be "codex" or "vibe"/);
 });
 
 test('writes and removes agents in the single ACP catalogue while preserving its envelope', () => {
@@ -105,6 +111,51 @@ test('WorkspaceRuntime completes the Codex Docker Sandbox tracer path as no_chan
 
   assert.deepEqual(outcome, { text: '', promotion: 'no_changes' });
   assert.ok(calls.some(call => call.args[0] === 'create' && call.args.includes('--clone')));
+  assert.deepEqual(calls.at(-1)?.args.slice(0, 2), ['rm', '--force']);
+});
+
+test('WorkspaceRuntime preserves the configured Vibe agent through the ACP sandbox bridge', async t => {
+  const cwd = workspace();
+  t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(cwd, '.acp'), { recursive: true });
+  fs.writeFileSync(path.join(cwd, '.acp', 'acp-agents.json'), JSON.stringify({ agents: {
+    'Vibe Sandbox': { transport: 'sandbox', agent: 'vibe', model: 'mistral-medium-latest' },
+  } }));
+  const calls: SubprocessRequest[] = [];
+  const runtime = createWorkspaceRuntime({
+    workspaceCwd: cwd,
+    host: {
+      permissionContext: () => undefined,
+      logger: { log: () => undefined, error: () => undefined },
+    },
+    sandboxExecutor: async request => {
+      calls.push(request);
+      if (request.command === 'sbx' && request.args.includes('vibe')) {
+        return { exitCode: 0, stderr: '', stdout: JSON.stringify([
+          { type: 'message', role: 'assistant', content: [{ type: 'text', text: 'Inspection complete.' }] },
+        ]) };
+      }
+      return fakeSandboxResponse(request);
+    },
+  });
+
+  const outcome = await runtime.runAgent({
+    workspaceCwd: cwd, agentName: 'Vibe Sandbox', runId: 'vibe-regression', nodeId: 'verify', attempt: 1,
+    promptText: 'Inspect without changing files.', sideEffects: 'workspace',
+  });
+
+  assert.deepEqual(outcome, { text: 'Inspection complete.', promotion: 'no_changes' });
+  const create = calls.find(call => call.command === 'sbx' && call.args[0] === 'create' && call.args.includes('--clone'));
+  assert.equal(create?.args.at(-2), 'docker.io/sbx/vibe-kit:latest');
+  const launch = calls.find(call => call.command === 'sbx' && call.args[0] === 'exec' && call.args.includes('vibe'));
+  assert.ok(launch, 'the selected Vibe agent must execute inside the sandbox');
+  assert.ok(launch.args.includes('--prompt'));
+  assert.deepEqual(launch.args.slice(1, 3), ['--env', 'VIBE_ACTIVE_MODEL=mistral-medium-latest']);
+  assert.ok(launch.args.includes('--trust'));
+  const models = launch.args.find(arg => arg.startsWith('VIBE_MODELS='));
+  assert.ok(models);
+  assert.equal(JSON.parse(models.slice('VIBE_MODELS='.length))['mistral-medium-latest'].name, 'mistral-medium-latest');
+  assert.equal(calls.some(call => call.args[0] === 'exec' && call.args[2] === 'codex'), false);
   assert.deepEqual(calls.at(-1)?.args.slice(0, 2), ['rm', '--force']);
 });
 

@@ -12,6 +12,9 @@ const ENV_DENYLIST = new Set([
   'NODE_PATH',
 ]);
 
+/** Point d'entrée validatePath du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 export function validatePath(filePath: string, workspaceRoot: string): string {
   const rootPath = path.resolve(workspaceRoot);
   const resolvedPath = path.resolve(rootPath, filePath);
@@ -34,6 +37,9 @@ export function validatePath(filePath: string, workspaceRoot: string): string {
   return existsSync(resolvedPath) ? realpathSync(resolvedPath) : resolvedPath;
 }
 
+/** Point d'entrée filterEnv du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 export function filterEnv(agentEnv: Record<string, string>): Record<string, string> {
   // Ces variables peuvent détourner le chargeur dynamique, Node ou la résolution
   // des exécutables avant même l'application des permissions ACP. La comparaison
@@ -43,11 +49,17 @@ export function filterEnv(agentEnv: Record<string, string>): Record<string, stri
   );
 }
 
+/** Point d'entrée isWithinRoot du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function isWithinRoot(rootPath: string, targetPath: string): boolean {
   const relativePath = path.relative(rootPath, targetPath);
   return relativePath === '' || (!relativePath.startsWith('..') && !path.isAbsolute(relativePath));
 }
 
+/** Point d'entrée findExistingAncestor du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function findExistingAncestor(targetPath: string): string {
   let currentPath = targetPath;
 

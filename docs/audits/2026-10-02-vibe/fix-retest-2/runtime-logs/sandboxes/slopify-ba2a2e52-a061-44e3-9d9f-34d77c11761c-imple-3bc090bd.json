@@ -1,0 +1,19 @@
+{
+  "sandboxName": "slopify-ba2a2e52-a061-44e3-9d9f-34d77c11761c-imple-3bc090bd",
+  "runId": "ba2a2e52-a061-44e3-9d9f-34d77c11761c",
+  "nodeId": "implementation",
+  "attempt": 1,
+  "status": "failed",
+  "startedAt": "2026-10-02T12:27:01.607Z",
+  "finishedAt": "2026-10-02T12:27:40.924Z",
+  "retained": false,
+  "stdout": "",
+  "stderr": "Warning: /private/var/folders/yd/6910m5zs4v7d7308h_8ypmy80000gp/T/slopify-vibe-audit-dUOegF is not trusted; project configuration (.agents/) will be ignored. Re-run with --trust to trust this folder temporarily.\nError: API error from mistral (model: mistral-vibe-cli-latest): Invalid API key (from env var MISTRAL_API_KEY). Please check your API key and try again.\n",
+  "error": "Unable to run Mistral Vibe non-interactively: Warning: /private/var/folders/yd/6910m5zs4v7d7308h_8ypmy80000gp/T/slopify-vibe-audit-dUOegF is not trusted; project configuration (.agents/) will be ignored. Re-run with --trust to trust this folder temporarily.\nError: API error from mistral (model: mistral-vibe-cli-latest): Invalid API key (from env var MISTRAL_API_KEY). Please check your API key and try again.",
+  "cleanup": {
+    "attempted": true,
+    "exitCode": 0,
+    "stdout": "Deleting sandbox slopify-ba2a2e52-a061-44e3-9d9f-34d77c11761c-imple-3bc090bd...\nSandbox 'slopify-ba2a2e52-a061-44e3-9d9f-34d77c11761c-imple-3bc090bd' removed\n",
+    "stderr": "Warning: sandbox \"slopify-ba2a2e52-a061-44e3-9d9f-34d77c11761c-imple-3bc090bd\" runs on an in-container clone (--clone). Any\n  commits the agent made inside the sandbox are lost on removal\n  unless preserved first. To keep them, before removing run:\n      git fetch sandbox-slopify-ba2a2e52-a061-44e3-9d9f-34d77c11761c-imple-3bc090bd\n  Fetched branches are mirrored into refs/sandboxes/slopify-ba2a2e52-a061-44e3-9d9f-34d77c11761c-imple-3bc090bd/* and survive\n  removal; recover any branch with:\n      git branch <local-name> refs/sandboxes/slopify-ba2a2e52-a061-44e3-9d9f-34d77c11761c-imple-3bc090bd/<branch>\n  Alternatively, ask the agent to push them to an upstream remote.\n"
+  }
+}

@@ -126,6 +126,7 @@ function command(cwd: string): CliRunCommand {
     kind: 'run',
     pipelineName: 'file-backed',
     prompt: 'simplify context',
+    agent: 'Codex CLI',
     cwd,
     json: false,
     verbose: false,

@@ -1,8 +1,11 @@
 import { validateMultiAgentArtifact, type TicketGraphArtifact } from "./MultiAgentArtifacts";
 
+/** Constante EXECUTION_PLAN_CONTRACT qui fixe un contrat partagé du pipeline. */
 export const EXECUTION_PLAN_CONTRACT = "acp.execution-plan/v1" as const;
+/** Constante FINAL_REVIEW_NODE_ID qui fixe un contrat partagé du pipeline. */
 export const FINAL_REVIEW_NODE_ID = "final-review" as const;
 
+/** Contrat fonctionnel de ExecutionPlanNode dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface ExecutionPlanNode {
   readonly id: string;
   readonly kind: "implementation";
@@ -10,9 +13,10 @@ export interface ExecutionPlanNode {
   readonly needs: readonly string[];
 }
 
+/** Contrat fonctionnel de ExecutionPlan dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface ExecutionPlan {
   readonly contract: typeof EXECUTION_PLAN_CONTRACT;
-  /** Revision of the plan instance, independent from its schema contract version. */
+  /** Révision de cette instance de plan, indépendante de la version de son contrat de schéma. */
   readonly revision: number;
   readonly nodes: readonly ExecutionPlanNode[];
   readonly terminalNodeIds: readonly string[];
@@ -23,16 +27,19 @@ export interface ExecutionPlan {
   };
 }
 
+/** Contrat fonctionnel de ExecutionPlanCompileResult dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface ExecutionPlanCompileResult {
   readonly plan?: ExecutionPlan;
   readonly errors: string[];
 }
 
+/** Contrat fonctionnel de ExecutionPlanSnapshotValidationResult dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface ExecutionPlanSnapshotValidationResult {
   readonly snapshot?: ExecutionPlanSnapshot;
   readonly errors: string[];
 }
 
+/** Contrat fonctionnel de ExecutionPlanSnapshot dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface ExecutionPlanSnapshot {
   plan: ExecutionPlan;
   expansion:
@@ -40,6 +47,9 @@ export interface ExecutionPlanSnapshot {
     | { status: "expanded"; expandedNodeIds: readonly string[]; expandedAt: string };
 }
 
+/** Point d'entrée compileExecutionPlan du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 export function compileExecutionPlan(
   ticketGraph: unknown,
   options: { revision?: number } = {},
@@ -85,6 +95,9 @@ export function compileExecutionPlan(
   return { plan: deepFreeze(plan), errors: [] };
 }
 
+/** Point d'entrée validateExecutionPlan du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 export function validateExecutionPlan(value: unknown): ExecutionPlanCompileResult {
   if (!isRecord(value)) return { errors: ["Execution Plan must be an object."] };
   if (value.contract !== EXECUTION_PLAN_CONTRACT) {
@@ -152,6 +165,9 @@ export function validateExecutionPlan(value: unknown): ExecutionPlanCompileResul
     : { plan: deepFreeze(cloneJson(value) as unknown as ExecutionPlan), errors: [] };
 }
 
+/** Point d'entrée validateExecutionPlanSnapshot du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 export function validateExecutionPlanSnapshot(value: unknown): ExecutionPlanSnapshotValidationResult {
   if (!isRecord(value)) return { errors: ["Execution Plan snapshot must be an object."] };
   const planValidation = validateExecutionPlan(value.plan);
@@ -186,6 +202,9 @@ export function validateExecutionPlanSnapshot(value: unknown): ExecutionPlanSnap
     : { snapshot: deepFreeze(cloneJson(value) as unknown as ExecutionPlanSnapshot), errors: [] };
 }
 
+/** Point d'entrée markExecutionPlanExpanded du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 export function markExecutionPlanExpanded(
   snapshot: ExecutionPlanSnapshot,
   expandedNodeIds: readonly string[],
@@ -213,6 +232,9 @@ export function markExecutionPlanExpanded(
   });
 }
 
+/** Point d'entrée validateTicketDependencies du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function validateTicketDependencies(tickets: TicketGraphArtifact["tickets"]): string[] {
   const ids = new Set(tickets.map(ticket => ticket.id));
   const dependencies = new Map(tickets.map(ticket => [ticket.id, ticket.needs]));
@@ -229,6 +251,9 @@ function validateTicketDependencies(tickets: TicketGraphArtifact["tickets"]): st
   return errors;
 }
 
+/** Point d'entrée detectCycles du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function detectCycles(dependencies: ReadonlyMap<string, readonly string[]>): string[] {
   const visiting = new Set<string>();
   const visited = new Set<string>();
@@ -250,24 +275,39 @@ function detectCycles(dependencies: ReadonlyMap<string, readonly string[]>): str
     : [];
 }
 
+/** Point d'entrée sameIds du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function sameIds(actual: readonly string[], expected: readonly string[]): boolean {
   const sortedExpected = [...expected].sort();
   return actual.length === sortedExpected.length
     && [...actual].sort().every((id, index) => id === sortedExpected[index]);
 }
 
+/** Point d'entrée isStringArray du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every(item => typeof item === "string" && item.trim() !== "");
 }
 
+/** Point d'entrée isRecord du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+/** Point d'entrée cloneJson du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function cloneJson<T>(value: T): T {
   return structuredClone(value);
 }
 
+/** Point d'entrée deepFreeze du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function deepFreeze<T>(value: T): T {
   if (typeof value !== "object" || value === null || Object.isFrozen(value)) return value;
   Object.freeze(value);

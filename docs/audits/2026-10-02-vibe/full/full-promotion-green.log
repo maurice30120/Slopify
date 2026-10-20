@@ -1,0 +1,87 @@
+npm notice run slopify@0.1.0 test
+npm notice run npm run build && node --test "dist/test/**/*.test.js"
+npm notice run slopify@0.1.0 build
+npm notice run npm --prefix .. run build -w @acp-client/workspace && npm --prefix .. exec -- tsc -p tsconfig.json --incremental false
+npm notice run @acp-client/workspace@0.0.0 build
+npm notice run tsc -p tsconfig.json --incremental false
+npm notice run slopify-workspace@0.1.0 npx
+npm notice run 'tsc' -p tsconfig.json --incremental false
+✔ parses the run contract with an explicit agent (1.733583ms)
+✔ resolves cwd portably (0.105292ms)
+✔ requires an agent for run and resume (0.331416ms)
+✔ requires a pipeline and prompt (0.083916ms)
+✔ parses list json and verbose options without accepting run-only flags (0.094125ms)
+✔ keeps prompt-looking options after the positional delimiter (0.116ms)
+✔ requires a value for --cwd (0.079834ms)
+✔ --help returns help command (0.051291ms)
+✔ -h returns help command (0.057875ms)
+✔ empty argv returns help command (0.087041ms)
+✔ unknown command throws error with help text (0.06975ms)
+✔ unknown option throws error (0.243916ms)
+✔ run requires both pipeline name and prompt (0.197416ms)
+✔ list with all valid options (0.108792ms)
+✔ run with all valid options (0.125416ms)
+✔ run with -y short option (0.1645ms)
+✔ parses crash recovery by persisted run id (0.072458ms)
+✔ parses --keep-sandboxes independently from --yes (0.043333ms)
+✔ positional delimiter stops option parsing (0.031708ms)
+✔ shows referenced spec and tickets but approves the compact handoff (78.516791ms)
+✔ fails before approval when a required workspace handoff has no files (7.863875ms)
+✔ runs an injected backend and forwards agent metadata (23.029875ms)
+✔ binds the selected CLI agent to agentless pipeline nodes (7.487792ms)
+✔ resumes a persisted pipeline pause after the CLI host is reconstructed (15.214958ms)
+✔ surfaces an Integration Conflict and retries its node through the CLI host (20.42325ms)
+✔ passes workspace services to the backend factory (0.534208ms)
+✔ preflights a workspace-writing pipeline before creating run artifacts (0.560542ms)
+✔ requires a runner from the host or backend (0.767334ms)
+✔ logs agent failures with RPC details (11.991084ms)
+✔ clears run logs through the backend hook (5.842709ms)
+✔ rejects resume and cancel for unknown runs (0.616958ms)
+warning: in the working copy of 'README.md', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'README.md', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of '.scratch/feature/issues/01-fix.md', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of '.scratch/feature/spec.md', LF will be replaced by CRLF the next time Git touches it
+✔ delivery approval inspects checkpoint documents without promoting them to the host (434.430458ms)
+✔ loads the simple, moyen, and full pipeline levels from the workspace catalog (10.799ms)
+✔ keeps the existing specialized pipelines available (2.969917ms)
+✔ answers a v3 question then approves the next pause (18.903333ms)
+✔ recovers a persisted running pipeline instead of starting a new one (4.540125ms)
+✔ translates /done into complete-interview for v3 questions (4.094ms)
+✔ --yes auto-approves approvals but never promotions (3.847709ms)
+✔ json mode prints the normalized final result without pause prompts (3.500792ms)
+✔ plain mode pretty prints object artifacts (3.164458ms)
+✔ reports failed and cancelled final results on stderr (6.158625ms)
+✔ reports a rejected Pipeline Change Set distinctly from cancellation (3.102458ms)
+✔ reports failed final results with node and attempt context when available (3.302791ms)
+✔ keeps asking until a question receives a non-empty answer (3.478ms)
+✔ formatPipelineList with non-empty list in text mode produces stable format (0.13975ms)
+✔ formatPipelineList with non-empty list in JSON mode produces valid JSON (0.068ms)
+✔ formatPipelineList with empty list in text mode shows clear message (0.026542ms)
+✔ formatPipelineList with empty list in JSON mode returns empty array (0.022709ms)
+✔ formatPipelineList with single pipeline in text mode (0.025708ms)
+✔ creates the standalone CLI backend without loading an editor plugin (5.502291ms)
+✔ rejects a CLI-selected agent that is not configured in the workspace (1.937875ms)
+✔ rejects invalid workspace agent configuration before running a pipeline (1.060042ms)
+✔ formats every retained sandbox command as copyable CLI output (0.145333ms)
+✔ formats the complete Pipeline Change Set preview for the Promotion decision (0.175917ms)
+✔ dispatches one implement-ticket run per ticket before review (87.581459ms)
+✔ fails before child execution when a Ticket Graph node has no Markdown adapter (19.658ms)
+✔ cancels pending questions when stdin closes (1.959334ms)
+✔ ask returns user input with whitespace trimmed (0.597125ms)
+✔ confirm with y returns true (0.207959ms)
+✔ confirm with n returns false (0.146458ms)
+✔ confirm with yes returns true (0.145209ms)
+✔ confirm with oui returns true (0.111167ms)
+✔ confirm with o returns true (0.640958ms)
+✔ confirm with empty string returns false (0.168167ms)
+✔ confirm with message displays full message (0.174ms)
+✔ write outputs to stdout with newline (0.159958ms)
+✔ writeError outputs to stderr with newline (0.096ms)
+ℹ tests 67
+ℹ suites 0
+ℹ pass 67
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 543.030458

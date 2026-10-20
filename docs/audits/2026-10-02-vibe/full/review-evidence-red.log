@@ -1,0 +1,182 @@
+npm notice run @acp-client/pipeline@0.0.0 test
+npm notice run npm run clean:test && npm run build && tsc -p tsconfig.test.json && node --test "dist-test/**/*.test.js"
+npm notice run @acp-client/pipeline@0.0.0 clean:test
+npm notice run node -e "require('fs').rmSync('dist-test', { recursive: true, force: true })"
+npm notice run @acp-client/pipeline@0.0.0 build
+npm notice run tsc -p tsconfig.json --incremental false
+✔ CLI AgentNodeSession contract opens, exchanges multiple interview turns, projects temporary activity, and closes (8.372875ms)
+✔ CLI AgentNodeSession contract cancels and closes in-flight work (0.459541ms)
+✔ CLI AgentNodeSession contract classifies failures, retries transport loss, replays interviews, and emits one node_started (0.46525ms)
+✔ CLI AgentNodeSession contract applies policy capability checks before opening and keeps retry close rules stable (0.533584ms)
+✔ Pi AgentNodeSession contract opens, exchanges multiple interview turns, projects temporary activity, and closes (3.994167ms)
+✔ Pi AgentNodeSession contract cancels and closes in-flight work (0.280833ms)
+✔ Pi AgentNodeSession contract classifies failures, retries transport loss, replays interviews, and emits one node_started (0.324166ms)
+✔ Pi AgentNodeSession contract applies policy capability checks before opening and keeps retry close rules stable (0.868583ms)
+✔ VS Code AgentNodeSession contract opens, exchanges multiple interview turns, projects temporary activity, and closes (0.496708ms)
+✔ VS Code AgentNodeSession contract cancels and closes in-flight work (0.175625ms)
+✔ VS Code AgentNodeSession contract classifies failures, retries transport loss, replays interviews, and emits one node_started (0.235375ms)
+✔ VS Code AgentNodeSession contract applies policy capability checks before opening and keeps retry close rules stable (0.286167ms)
+✔ validateMultiAgentArtifact accepts versioned ticket graph artifacts (0.526625ms)
+✔ validateMultiAgentArtifact reports localized contract and field errors (0.404584ms)
+✔ publishMultiAgentArtifact returns a typed PipelineArtifact (0.075708ms)
+✔ compileExecutionPlan derives stable implementation identities, terminals, and final review (0.285375ms)
+✔ compileExecutionPlan represents a new plan revision without mutating the frozen plan (0.111ms)
+✔ compileExecutionPlan rejects duplicate identities, missing dependencies, and cycles (0.122833ms)
+✔ validateExecutionPlan rejects unsupported versions and invalid final review dependencies (1.78475ms)
+✔ validateExecutionPlanSnapshot rejects expansion state that cannot prove one complete expansion (0.233834ms)
+✔ markExecutionPlanExpanded records one complete expansion and rejects a second copy (0.323625ms)
+✔ renderAcpPrompt preserves skills, instructions, and task as separate ACP text blocks (0.629042ms)
+✔ renderAcpPrompt omits empty optional layers and always emits the task (0.073208ms)
+✔ publishPipelineArtifacts writes spec.md and one file per markdown ticket (6.516ms)
+✔ publishPipelineArtifacts replaces stale generated ticket files (10.008042ms)
+✔ normalizePipelinePolicy applies read-only defaults deterministically (0.628125ms)
+✔ validateAdapterSupportsPolicy refuses policies an adapter cannot guarantee (0.114ms)
+✔ evaluateToolPermissionForPolicy denies mutations under read-only policy (0.072541ms)
+✔ legacy mappings preserve existing adapter vocabulary (0.062458ms)
+✔ PipelineRuntime completes a linear pipeline with strict inputs and final artifact (5.127208ms)
+✔ PipelineRuntime fails a terminal workspace-writing node that completes without a checkpoint (0.437959ms)
+✔ PipelineRuntime renders node prompts from start inputs and typed artifacts (0.715542ms)
+✔ PipelineRuntime persists one immutable Execution Plan and restores its expansion state (1.763042ms)
+✔ PipelineRuntime rejects Execution Plan node identities that collide with static nodes (0.259208ms)
+✔ PipelineRuntime compiles and persists a Ticket Graph before the first implementation starts (5.001667ms)
+✔ PipelineRuntime rejects an unsupported structured Ticket Graph version (0.325792ms)
+✔ PipelineRuntime renders pause content from typed inputs (0.354125ms)
+✔ PipelineRuntime supports multiple stable pauses and rejects obsolete resumes (0.6855ms)
+✔ PipelineRuntime resumes a persisted pause after runtime reconstruction (0.5015ms)
+✔ PipelineRuntime emits telemetry through options without EventEmitter surface (0.265625ms)
+✔ PipelineRuntime runs ready nodes together and retries transient failures (0.429667ms)
+✔ PipelineRuntime expands one plan in the main run and respects dependency and concurrency limits (5.08525ms)
+✔ PipelineRuntime resumes an expanded plan without injecting duplicate nodes (0.786125ms)
+✔ PipelineRuntime recovers a partially executed dynamic plan without restarting completed work (1.648292ms)
+✔ PipelineRuntime fail-fast result preserves diagnostics and cancels pending nodes (0.267083ms)
+✔ PipelineRuntime refuses unsupported adapter policies before sending prompts (0.169583ms)
+✔ PipelineRuntime refuses unresolved node skills before sending prompts (0.12225ms)
+✔ PipelineRuntime pauses an interview question, records the answer, then produces a ready artifact for approval (1.470875ms)
+✔ PipelineRuntime completes an interview with complete-interview and rejects later question output (0.73ms)
+✔ PipelineRuntime makes one normalized final output request after complete-interview (0.302625ms)
+✔ PipelineRuntime fails after one invalid final output request without using interview repairs (0.392833ms)
+✔ PipelineRuntime restores a multi-turn interview from snapshot replay and rejects obsolete answers (0.431791ms)
+✔ PipelineRuntime persists node ACP history as structured replay artifact after each meaningful interview exchange (0.578917ms)
+✔ PipelineRuntime repairs one malformed interview output before failing explicitly (0.385834ms)
+✔ PipelineRuntime gives each interview turn its own repair budget (0.572833ms)
+✔ PipelineRuntime serializes interview nodes while ordinary agents can still run (0.307958ms)
+✔ PipelineRuntime returns an interview pause without waiting for ordinary independent nodes (0.514959ms)
+✔ PipelineRuntime keeps technical retries independent from interview repairs (0.2705ms)
+✔ PipelineRuntime replaces an interview session after retryable transport loss (0.252625ms)
+✔ PipelineRuntime replays interview history into a replacement session after transport loss (0.367125ms)
+✔ PipelineRuntime retries non-transport interview failures without replaying history (0.313083ms)
+✔ PipelineRuntime does not let an interview pause mask an ordinary node failure (0.193ms)
+✔ PipelineRuntime opens and closes one AgentNodeSession per non-interactive attempt (0.183167ms)
+✔ PipelineRuntime closes a non-interactive AgentNodeSession when send throws (0.303667ms)
+✔ PipelineRuntime cancels and closes an in-flight non-interactive AgentNodeSession on run cancel (0.202625ms)
+✔ PipelineRuntime keeps an interview AgentNodeSession open across user answers and closes it on final artifact (0.262292ms)
+✔ PipelineRuntime projects temporary agent activity without publishing node artifacts (0.223666ms)
+✔ PipelineRuntime rejects an AgentNodeSession bound to another run or node (0.147958ms)
+✔ PipelineRuntime cancels and closes the active interview session on reject (0.169458ms)
+✔ PipelineRuntime closes active sessions after terminal success and failure are persisted (0.314167ms)
+✖ dynamic tickets inherit approved delivery checkpoints and explicit output contracts (1.419292ms)
+✔ typed ticket documentation paths remain visible to Markdown handoff readers (0.070667ms)
+✔ agent adapter decodes bare and fenced JSON before publishing typed artifacts (1.913416ms)
+✔ agent adapter rejects malformed JSON and preserves Markdown text (0.30525ms)
+✔ repairs missing JSON once in a distinct read-only call while retaining the original checkpoint (0.256ms)
+✔ orders checkpoints by DAG level and declaration order, not declaration alone (1.431208ms)
+✔ parallel agents may finish in opposite orders while finalization stays unique (92.689459ms)
+✔ a multi-parent descendant receives every satisfied dependency checkpoint in stable declaration order (1.250625ms)
+✔ an incompatible descendant composition suspends inspectably and resumes only that descendant (2.031ms)
+✔ a descendant requires checkpoints only from workspace-writing dependencies (0.447792ms)
+✔ persists sandbox identity, base, checkpoint, integration state, and diagnostics before finalization (0.407083ms)
+✔ recovers a running node from its persisted Sandbox Run after process reconstruction (2.379ms)
+✔ approving a node-recovery divergence retries the unfinished node instead of finalizing it (0.81825ms)
+✔ a recovery divergence cancels and drains parallel node sessions before pausing (0.376166ms)
+✔ read-only sandbox checkpoints remain checkpointed instead of being recorded as integrated (0.360917ms)
+✔ recovers a crash after checkpoint persistence and before Promotion without relaunching the agent (0.238459ms)
+✔ a finalization failure persists and emits failed without a premature completed event (3.813917ms)
+✔ an Integration Conflict pauses finalization and approval retries only the incoming node (0.761792ms)
+✔ a sandbox resume divergence pauses without relaunch and approval only retries reconciliation (0.384584ms)
+✔ an Integration Conflict remains retryable without a persistent run store (6.097167ms)
+✔ a persistent Integration Conflict pauses again after approval (0.830833ms)
+✔ completed runs do not remain retained by the fallback store (3.426291ms)
+✔ failed runs do not remain retained by the fallback store (0.39675ms)
+✔ cancelled runs do not remain retained by the fallback store (4.597375ms)
+✔ persists a completed run before notifying a failing observer (4.582083ms)
+✔ a rejected Promotion cancels the run without emitting completed (4.580416ms)
+✔ a cancelled Promotion cancels the run without emitting completed (4.47225ms)
+✔ PipelineService materializes planning artifacts before delivery approval (9.315667ms)
+✔ PipelineService runs a v3 program through PipelineRuntime with two approvals (5.607167ms)
+✔ PipelineService v3 execution requires AgentNodeSession and exposes no runAgent fallback (0.292958ms)
+✔ PipelineService accepts an AgentNodeSession factory for v3 agent nodes (0.293125ms)
+✔ PipelineService cancel clears active v3 runtime sessions (0.373083ms)
+✔ PipelineService calls onPipelineStart only for a new v3 pipeline run (0.5505ms)
+✔ PipelineService projects v3 pause rejection as rejected (1.964667ms)
+✔ PipelineService exposes generic v3 question resume decisions (0.408875ms)
+✔ discoverModelInvokedSkills excludes explicit-only skills deterministically (4.620959ms)
+✔ resolveExplicitPipelineSkills injects disable-model-invocation skills (0.244583ms)
+✔ resolveExplicitPipelineSkills reports missing and disabled skills before execution (0.0865ms)
+✔ resolveExplicitPipelineSkills supports folder aliases and stable path rendering (0.071333ms)
+✔ resolveExplicitPipelineSkills reports ambiguous aliases (0.07525ms)
+✔ resolveExplicitPipelineSkills covers named delivery pipeline skills (0.126ms)
+✔ compilePipelineV3Catalog refuses v2 without implicit conversion (0.464333ms)
+✔ compilePipelineV3Catalog returns compiled v3 programs in deterministic file order (0.986917ms)
+✔ compilePipelineV3Catalog rejects node network policies for Docker Sandbox agents (0.103583ms)
+✔ resolvePipelineV3InstructionFiles preserves instructions separately from the task prompt (1.107375ms)
+✔ resolvePipelineV3InstructionFiles accepts promptFile as a migration alias without concatenating (0.885459ms)
+✔ resolvePipelineV3InstructionFiles keeps promptFile-only nodes as legacy complete tasks (0.869167ms)
+✔ resolvePipelineV3InstructionFiles rejects instructionsFile without a task prompt (6.147791ms)
+✔ resolvePipelineV3InstructionFiles rejects instruction paths outside ACP config root (1.551834ms)
+✔ compilePipelineV3Definition compiles an immutable DAG with parallel-ready roots (1.408125ms)
+✔ compilePipelineV3Definition owns Promotion once at pipeline level (0.13875ms)
+✔ compilePipelineV3Definition rejects cycles, missing dependencies and unsupported versions deterministically (0.09375ms)
+✔ compilePipelineV3Definition enforces strict typed artifact inputs (0.139083ms)
+✔ compilePipelineV3Definition validates agent interview interaction (0.217167ms)
+✔ compilePipelineV3Definition accepts instructionsFile as the public role-file field (1.103958ms)
+✔ compilePipelineV3Definition accepts agent nodes without embedding an agent choice (0.091ms)
+✔ compilePipelineV3Definition rejects node network policy for Docker Sandbox Runs (0.160917ms)
+✔ compilePipelineV3Definition compiles typed workspace handoff metadata (0.138292ms)
+✔ compilePipelineV3Definition rejects invalid workspace handoff metadata (0.074375ms)
+✔ interactive proposed plans expose their pending question (0.624667ms)
+✔ ready proposed plans can be approved (0.111083ms)
+✔ question proposed plans cannot be approved (0.157708ms)
+✔ legacy proposed plans remain approvable (0.050417ms)
+ℹ tests 133
+ℹ suites 0
+ℹ pass 132
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 202.373375
+
+✖ failing tests:
+
+test at dist-test/PipelineRuntime.test.js:2051:22
+✖ dynamic tickets inherit approved delivery checkpoints and explicit output contracts (1.419292ms)
+  AssertionError [ERR_ASSERTION]: The input did not match the regular expression /Complete retained checkpoint evidence/. Input:
+  
+  'User request:\n' +
+    '\n' +
+    'Approved delivery (read the referenced specification and ticket files before making changes):\n' +
+    'Read `.scratch/example/spec.md`: [stderr] then [stdout].\n' +
+    'Review the complete integrated result produced by the immutable Execution Plan against the approved specification, including exact formatting and tests. The fixed review base is base. Start with git diff --stat and git diff against this base. Review only files changed by this Execution Plan, plus the referenced specification/tickets and applicable repository standards. Earlier audit logs and unrelated historical changes are outside this delivery. Do not read whole source or test files: inspect only the changed hunks and at most 100 lines of adjacent context per read. Do not search audit directories or transcripts. Limit exploration to evidence needed to decide compliance, then publish the verdict immediately. Validate tests with npm ci and npm test at the root if needed; never pipe test output through tail without preserving the test exit status. Return the JSON object itself as your final assistant message. Fill this valid JSON template with actual evidence: {"contract":"acp.verification-report/v1","verdict":"passed","categories":[{"name":"spec compliance","required":true,"status":"passed","details":"actual evidence"}]}. Set verdict to failed when requirements fail; category status may be passed, failed or skipped. Check interface visibility, scope, dependencies and actual test results. Include at least one category. No Markdown or prose outside JSON.'
+  
+      at /Users/dhuyet/Documents/POC/Slopify/acp-pipeline/dist-test/PipelineRuntime.test.js:2063:20
+      at Object.executeWithCheckpoint [as send] (/Users/dhuyet/Documents/POC/Slopify/acp-pipeline/dist-test/PipelineRuntime.test.js:42:30)
+      at PipelineRuntime.executeNode (/Users/dhuyet/Documents/POC/Slopify/acp-pipeline/dist/PipelineRuntime.js:461:46)
+      at async PipelineRuntime.advance (/Users/dhuyet/Documents/POC/Slopify/acp-pipeline/dist/PipelineRuntime.js:319:31)
+      at async PipelineRuntime.resume (/Users/dhuyet/Documents/POC/Slopify/acp-pipeline/dist/PipelineRuntimeCoordinator.js:86:24)
+      at async TestContext.<anonymous> (/Users/dhuyet/Documents/POC/Slopify/acp-pipeline/dist-test/PipelineRuntime.test.js:2074:23)
+      at async Test.run (node:internal/test_runner/test:1332:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:911:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: 'User request:\n\nApproved delivery (read the referenced specification and ticket files before making changes):\nRead `.scratch/example/spec.md`: [stderr] then [stdout].\nReview the complete integrated result produced by the immutable Execution Plan against the approved specification, including exact formatting and tests. The fixed review base is base. Start with git diff --stat and git diff against this base. Review only files changed by this Execution Plan, plus the referenced specification/tickets and applicable repository standards. Earlier audit logs and unrelated historical changes are outside this delivery. Do not read whole source or test files: inspect only the changed hunks and at most 100 lines of adjacent context per read. Do not search audit directories or transcripts. Limit exploration to evidence needed to decide compliance, then publish the verdict immediately. Validate tests with npm ci and npm test at the root if needed; never pipe test output through tail without preserving the test exit status. Return the JSON object itself as your final assistant message. Fill this valid JSON template with actual evidence: {"contract":"acp.verification-report/v1","verdict":"passed","categories":[{"name":"spec compliance","required":true,"status":"passed","details":"actual evidence"}]}. Set verdict to failed when requirements fail; category status may be passed, failed or skipped. Check interface visibility, scope, dependencies and actual test results. Include at least one category. No Markdown or prose outside JSON.',
+    expected: /Complete retained checkpoint evidence/,
+    operator: 'match',
+    diff: 'simple'
+  }
+npm error Lifecycle script `test` failed with error:
+npm error code 1
+npm error path /Users/dhuyet/Documents/POC/Slopify/acp-pipeline
+npm error workspace @acp-client/pipeline@0.0.0
+npm error location /Users/dhuyet/Documents/POC/Slopify/acp-pipeline
+npm error command failed
+npm error command sh -c npm run clean:test && npm run build && tsc -p tsconfig.test.json && node --test "dist-test/**/*.test.js"

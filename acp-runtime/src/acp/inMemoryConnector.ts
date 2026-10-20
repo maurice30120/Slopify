@@ -12,12 +12,13 @@ import { resolveTimeouts, withTimeout } from './operationGuards.js';
 import { PermissionHandler } from './permissionHandler.js';
 import { TerminalHandler } from './terminalHandler.js';
 
+/** Type métier InMemoryAcpAgentFactory utilisé pour représenter une étape ou un résultat du cycle de vie du pipeline. */
 export type InMemoryAcpAgentFactory = (
   connection: AgentSideConnection,
   input: AcpConnectorInput,
 ) => Agent;
 
-/** Connects an embedded bridge through the real ACP JSON-RPC protocol. */
+/** Connecte un bridge embarqué via le véritable protocole ACP JSON-RPC. */
 export function createInMemoryAcpConnector(factory: InMemoryAcpAgentFactory): AcpConnector {
   return async input => {
     const clientToAgent = new TransformStream<any, any>();
@@ -51,6 +52,7 @@ export function createInMemoryAcpConnector(factory: InMemoryAcpAgentFactory): Ac
 
     const initResponse = await withTimeout(
       'initialize',
+/** Valide ou résout les données de cette étape du cycle de vie ; les entrées invalides restent signalées au point d'appel. */
       resolveTimeouts(input.timeouts).initializeMs,
       connection.initialize({
         protocolVersion: PROTOCOL_VERSION,

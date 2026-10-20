@@ -22,6 +22,22 @@ test("compilePipelineV3Definition accepts instructionsFile as the public role-fi
   assert.equal(result.program?.nodes[0].promptFile, "../agents/planner.md");
 });
 
+test("compilePipelineV3Definition accepts agent nodes without embedding an agent choice", () => {
+  const result = compilePipelineV3Definition({
+    version: 3,
+    id: "agentless",
+    title: "Agentless",
+    nodes: [{
+      id: "work",
+      prompt: "Work {{userPrompt}}",
+      output: { name: "result", type: "text", format: "text" },
+    }],
+  });
+
+  assert.deepEqual(result.errors, []);
+  assert.equal(result.program?.nodes[0]?.agent, undefined);
+});
+
 test("compilePipelineV3Definition rejects node network policy for Docker Sandbox Runs", () => {
   const definition = {
     version: 3,

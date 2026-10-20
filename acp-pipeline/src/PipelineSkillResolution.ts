@@ -1,3 +1,4 @@
+/** Contrat fonctionnel de PipelineSkillEntry dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface PipelineSkillEntry {
   name: string;
   description: string;
@@ -8,6 +9,7 @@ export interface PipelineSkillEntry {
   enabled?: boolean;
 }
 
+/** Contrat fonctionnel de ResolvedPipelineSkill dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface ResolvedPipelineSkill {
   name: string;
   description: string;
@@ -17,11 +19,15 @@ export interface ResolvedPipelineSkill {
   modelInvoked: boolean;
 }
 
+/** Contrat fonctionnel de PipelineSkillResolutionResult dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
 export interface PipelineSkillResolutionResult {
   skills: ResolvedPipelineSkill[];
   errors: string[];
 }
 
+/** Point d'entrée discoverModelInvokedSkills du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 export function discoverModelInvokedSkills(
   entries: readonly PipelineSkillEntry[],
   workspaceCwd: string,
@@ -31,6 +37,9 @@ export function discoverModelInvokedSkills(
     .sort(compareSkills);
 }
 
+/** Point d'entrée resolveExplicitPipelineSkills du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 export function resolveExplicitPipelineSkills(
   requestedNames: readonly string[] | undefined,
   entries: readonly PipelineSkillEntry[],
@@ -44,7 +53,9 @@ export function resolveExplicitPipelineSkills(
   const normalizedEntries = normalizeSkillEntries(entries, workspaceCwd);
   const byName = new Map<string, ResolvedPipelineSkill[]>();
   for (const entry of normalizedEntries) {
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
     addSkillAlias(byName, normalizeSkillName(entry.name), entry);
+/** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
     addSkillAlias(byName, normalizeSkillName(folderNameFromPath(entry.filePath)), entry);
   }
   const allowedNames = normalizeAllowedSkills(agentAllowedSkills);
@@ -86,6 +97,9 @@ export function resolveExplicitPipelineSkills(
   };
 }
 
+/** Point d'entrée renderExplicitPipelineSkills du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 export function renderExplicitPipelineSkills(skills: readonly ResolvedPipelineSkill[]): string {
   if (skills.length === 0) {
     return "";
@@ -101,6 +115,9 @@ export function renderExplicitPipelineSkills(skills: readonly ResolvedPipelineSk
     .join("\n\n");
 }
 
+/** Point d'entrée renderModelSkillCatalog du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 export function renderModelSkillCatalog(skills: readonly ResolvedPipelineSkill[]): string {
   const modelInvoked = skills.filter(skill => skill.modelInvoked).sort(compareSkills);
   if (modelInvoked.length === 0) {
@@ -118,6 +135,9 @@ export function renderModelSkillCatalog(skills: readonly ResolvedPipelineSkill[]
   ].join("\n");
 }
 
+/** Point d'entrée normalizeSkillEntries du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function normalizeSkillEntries(entries: readonly PipelineSkillEntry[], workspaceCwd: string): ResolvedPipelineSkill[] {
   return entries
     .filter(entry => entry.enabled !== false)
@@ -132,6 +152,9 @@ function normalizeSkillEntries(entries: readonly PipelineSkillEntry[], workspace
     .filter(entry => entry.name.length > 0 && entry.filePath.length > 0);
 }
 
+/** Point d'entrée normalizeAllowedSkills du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function normalizeAllowedSkills(agentAllowedSkills: readonly string[] | boolean | undefined): Set<string> | null {
   if (agentAllowedSkills === undefined || agentAllowedSkills === true) {
     return null;
@@ -142,6 +165,9 @@ function normalizeAllowedSkills(agentAllowedSkills: readonly string[] | boolean 
   return new Set(agentAllowedSkills.map(normalizeSkillName).filter(Boolean));
 }
 
+/** Point d'entrée addSkillAlias du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function addSkillAlias(
   byName: Map<string, ResolvedPipelineSkill[]>,
   alias: string,
@@ -157,19 +183,31 @@ function addSkillAlias(
   byName.set(alias, existing);
 }
 
+/** Point d'entrée compareSkills du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function compareSkills(left: ResolvedPipelineSkill, right: ResolvedPipelineSkill): number {
   return compareBytewise(left.name.toLowerCase(), right.name.toLowerCase())
     || compareBytewise(left.relativePath, right.relativePath);
 }
 
+/** Point d'entrée normalizeSkillName du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function normalizeSkillName(value: string): string {
   return value.replace(/^\//, "").trim().toLowerCase();
 }
 
+/** Point d'entrée folderNameFromPath du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function folderNameFromPath(filePath: string): string {
   return filePath.replace(/\\/g, "/").split("/").at(-2) ?? "";
 }
 
+/** Point d'entrée makeRelativePath du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function makeRelativePath(workspaceCwd: string, filePath: string): string {
   const normalizedWorkspace = workspaceCwd.replace(/\\/g, "/").replace(/\/$/, "");
   const normalizedFile = filePath.replace(/\\/g, "/");
@@ -178,10 +216,16 @@ function makeRelativePath(workspaceCwd: string, filePath: string): string {
     : normalizedFile;
 }
 
+/** Point d'entrée escapeAttribute du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function escapeAttribute(value: string): string {
   return value.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
 }
 
+/** Point d'entrée compareBytewise du cycle de vie du pipeline.
+ * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
+ */
 function compareBytewise(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
 }

@@ -1,0 +1,11 @@
+[runtime] run_started
+[runtime] node_started node=implementation
+[slopify] Starting node agent "Vibe Sandbox" (skills=implement)
+Warning: /private/var/folders/yd/6910m5zs4v7d7308h_8ypmy80000gp/T/slopify-vibe-audit-dUOegF is not trusted; project configuration (.agents/) will be ignored. Re-run with --trust to trust this folder temporarily.
+Error: API error from mistral (model: mistral-vibe-cli-latest): Invalid API key (from env var MISTRAL_API_KEY). Please check your API key and try again.
+[slopify] Agent "Vibe Sandbox" failed: Unable to run Mistral Vibe non-interactively: Warning: /private/var/folders/yd/6910m5zs4v7d7308h_8ypmy80000gp/T/slopify-vibe-audit-dUOegF is not trusted; project configuration (.agents/) will be ignored. Re-run with --trust to trust this folder temporarily.
+Error: API error from mistral (model: mistral-vibe-cli-latest): Invalid API key (from env var MISTRAL_API_KEY). Please check your API key and try again.
+[runtime] node_failed node=implementation Unable to run Mistral Vibe non-interactively: Warning: /private/var/folders/yd/6910m5zs4v7d7308h_8ypmy80000gp/T/slopify-vibe-audit-dUOegF is not trusted; project configuration (.agents/) will be ignored. Re-run with --trust to trust this folder temporarily.
+Error: API error from mistral (model: mistral-vibe-cli-latest): Invalid API key (from env var MISTRAL_API_KEY). Please check your API key and try again.
+[runtime] failed node=implementation Unable to run Mistral Vibe non-interactively: Warning: /private/var/folders/yd/6910m5zs4v7d7308h_8ypmy80000gp/T/slopify-vibe-audit-dUOegF is not trusted; project configuration (.agents/) will be ignored. Re-run with --trust to trust this folder temporarily.
+Error: API error from mistral (model: mistral-vibe-cli-latest): Invalid API key (from env var MISTRAL_API_KEY). Please check your API key and try again.

@@ -1,0 +1,19 @@
+{
+  "sandboxName": "slopify-a4cb78af-bee0-4530-aac8-ba1a5f1dfe60-final-6fdb8eff",
+  "runId": "a4cb78af-bee0-4530-aac8-ba1a5f1dfe60",
+  "nodeId": "final-review",
+  "attempt": 1,
+  "status": "failed",
+  "startedAt": "2026-10-02T15:16:04.891Z",
+  "finishedAt": "2026-10-02T15:29:53.012Z",
+  "retained": false,
+  "stdout": "",
+  "stderr": "Error: API error from mistral (model: mistral-medium-latest): LLM backend error [mistral]\n  status: N/A\n  reason: ReadTimeout('')\n  request_id: N/A\n  endpoint: https://api.mistral.ai\n  model: mistral-medium-latest\n  provider_message: Network error\n  body_excerpt: \n  payload_summary: {\"model\":\"mistral-medium-latest\",\"message_count\":46,\"approx_chars\":93853,\"temperature\":0.2,\"has_tools\":true,\"tool_choice\":\"auto\"}\n",
+  "error": "Unable to run Mistral Vibe non-interactively: Error: API error from mistral (model: mistral-medium-latest): LLM backend error [mistral]\n  status: N/A\n  reason: ReadTimeout('')\n  request_id: N/A\n  endpoint: https://api.mistral.ai\n  model: mistral-medium-latest\n  provider_message: Network error\n  body_excerpt: \n  payload_summary: {\"model\":\"mistral-medium-latest\",\"message_count\":46,\"approx_chars\":93853,\"temperature\":0.2,\"has_tools\":true,\"tool_choice\":\"auto\"}",
+  "cleanup": {
+    "attempted": true,
+    "exitCode": 0,
+    "stdout": "Deleting sandbox slopify-a4cb78af-bee0-4530-aac8-ba1a5f1dfe60-final-6fdb8eff...\nSandbox 'slopify-a4cb78af-bee0-4530-aac8-ba1a5f1dfe60-final-6fdb8eff' removed\n",
+    "stderr": "Warning: sandbox \"slopify-a4cb78af-bee0-4530-aac8-ba1a5f1dfe60-final-6fdb8eff\" runs on an in-container clone (--clone). Any\n  commits the agent made inside the sandbox are lost on removal\n  unless preserved first. To keep them, before removing run:\n      git fetch sandbox-slopify-a4cb78af-bee0-4530-aac8-ba1a5f1dfe60-final-6fdb8eff\n  Fetched branches are mirrored into refs/sandboxes/slopify-a4cb78af-bee0-4530-aac8-ba1a5f1dfe60-final-6fdb8eff/* and survive\n  removal; recover any branch with:\n      git branch <local-name> refs/sandboxes/slopify-a4cb78af-bee0-4530-aac8-ba1a5f1dfe60-final-6fdb8eff/<branch>\n  Alternatively, ask the agent to push them to an upstream remote.\n"
+  }
+}
