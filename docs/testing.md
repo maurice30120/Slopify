@@ -24,6 +24,20 @@ Toujours commencer par le test le plus ciblé qui couvre le changement. Ne lance
 
 Si `Cannot fork` ou `pthread_create` apparaît dans un environnement de développement saturé, arrêter immédiatement les relances, pousser le commit sur une branche et consulter les contrôles de CI de la PR. N'essayez pas d'effacer au hasard les processus du système ni de tuer PID 1.
 
+### Tests sensibles à l'environnement
+
+Ces tests sont verts en CI (Linux et macOS) mais peuvent échouer isolément dans un conteneur contraint (CPU partagé, scheduling lent) :
+
+- `localMode` : « aborting a real local Pi launcher stops its descendant process group » — surveille un groupe de processus POSIX réel ; un état `unknown` dans un conteneur fait échouer l'assertion `dead`.
+- `taskWaves` : les deux « twelve ready mixed-agent tasks refill available capacity » — capacité concurrente sensible aux performances.
+- `taskActivityTick` : « le tick se tait sans tâche active ni intégration » — l'assertion `firedTicks >= 3` court contre un hook Git `sleep 0.3` réel.
+
+Réflexe : échec isolé de l'un de ces tests + CI verte sur la PR = environnement, pas régression. Ne pas itérer localement ; pousser et laisser la CI juger.
+
+### Comparer avec une baseline proprement
+
+`git stash` ne recompile pas `dist/` : un test lancé juste après un stash exécute encore le code compilé des changements retirés, ce qui produit une fausse baseline. Toujours relancer `npm run build` entre le stash et le test, puis restaurer et rebuilder avant de continuer.
+
 ## Smoke tests réels — **uniquement en local sur le poste de développement**
 
 Ces commandes ne font pas partie de `npm test` ni de `.github/workflows/ci.yml`. Elles consomment de vrais appels fournisseurs et préservent les logs/preuves dans un dépôt temporaire.

@@ -473,3 +473,41 @@ test('readAttemptLogTail ne consomme rien quand aucune ligne n’est complète',
   const tail = await readAttemptLogTail(logPath, 0);
   assert.deepEqual(tail, { text: '', offset: 0 }, 'aucun octet n’est consommé sans saut de ligne');
 });
+
+/** Le moteur accepte un ActivitySink injecté (issue #171) : le tick traverse le
+ * seam sans journaliser ni émettre, et la phrase vient du contenu de la tentative. */
+test('un ActivitySink injecté reçoit chaque tick sans toucher au journal du run', { timeout: 30000 }, async t => {
+  const started = gate(); const hold = gate();
+  t.after(() => { hold.release(); });
+  const ticks: unknown[] = [];
+  const { root, repo, head, skills, batchFile } = await prepareSlopifyFixture('slopify-activity-sink-', t, [task('sunk', 'pi')]);
+  const execute = fakeSbxExecutor({ root, skills, sandboxes: new Map(), agent: async (id, sandbox, emit) => {
+    if (id === 'final-review') { await writeFile(path.join(sandbox, 'review.txt'), 'review'); return 0; }
+    started.release();
+    emit('Je lis la spécification figée');
+    await hold.promise;
+    await writeFile(path.join(sandbox, 'result.txt'), 'done');
+    return 0;
+  } });
+  const clock = new ManualActivityClock();
+  const storePath = path.join(root, 'runs');
+  const service = new TaskBatchService({
+    repositoryPath: repo, storePath, subprocessExecutor: execute,
+    activityTickIntervalMs: 60_000,
+    activityTickClock: clock,
+    activitySink: { beginRun: async () => ({ tick: async payload => { ticks.push(payload); } }) },
+  });
+  const running = service.run(batchFile);
+  await started.promise;
+  for (let minute = 0; minute < 2 && ticks.length < 1; minute++) await clock.advanceMinute();
+  await new Promise(resolve => setTimeout(resolve, 5));
+  assert.equal(ticks.length, 1, 'le sink injecté reçoit exactement un tick');
+  const tick = ticks[0] as { runId: string; now: Date; attempts: Array<{ taskId: string; attemptId: string; logPath: string; workspacePath: string }> };
+  assert.equal(tick.attempts[0].taskId, 'sunk');
+  assert.ok(tick.attempts[0].logPath.endsWith('stdout.log'), 'le tick expose le log de la tentative');
+  hold.release();
+  const state = await running;
+  assert.equal(state.status, 'succeeded');
+  const journal = await readAllActivitySignals(activityJournalPath(storePath, state.runId));
+  assert.deepEqual(journal, [], 'le sink injecté remplace la journalisation par défaut');
+});

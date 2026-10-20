@@ -15,3 +15,5 @@ export { assertWorkerPoolSize, assertSharedWorkerMounts, type TaskWorkerPoolConf
 export { readLocalProcessIdentity, inspectLocalProcess, inspectLocalProcessGroup, isLocalProcessAlive, type LocalProcessIdentity, type LocalProcessLiveness } from './localProcessIdentity.js';
 
 export type { LocalAgentRunRequest, LocalAgentRunResult, LocalAgentRunner } from './localAgent.js';
+
+export type { ActivitySink, ActivitySinkSession, ActivityTick, ActivityTickAttempt } from './activitySink.js';

@@ -10,12 +10,10 @@ import { loadTaskRuntimeConfig } from './taskRuntimeConfig.js';
 import { RunGitOperations } from '@slopify/git';
 
 
-import { activityJournalPath, appendActivitySignal, readActivitySignals, readAllActivitySignals } from '@slopify/activity';
+import { activityJournalPath, readActivitySignals, readAllActivitySignals, createRunActivitySink } from '@slopify/activity';
 import type { ActivitySignal } from '@slopify/activity';
-import { composeActivitySignal, type ActivityTaskCandidate } from '@slopify/activity';
-import { activityTaskPhrase } from '@slopify/activity';
-import { extractActivityGitSignal, type ActivityGitSnapshot } from '@slopify/activity';
-import { createSystemActivityTickClock, readAttemptLogTail, type ActivityTickClock } from '@slopify/activity';
+import { createSystemActivityTickClock, type ActivityTickClock } from '@slopify/activity';
+import type { ActivitySink, ActivitySinkSession } from '@slopify/execution';
 
 export interface TaskBatchDiagnostic {
   code: string;
@@ -67,6 +65,8 @@ export interface TaskBatchServiceOptions {
   activityTickIntervalMs?: number;
   /** Horloge du tick d'activité : instant courant et attente entre deux ticks ; horloge système par défaut. */
   activityTickClock?: ActivityTickClock;
+  /** Seam ActivitySink injecté (issue #171) : remplace la fabrication par défaut du Signal (journal + onActivitySignal). */
+  activitySink?: ActivitySink;
 }
 
 export interface TaskBatchRunOptions {
@@ -166,19 +166,6 @@ const DEFAULT_MAX_CONCURRENT_TASKS = 10;
 /** Intervalle du tick d'activité par défaut : une minute (ADR 0013). */
 const ACTIVITY_TICK_INTERVAL_MS = 60_000;
 
-/** Lecture d'une tentative observée par le tick : offset du log et dernier delta git du clone. */
-interface ActivityAttemptReading {
-  logOffset: number;
-  gitSnapshot: ActivityGitSnapshot | null;
-}
-
-/** État du tick pendant une commande longue : lectures par tentative, dernier signal émis par tâche (bornage) et par tentative (repli « rien de nouveau »). */
-interface ActivityTickSession {
-  attempts: Map<string, ActivityAttemptReading>;
-  lastSignalAtByTask: Map<string, Date>;
-  lastSignalAtByAttempt: Map<string, Date>;
-}
-
 /** Seam public V2 : la validation et le contexte durable ne pénètrent jamais dans le runtime de pipeline V1. */
 export class TaskBatchService {
   readonly repositoryPath: string;
@@ -190,6 +177,8 @@ export class TaskBatchService {
   private readonly onActivitySignal?: TaskBatchServiceOptions['onActivitySignal'];
   private readonly activityTickIntervalMs: number;
   private readonly activityClock: ActivityTickClock;
+  /** Seam ActivitySink (issue #171) : fabrication du Signal ; adapter activity par défaut. */
+  private readonly activitySink: ActivitySink;
   /** Tâche en cours d'intégration, observée par le tick (phrase d'intégration). */
   private activityIntegrationTaskId?: string;
   private readonly saves = new Map<string, Promise<void>>();
@@ -216,6 +205,7 @@ export class TaskBatchService {
       homedir(), '.local', 'share', 'slopify', 'task-runs',
       createHash('sha256').update(this.repositoryPath).digest('hex').slice(0, 16),
     ));
+    this.activitySink = options.activitySink ?? createRunActivitySink({ storePath: this.storePath, onSignal: signal => this.onActivitySignal?.(signal) });
   }
 
   async run(batchFile: string, options: TaskBatchRunOptions = {}): Promise<TaskBatchSnapshot> {
@@ -432,8 +422,7 @@ export class TaskBatchService {
     if (signal?.aborted) controller.abort();
     else signal?.addEventListener('abort', propagate, { once: true });
     this.activityIntegrationTaskId = undefined;
-    const session: ActivityTickSession = { attempts: new Map(), lastSignalAtByTask: new Map(), lastSignalAtByAttempt: new Map() };
-    const loop = this.activityTickLoop(snapshot, session, controller.signal)
+    const loop = this.activityTickLoop(snapshot, controller.signal)
       .catch(() => {})
       .finally(() => { signal?.removeEventListener('abort', propagate); });
     try {
@@ -444,65 +433,29 @@ export class TaskBatchService {
     }
   }
 
-  private async activityTickLoop(snapshot: TaskBatchSnapshot, session: ActivityTickSession, signal: AbortSignal): Promise<void> {
+  private async activityTickLoop(snapshot: TaskBatchSnapshot, signal: AbortSignal): Promise<void> {
+    // L'observabilité ne doit jamais interrompre l'exécution : un sink qui ne
+    // s'ouvre pas laisse simplement le tick silencieux, pas la commande en échec.
+    let sink: ActivitySinkSession | undefined;
+    try { sink = await this.activitySink.beginRun(); }
+    catch { return; }
     while (!signal.aborted) {
       await this.activityClock.wait(this.activityTickIntervalMs, signal);
       if (signal.aborted) return;
-      try { await this.emitActivityTick(snapshot, session, signal); }
+      const activeTasks = snapshot.tasks.filter(task => task.status === 'running');
+      const integrationTaskId = this.activityIntegrationTaskId;
+      if (activeTasks.length === 0 && integrationTaskId === undefined) continue;
+      const attempts = activeTasks.flatMap(task => {
+        const attempt = task.attempts.at(-1);
+        return attempt && attempt.status === 'running'
+          ? [{ taskId: task.id, attemptId: attempt.attemptId, logPath: path.join(this.storePath, snapshot.runId, 'attempts', attempt.attemptId, 'stdout.log'), workspacePath: path.join(this.storePath, snapshot.runId, 'workspaces', attempt.attemptId) }]
+          : [];
+      });
+      try {
+        await sink!.tick({ runId: snapshot.runId, now: new Date(this.activityClock.now()), attempts, ...(integrationTaskId !== undefined ? { integrationTaskId } : {}) });
+      }
       catch { /* L'observabilité n'interrompt jamais l'exécution d'une tâche. */ }
     }
-  }
-
-  /** Un tick : compose le Signal des tâches actives, le journalise puis l'émet ; silencieux sans activité. */
-  private async emitActivityTick(snapshot: TaskBatchSnapshot, session: ActivityTickSession, signal: AbortSignal): Promise<void> {
-    if (signal.aborted) return;
-    const activeTasks = snapshot.tasks.filter(task => task.status === 'running');
-    const integrationTaskId = this.activityIntegrationTaskId;
-    if (activeTasks.length === 0 && integrationTaskId === undefined) return;
-    const now = new Date(this.activityClock.now());
-    const runDirectory = path.join(this.storePath, snapshot.runId);
-    const candidates: ActivityTaskCandidate[] = [];
-    const attemptIdByTask = new Map<string, string>();
-    for (const task of activeTasks) {
-      const attempt = task.attempts.at(-1);
-      if (!attempt || attempt.status !== 'running') { candidates.push({ taskId: task.id, noNews: true }); continue; }
-      attemptIdByTask.set(task.id, attempt.attemptId);
-      // Lecture incrémentale délibérée : le seam de phrase ne voit que le contenu
-      // nouveau depuis le tick précédent, pas le log entier. Écart assumé à la
-      // lecture littérale de l'US 6 (« dernière ligne significative du log »),
-      // cohérent avec l'US 3 (au plus une phrase par tâche et par minute) : une
-      // ligne déjà narrée n'est pas réémise chaque minute comme du nouveau.
-      const reading = session.attempts.get(attempt.attemptId) ?? { logOffset: 0, gitSnapshot: null };
-      const tail = await readAttemptLogTail(path.join(runDirectory, 'attempts', attempt.attemptId, 'stdout.log'), reading.logOffset);
-      if (tail !== undefined) reading.logOffset = tail.offset;
-      const git = await extractActivityGitSignal(path.join(runDirectory, 'workspaces', attempt.attemptId), reading.gitSnapshot);
-      if (git.snapshot !== null) reading.gitSnapshot = git.snapshot;
-      session.attempts.set(attempt.attemptId, reading);
-      const phrase = activityTaskPhrase({ taskId: task.id, log: tail?.text, git, now, lastSignalAt: session.lastSignalAtByAttempt.get(attempt.attemptId) });
-      candidates.push(phrase.source === 'none'
-        ? { taskId: task.id, noNews: true, lastSignalAt: session.lastSignalAtByAttempt.get(attempt.attemptId) }
-        : { taskId: task.id, news: { sentence: phrase.sentence, source: phrase.source } });
-    }
-    const composed = composeActivitySignal({
-      runId: snapshot.runId, now, tasks: candidates,
-      lastSignalAtByTask: Object.fromEntries(session.lastSignalAtByTask),
-      ...(integrationTaskId !== undefined
-        ? { integration: { sentence: `intégration du checkpoint de la tâche ${integrationTaskId}` } }
-        : {}),
-    });
-    if (signal.aborted) return;
-    // Rien à dire : une tâche active sans nouvelles est groupée, donc un signal
-    // sans tâche, sans groupe ni intégration n'apporte rien — il ne pollue pas le journal.
-    if (composed.tasks.length === 0 && composed.grouped === undefined && composed.integration === undefined) return;
-    for (const taskSignal of composed.tasks) {
-      session.lastSignalAtByTask.set(taskSignal.taskId, now);
-      const attemptId = attemptIdByTask.get(taskSignal.taskId);
-      if (attemptId !== undefined) session.lastSignalAtByAttempt.set(attemptId, now);
-    }
-    try { await appendActivitySignal(activityJournalPath(this.storePath, snapshot.runId), composed); }
-    catch { /* Le journal ne doit jamais interrompre l'exécution. */ }
-    try { this.onActivitySignal?.(composed); }
-    catch { /* L'émission ne doit jamais interrompre l'exécution. */ }
   }
 
   private async finishExecution(snapshot: TaskBatchSnapshot, signal?: AbortSignal): Promise<void> {

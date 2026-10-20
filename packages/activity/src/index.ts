@@ -5,3 +5,4 @@ export { activityTaskPhrase } from './activityTaskPhrase.js';
 export { extractActivityGitSignal, type ActivityGitSnapshot } from './activitySignalGit.js';
 export { activityJournalPath, appendActivitySignal, readActivitySignals, readAllActivitySignals } from './activityJournal.js';
 export { createSystemActivityTickClock, readAttemptLogTail, type ActivityTickClock } from './activityTick.js';
+export { createRunActivitySink, type RunActivitySinkOptions } from './activitySink.js';
