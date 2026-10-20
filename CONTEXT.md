@@ -22,7 +22,7 @@ _Avoid_: Controller, autoscaler
 Travail de développement défini pendant la préparation, accompagné des dépendances qui conditionnent son démarrage.
 _Avoid_: étape de clarification, étape de planification, nœud de pipeline générique
 
-**Worker d’exécution**:
+**Worker d’exécution** (mode sandbox uniquement):
 Environnement isolé réutilisable qui prend en charge au plus une activité d’implémentation, de correction ou de revue à la fois. Son état est contrôlé et nettoyé entre les activités ; un état douteux entraîne son remplacement.
 _Avoid_: slot de concurrence, environnement partagé
 
@@ -46,7 +46,19 @@ _Avoid_: relance technique, nouvelle tâche
 Rétablissement de l’exécution d’une tâche après un incident de processus ou d’environnement, en conservant le travail vérifié comme exploitable.
 _Avoid_: correction après revue, recommencer à zéro
 
-### V1 — vocabulaire du fonctionnement actuel
+**Mode local (V2)** :
+Exécution de Pi ou Codex sur la machine hôte dans un clone Git privé, sans Docker et avec la configuration native de l'agent.
+_Avoid_: sandbox Docker, Worker Docker
+
+**Mode sandbox (V2)** :
+Exécution Pi ou Codex dans Docker Sandboxes ; c'est le mode par défaut d'un nouveau run.
+_Avoid_: moteur ACP historique
+
+**Capacité locale** :
+Nombre maximal de tâches actives simultanées, sans impliciter un pool de Workers Docker.
+_Avoid_: Worker Docker en mode local
+
+### V1 — vocabulaire historique (archive, non actif en V2)
 
 **Sandbox Run**:
 Exécution isolée d’un agent sur une copie privée du dépôt, sans mutation du workspace hôte.
