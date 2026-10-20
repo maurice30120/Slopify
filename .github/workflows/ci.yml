@@ -14,7 +14,12 @@ concurrency:
 
 jobs:
   build-and-test:
-    runs-on: ubuntu-latest
+    name: V2 build and tests (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
 
     steps:
       - name: Check out repository
@@ -29,8 +34,14 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Clean V2 workspaces
+        run: npm run clean
+
       - name: Build workspaces
         run: npm run build
 
-      - name: Test workspaces
+      - name: Test workspaces (fake agents, temporary Git; no Docker/provider)
         run: npm test
+
+      - name: Verify CLI package metadata
+        run: npm pack --dry-run -w slopify
