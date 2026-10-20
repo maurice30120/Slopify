@@ -3,11 +3,13 @@
   "version": "0.1.0",
   "private": true,
   "workspaces": [
+    "packages/*",
+    "apps/*",
+    "slopify",
     "acp-pipeline",
     "acp-runtime",
     "acp-sandbox",
-    "acp-workspace",
-    "slopify"
+    "acp-workspace"
   ],
   "scripts": {
     "build": "npm run build --workspaces --if-present",
