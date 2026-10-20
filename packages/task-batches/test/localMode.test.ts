@@ -242,9 +242,9 @@ test('a missing or invalid Pi verdict fails the local attempt', async t => {
   }
 });
 
+
 test('resume refuses to double an attempt whose local agent process is still alive', { timeout: 15000 }, async t => {
-  // La tentative running porte l'identité du processus courant (vivant) : la reprise
-  // doit refuser de doubler l'agent encore actif, sans l'arrêter ni le prendre pour un autre.
+  const { readLocalProcessIdentity } = await import('@slopify/execution-local');
   const f = await localFixture(t, [task('survivor', 'codex')], async () => 0);
   const service = f.service();
   const created = await service.run(f.batchFile, { mode: 'local', execute: false });
@@ -253,24 +253,25 @@ test('resume refuses to double an attempt whose local agent process is still ali
   survivor.attempts.push({
     attemptId: 'attempt-survivor', taskBaseCommit: created.runBaseCommit, status: 'running',
     startedAt: new Date().toISOString(),
-    processIdentity: { pid: process.pid, startedAtIso: new Date(Date.now() - 1000).toISOString(),
-      command: (await readFile(path.join('/proc', String(process.pid), 'cmdline'), 'utf8')).replace(/\0/g, ' ').trim() },
+    processIdentity: await readLocalProcessIdentity(process.pid, 'test runner'),
   });
-  const { writeFile: wf } = await import('node:fs/promises');
   const statePath = path.join(f.root, 'runs', created.runId, 'state.json');
   const state = JSON.parse(await readFile(statePath, 'utf8'));
   state.tasks[0] = survivor;
-  await wf(statePath, JSON.stringify(state, null, 2));
+  await writeFile(statePath, JSON.stringify(state, null, 2));
   await assert.rejects(service.resume(created.runId), /live local agent process/i);
 });
 
-test('a reused PID is never mistaken for the original local agent', async t => {
-  const { isLocalProcessAlive } = await import('@slopify/execution-local');
-  // Une identité plausible mais dont la commande ne correspond à aucun processus vivant.
-  assert.equal(await isLocalProcessAlive({ pid: process.pid, startedAtIso: new Date().toISOString(), command: 'definitely-not-this-command --xyz' }), false);
-  // L'identité du processus courant correspond réellement : vivant.
-  const realCommand = (await readFile(path.join('/proc', String(process.pid), 'cmdline'), 'utf8')).replace(/\0/g, ' ').trim();
-  assert.equal(await isLocalProcessAlive({ pid: process.pid, startedAtIso: new Date(Date.now() - 2000).toISOString(), command: realCommand }), true);
+test('portable process identity distinguishes alive, recycled and uncertain processes', async () => {
+  const { readLocalProcessIdentity, inspectLocalProcess, isLocalProcessAlive } = await import('@slopify/execution-local');
+  const identity = await readLocalProcessIdentity(process.pid, 'test runner');
+  assert.ok(identity.startTimeTag && identity.observedCommand, 'ps must expose creation time and command on Linux/macOS');
+  assert.equal(await inspectLocalProcess(identity), 'alive');
+  assert.equal(await isLocalProcessAlive(identity), true);
+  assert.equal(await inspectLocalProcess({ ...identity, startTimeTag: 'Wed Jan  1 00:00:00 1900' }), 'dead');
+  assert.equal(await inspectLocalProcess({ ...identity, observedCommand: 'some other program' }), 'unknown');
+  assert.equal(await inspectLocalProcess({ pid: process.pid, command: 'legacy', startedAtIso: identity.startedAtIso }), 'unknown');
+  assert.equal(await inspectLocalProcess(undefined), 'unknown');
 });
 
 test('a durable successful checkpoint is integrated on resume without replaying the agent', { timeout: 15000 }, async t => {
