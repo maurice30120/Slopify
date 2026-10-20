@@ -43,5 +43,8 @@ jobs:
       - name: Test workspaces (fake agents, temporary Git; no Docker/provider)
         run: npm test
 
+      - name: Audit V2 workspace graph and public exports
+        run: npm run audit:v2
+
       - name: Verify CLI package metadata
         run: npm pack --dry-run -w slopify
