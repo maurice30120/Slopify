@@ -6,7 +6,7 @@ import { homedir } from 'node:os';
 import * as path from 'node:path';
 import { createNodeSubprocessExecutor, type SubprocessExecutor, type TaskDiagnostic, type TaskExecutionResult, type TaskExecutor, type TaskExecutionResource, type TaskAgent, type TaskEffort } from '@slopify/execution';
 import { DockerTaskExecutor, assertWorkerPoolSize } from '@slopify/execution-sandbox';
-import { LocalTaskExecutor, isLocalProcessAlive, type LocalAgentRunner } from '@slopify/execution-local';
+import { LocalTaskExecutor, inspectLocalProcess, inspectLocalProcessGroup, readLocalProcessIdentity, type LocalAgentRunner } from '@slopify/execution-local';
 import { DockerRunHealth, type DockerRunSuspension, type TaskWorkerPoolConfig, type TaskWorkerState } from '@slopify/execution-sandbox';
 import { loadTaskRuntimeConfig } from './taskRuntimeConfig.js';
 
@@ -629,6 +629,10 @@ export class TaskBatchService {
         runBaseCommit: snapshot.runBaseCommit, resultDirectory, signal,
         onResource: async (resource: TaskExecutionResource) => {
           attempt.resource = resource; attempt.resourceState = 'active'; await this.save(snapshot);
+        },
+        onProcessSpawn: async identity => {
+          attempt.processIdentity = identity;
+          await this.save(snapshot);
         } });
       Object.assign(attempt, result);
       attempt.resourceState = result.resource ? 'retained' : undefined;
@@ -813,6 +817,57 @@ export class TaskBatchService {
     }
   }
 
+
+  /** No optimistic retries when an old local agent, or any descendant, may survive. */
+  private async assertLocalAttemptStopped(task: BatchTaskState): Promise<void> {
+    if (task.status !== 'running' && task.status !== 'interrupted') return;
+    const attempt = task.attempts.at(-1);
+    if (!attempt || (attempt.status !== 'running' && attempt.status !== 'interrupted')) return;
+    const identity = attempt.processIdentity;
+    const own = await inspectLocalProcess(identity);
+    const group = identity?.processGroupId
+      ? await inspectLocalProcessGroup(identity.processGroupId) : 'unknown';
+    if (own !== 'dead' || group !== 'dead') {
+      throw new Error('Task "' + task.id + '" has a live local agent process or uncertain descendants (pid ' +
+        (identity?.pid ?? 'unknown') + ', process=' + own + ', group=' + group +
+        '). Stop and inspect the retained attempt before retrying.');
+    }
+  }
+
+  /** Cross-process lock around recovery decisions and the agent start, scoped to a run. */
+  private async withResumeLock<T>(runId: string, operation: () => Promise<T>): Promise<T> {
+    if (!/^[a-zA-Z0-9-]+$/.test(runId)) throw new Error('Invalid run ID.');
+    const lockPath = path.join(this.storePath, runId, '.resume-lock');
+    let locked = false;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        await mkdir(lockPath);
+        locked = true;
+        break;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+        let holder: Awaited<ReturnType<typeof readLocalProcessIdentity>>;
+        try { holder = JSON.parse(await readFile(path.join(lockPath, 'owner.json'), 'utf8')); }
+        catch { throw new Error('Resume lock has no verifiable owner; inspect it manually: ' + lockPath); }
+        if (await inspectLocalProcess(holder) !== 'dead') {
+          throw new Error('Another launcher may still own this run; resume lock is active or uncertain: ' + lockPath);
+        }
+        try { await rename(lockPath, lockPath + '.stale-' + randomUUID()); }
+        catch (renameError) {
+          if ((renameError as NodeJS.ErrnoException).code !== 'ENOENT') throw renameError;
+        }
+      }
+    }
+    if (!locked) throw new Error('Unable to acquire run resume lock: ' + lockPath);
+    try {
+      const holder = await readLocalProcessIdentity(process.pid, 'slopify resume');
+      await writeFile(path.join(lockPath, 'owner.json'), JSON.stringify(holder), { mode: 0o600 });
+      return await operation();
+    } finally {
+      await rm(lockPath, { recursive: true, force: true });
+    }
+  }
+
   /**
    * Reprend l'ensemble du run depuis son dernier état persistant.
    * Réutilise les résultats intégrés et les checkpoints enregistrés sans les dupliquer.
@@ -820,17 +875,13 @@ export class TaskBatchService {
    * @returns Le snapshot après reprise ou suspension sur Integration Conflict.
    */
   async resume(runId: string, options: { signal?: AbortSignal } = {}): Promise<TaskBatchSnapshot> {
+    return this.withResumeLock(runId, () => this.resumeUnlocked(runId, options));
+  }
+
+  private async resumeUnlocked(runId: string, options: { signal?: AbortSignal } = {}): Promise<TaskBatchSnapshot> {
     const snapshot = await this.status(runId);
-    // Mode local : une tentative encore vivante (processus d'origine identifié) ne peut pas
-    // être doublée ; un PID réutilisé par un autre processus n'est jamais pris pour l'agent.
     if (this.runMode(snapshot) === 'local') {
-      for (const task of snapshot.tasks) {
-        if (task.status !== 'running' && task.status !== 'interrupted') continue;
-        const attempt = task.attempts.at(-1);
-        if (attempt?.status === 'running' && await isLocalProcessAlive(attempt.processIdentity)) {
-          throw new Error(`Task "${task.id}" still has a live local agent process (pid ${attempt.processIdentity!.pid}); stop it before resuming to avoid running the same work twice.`);
-        }
-      }
+      for (const task of snapshot.tasks) await this.assertLocalAttemptStopped(task);
     }
     if (snapshot.tasks.some(task => task.status === 'running')) {
       // En local, une tentative running dont le processus a disparu est obsolète : reprise autorisée.
@@ -909,6 +960,10 @@ export class TaskBatchService {
    * @returns Le snapshot après exécution et intégration de la tentative.
    */
   async resumeTask(runId: string, taskId: string, options: { signal?: AbortSignal; discardCheckpoint?: boolean } = {}): Promise<TaskBatchSnapshot> {
+    return this.withResumeLock(runId, () => this.resumeTaskUnlocked(runId, taskId, options));
+  }
+
+  private async resumeTaskUnlocked(runId: string, taskId: string, options: { signal?: AbortSignal; discardCheckpoint?: boolean } = {}): Promise<TaskBatchSnapshot> {
     const snapshot = await this.status(runId);
     if (snapshot.conflict) throw new TaskBatchExecutionError(snapshot, 'Run has an unresolved conflict. Use tasks resolve-conflict first.');
     if (snapshot.tasks.filter(task => task.id !== taskId && task.status === 'running').length >= (snapshot.maxConcurrentTasks ?? this.maxConcurrentTasks)) {
@@ -920,6 +975,8 @@ export class TaskBatchService {
     if (!task) {
       throw new Error(`Task "${taskId}" not found in run "${runId}".`);
     }
+
+    if (this.runMode(snapshot) === 'local') await this.assertLocalAttemptStopped(task);
 
     // Autorise la reprise uniquement pour une tâche échouée, interrompue ou en cours devenue obsolète.
     // Une tâche en cours dont la sandbox est arrêtée ou supprimée est considérée comme obsolète et reprenable.
