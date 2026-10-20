@@ -4,7 +4,8 @@ import { mkdtemp, mkdir, writeFile, readFile, readdir, rm, stat } from 'node:fs/
 import * as path from 'node:path';
 import { tmpdir } from 'node:os';
 import test from 'node:test';
-import { TaskBatchService, type BatchTask } from '@slopify/task-batches';
+import { type BatchTask } from '@slopify/task-batches';
+import { TaskBatchService } from './taskBatchTestService.js';
 import type { LocalAgentRunRequest } from '@slopify/execution-local';
 
 function git(repo: string, ...args: string[]) { return execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8' }).trim(); }
