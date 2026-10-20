@@ -12,7 +12,8 @@
     "clean": "npm run clean --workspaces --if-present",
     "slopify": "npm run build -w slopify && node apps/cli/dist/src/cli.js",
     "smoke:local": "npm run build && node scripts/smoke-v2.mjs local",
-    "smoke:docker": "npm run build && node scripts/smoke-v2.mjs sandbox"
+    "smoke:docker": "npm run build && node scripts/smoke-v2.mjs sandbox",
+    "audit:v2": "node scripts/audit-v2.mjs"
   },
   "engines": {
     "node": ">=22.19.0"
