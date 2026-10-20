@@ -11,3 +11,5 @@ export type {
 } from './taskExecution.js';
 
 export { assertWorkerPoolSize, assertSharedWorkerMounts, type TaskWorkerPoolConfig, type TaskWorkerState, type TaskWorkerStatus, type DockerRunSuspension, type TaskRuntimeState, type TaskRunRuntime, type TaskRunRuntimeContext, type TaskRunRuntimeFactory } from './taskRuntime.js';
+
+export { readLocalProcessIdentity, inspectLocalProcess, inspectLocalProcessGroup, isLocalProcessAlive, type LocalProcessIdentity, type LocalProcessLiveness } from './localProcessIdentity.js';
