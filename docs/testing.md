@@ -37,3 +37,24 @@ npm run smoke:docker
 ```
 
 Les deux smoke tests utilisent `--mode` explicite, vérifient le résultat Git, les checkpoints et l'absence de changement dans le workspace hôte. Le répertoire de preuves est affiché au lancement et conservé même en cas d'échec. Ils sont lancés **manuellement** sur le Mac, en dernier ressort pour valider les intégrations réelles, jamais automatiquement dans la CI.
+
+## Validation des processus et reprises sur macOS/Linux
+
+La surveillance des agents locaux utilise une identité du processus et un groupe POSIX
+propre à la tentative. La présence d'un PID n'est pas une preuve suffisante : sa
+création peut avoir été réutilisée par un autre processus. L'inspection renvoie
+`alive`, `dead` ou `unknown`. En cas d'état incertain, `resume` et `resume-task`
+**refusent** d'ouvrir une nouvelle tentative ; les logs et clones conservés
+permettent une inspection manuelle. Les tentatives réussies possèdent leurs
+checkpoints/bundles et ne doivent pas rejouer l'agent à la reprise.
+
+Si le lanceur a été tué sans pouvoir exécuter de nettoyage (SIGKILL, coupure),
+examiner l'ancien processus **et ses descendants** avant toute relance. Le verrou
+`.resume-lock` d'un run interdit deux reprises concurrentes : si son propriétaire
+n'est pas prouvé mort ou si le fichier de métadonnées manque, ne pas forcer
+la reprise et inspecter le run. Une preuve absente n'est jamais interprétée
+comme une confirmation d'arrêt.
+
+Sur macOS, utiliser le script d'installation dans un shell zsh et les tests de
+processus locaux ciblés sans fournisseurs. Les smokes réels restent manuels
+et sont **distincts** du job macOS automatisé sans Docker.
