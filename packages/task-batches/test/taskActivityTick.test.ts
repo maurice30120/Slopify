@@ -4,7 +4,8 @@ import { mkdtemp, mkdir, writeFile, readFile, appendFile, readdir, rm } from 'no
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import test from 'node:test';
-import { TaskBatchService, type BatchTask, type TaskBatchSnapshot } from '@slopify/task-batches';
+import { type BatchTask, type TaskBatchSnapshot } from '@slopify/task-batches';
+import { TaskBatchService } from './taskBatchTestService.js';
 import { activityJournalPath, readAllActivitySignals } from '@slopify/activity';
 import { parseActivitySignal, type ActivitySignal } from '@slopify/activity';
 import { readAttemptLogTail } from '@slopify/activity';
