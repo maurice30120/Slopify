@@ -1,29 +1,79 @@
 #!/usr/bin/env node
 /**
- * Runner de tests avec garde-fou de fuite de processus : exécute la suite du package
- * puis vérifie qu'aucun processus enfant direct ne survit. Un test qui laisse des
- * enfants vivants (le cas échéant des git orphelins qui deviennent des zombies
- * reparentés au PID 1 du bac à sable) fait échouer la suite au lieu d'empoisonner
- * l'environnement pour les runs suivants.
+ * Run deterministic package tests in a private POSIX process group.
+ * Unlike a PPID-only check, this also detects processes orphaned to PID 1.
+ * No Docker or real model provider is needed.
  */
 import { spawn, spawnSync } from 'node:child_process';
 
-const forward = spawnSync(process.execPath, ['--test', 'dist/test/**/*.test.js'], {
-  stdio: 'inherit',
-});
-const suiteExit = forward.status ?? 1;
+const isPosix = process.platform !== 'win32';
+const files = process.argv.slice(2);
+const args = ['--test', '--test-concurrency=2', ...(files.length ? files : ['dist/test/**/*.test.js'])];
+const suite = spawn(process.execPath, args, { stdio: 'inherit', detached: isPosix });
+let interrupted = false;
+let escalator;
 
-// Garde-fou : liste les enfants directs encore vivants après la suite.
-const ps = spawnSync('ps', ['-eo', 'pid,ppid,stat,comm'], { encoding: 'utf8' });
-if (ps.status === 0) {
-  const own = process.pid;
-  const leaked = ps.stdout.split('\n').slice(1)
-    .map(line => line.trim().split(/\s+/))
-    .filter(fields => fields.length >= 4 && fields[1] === String(own) && fields[2][0] !== 'Z')
-    .map(fields => fields[3]);
-  if (leaked.length > 0) {
-    console.error(`Test suite leaked ${leaked.length} live child process(es): ${[...new Set(leaked)].join(', ')}`);
-    process.exit(1);
+function terminateGroup(signal) {
+  try {
+    if (isPosix && suite.pid) process.kill(-suite.pid, signal);
+    else suite.kill(signal);
+  } catch (error) {
+    if (error?.code !== 'ESRCH') console.error(`Unable to send ${signal}:`, error);
   }
 }
-process.exit(suiteExit);
+
+function signalSuite(signal) {
+  if (interrupted) return;
+  interrupted = true;
+  terminateGroup(signal);
+  escalator = setTimeout(() => terminateGroup('SIGKILL'), 3000);
+  escalator.unref();
+}
+
+function survivingGroupMembers() {
+  if (!isPosix || !suite.pid) return [];
+  const result = spawnSync('ps', ['-Ao', 'pid=,pgid=,stat=,comm='], { encoding: 'utf8' });
+  if (result.error || result.status !== 0) {
+    throw new Error(`Cannot inspect test processes: ${result.error?.message ?? result.stderr}`);
+  }
+  return result.stdout.split('\n').flatMap(line => {
+    const parts = /^\s*(\d+)\s+(\d+)\s+(\S+)\s+(.*)$/.exec(line);
+    return parts && Number(parts[2]) === suite.pid
+      ? [{ pid: Number(parts[1]), state: parts[3], command: parts[4] }]
+      : [];
+  });
+}
+
+const onInt = () => signalSuite('SIGINT');
+const onTerm = () => signalSuite('SIGTERM');
+process.on('SIGINT', onInt);
+process.on('SIGTERM', onTerm);
+const exit = await new Promise(resolve => {
+  suite.once('error', error => resolve({ code: 1, error }));
+  suite.once('close', (code, signal) => resolve({ code, signal }));
+});
+process.off('SIGINT', onInt);
+process.off('SIGTERM', onTerm);
+if (escalator) clearTimeout(escalator);
+if (exit.error) console.error('Cannot start Node test runner:', exit.error);
+
+let leaked = false;
+try {
+  const survivors = survivingGroupMembers();
+  if (survivors.length > 0) {
+    leaked = true;
+    console.error(`Test suite leaked ${survivors.length} process(es) (including orphans/zombies):`);
+    for (const item of survivors.slice(0, 12)) console.error(`  PID ${item.pid} [${item.state}] ${item.command}`);
+    if (survivors.length > 12) console.error(`  ... and ${survivors.length - 12} more`);
+    terminateGroup('SIGTERM');
+    await new Promise(resolve => setTimeout(resolve, 250));
+    if (survivingGroupMembers().length > 0) terminateGroup('SIGKILL');
+    console.error('Suite failed: leaked processes must be fixed in test teardown (t.after).');
+  }
+} catch (error) {
+  leaked = true;
+  terminateGroup('SIGKILL');
+  console.error(error);
+}
+if (!isPosix) console.error('Warning: process-group leak detection is unavailable on Windows.');
+process.exitCode = interrupted ? 130 : leaked ? 1 : (exit.code ?? 1);
