@@ -166,6 +166,17 @@ export class TaskBatchService {
   /** Tâche en cours d'intégration, observée par le tick (phrase d'intégration). */
   private activityIntegrationTaskId?: string;
   private readonly saves = new Map<string, Promise<void>>();
+  /** Exclusion mutuelle des opérations Git sur le dépôt d'intégration : un `git clone --no-hardlinks`
+   * copie le .git source fichier par fichier et échoue si une intégration crée ou supprime un
+   * fichier transitoire (tmp_idx_* des fetchs) pendant la copie. Les clones d'exécution et la
+   * chaîne d'intégration partagent ce verrou ; les tentatives actives ne touchent pas ce dépôt. */
+  private integrationGitLock: Promise<void> = Promise.resolve();
+  /** Sérialise l'opération passée avec toutes les autres opérations protégées par le verrou Git. */
+  private withIntegrationGitLock<T>(operation: () => Promise<T>): Promise<T> {
+    const operationWithLock = this.integrationGitLock.then(operation, operation);
+    this.integrationGitLock = operationWithLock.then(() => undefined, () => undefined);
+    return operationWithLock;
+  }
 
   constructor(options: TaskBatchServiceOptions) {
     const capacity = options.maxConcurrentTasks ?? DEFAULT_MAX_CONCURRENT_TASKS;
@@ -407,10 +418,12 @@ export class TaskBatchService {
             // Cela réutilise aussi les résultats durables d'une reprise explicite.
             const ready = snapshot.tasks.find(task => task.status === 'completed');
             if (ready) {
-              integration = this.integrateTask(snapshot, ready, workspacePath, executor)
-                .then(async () => {
-                  await execFileAsync('git', ['-C', workspacePath, 'checkout', '--detach', snapshot.integrationCommit!]);
-                })
+              // Le checkout final et les fetchs du bundle touchent le même dépôt d'intégration
+              // que les clones d'exécution : une seule chaîne Git à la fois sur ce dépôt.
+              integration = this.withIntegrationGitLock(async () => {
+                await this.integrateTask(snapshot, ready, workspacePath, executor);
+                await execFileAsync('git', ['-C', workspacePath, 'checkout', '--detach', snapshot.integrationCommit!]);
+              })
                 .finally(() => { integration = undefined; });
             }
           }
@@ -555,8 +568,13 @@ export class TaskBatchService {
     await this.save(snapshot);
     try {
       await mkdir(path.dirname(workspacePath), { recursive: true });
-      await execFileAsync('git', ['clone', '--no-hardlinks', '--quiet', '--', integrationPath, workspacePath]);
-      await execFileAsync('git', ['-C', workspacePath, 'checkout', '--detach', taskBaseCommit]);
+      // Le clone copie le .git de l'intégration fichier par fichier : il ne doit pas
+      // chevaucher une intégration, sinon un fichier transitoire du dépôt source
+      // disparaît pendant la copie et la tentative échoue pour de faux.
+      await this.withIntegrationGitLock(async () => {
+        await execFileAsync('git', ['clone', '--no-hardlinks', '--quiet', '--', integrationPath, workspacePath]);
+        await execFileAsync('git', ['-C', workspacePath, 'checkout', '--detach', taskBaseCommit]);
+      });
       const result = await executor.execute({ runId: snapshot.runId, taskId: task.id, attemptId, agent: task.agent,
         ...(task.model ? { model: task.model } : {}), ...(task.effort ? { effort: task.effort } : {}),
         workspacePath, specFile: snapshot.context.specFile, prompt: task.prompt, taskBaseCommit,
