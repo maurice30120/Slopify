@@ -539,3 +539,34 @@ test('AC3c: resumeTask can resume stale running task', { timeout: 15000 }, async
   // The new attempt should have been created
   assert.ok(state.tasks[0].attempts[1].attemptId !== 'attempt-1');
 });
+
+test('clean removes the integration branch of a terminal run and keeps durable state', async t => {
+  const f = await fixture(t, mockExecutor);
+  await writeFile(path.join(f.root, 'spec.md'), '# Spec');
+  await writeFile(f.batchFile, JSON.stringify(batch()));
+  const snapshot = await f.service.run(f.batchFile, { execute: false });
+  execFileSync('git', ['-C', f.repo, 'branch', snapshot.integrationBranch, snapshot.runBaseCommit]);
+  const terminal: TaskBatchSnapshot = { ...snapshot, status: 'interrupted' };
+  await writeState(f.service, terminal);
+  const cleaned = await f.service.clean(snapshot.runId);
+  assert.equal(cleaned.runId, snapshot.runId);
+  assert.throws(() => execFileSync('git', ['-C', f.repo, 'rev-parse', '--verify', `refs/heads/${snapshot.integrationBranch}`]));
+  const state = await f.service.status(snapshot.runId);
+  assert.equal(state.status, 'interrupted', 'durable state must be preserved');
+  assert.equal(state.integrationBranch, snapshot.integrationBranch);
+  // Idempotent: a second clean succeeds even though the branch is already gone.
+  await f.service.clean(snapshot.runId);
+});
+
+test('clean refuses an active run', async t => {
+  const f = await fixture(t, mockExecutor);
+  await writeFile(path.join(f.root, 'spec.md'), '# Spec');
+  await writeFile(f.batchFile, JSON.stringify(batch()));
+  const snapshot = await f.service.run(f.batchFile, { execute: false });
+  execFileSync('git', ['-C', f.repo, 'branch', snapshot.integrationBranch, snapshot.runBaseCommit]);
+  const running: TaskBatchSnapshot = { ...snapshot, status: 'running' };
+  await writeState(f.service, running);
+  await assert.rejects(f.service.clean(snapshot.runId), /still running/);
+  assert.equal(execFileSync('git', ['-C', f.repo, 'rev-parse', '--verify', `refs/heads/${snapshot.integrationBranch}`], { encoding: 'utf8' }).trim(),
+    snapshot.runBaseCommit, 'branch must remain untouched');
+});

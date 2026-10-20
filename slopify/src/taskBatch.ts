@@ -6,6 +6,7 @@ import { homedir } from 'node:os';
 import * as path from 'node:path';
 import { createNodeSubprocessExecutor, type SubprocessExecutor } from '@acp-client/sandbox';
 import { DockerTaskExecutor } from './dockerTaskExecutor.js';
+import { isTerminalTaskBatchStatus } from './taskBatchReport.js';
 import { DockerRunHealth, type DockerRunSuspension } from './dockerRunHealth.js';
 import { loadTaskRuntimeConfig } from './taskRuntimeConfig.js';
 import { assertWorkerPoolSize, type TaskWorkerPoolConfig, type TaskWorkerState } from './taskWorkerPool.js';
@@ -1201,6 +1202,29 @@ export class TaskBatchService {
   async getResolution(runId: string): Promise<TaskBatchResolution | undefined> {
     const snapshot = await this.status(runId);
     return snapshot.resolution;
+  }
+
+  /**
+   * Supprime du dépôt hôte la branche d'intégration d'un run terminé.
+   * L'état durable (rapports, preuves, checkpoints) est conservé ; seul le ref
+   * publié `refs/heads/<integrationBranch>` est retiré, ainsi que les refs de
+   * suivi de la workspace d'intégration du run.
+   */
+  async clean(runId: string): Promise<TaskBatchSnapshot> {
+    const snapshot = await this.status(runId);
+    if (!isTerminalTaskBatchStatus(snapshot.status) && snapshot.status !== 'ready') {
+      throw new TaskBatchExecutionError(snapshot, `Run ${runId} is still ${snapshot.status}. Stop or finish it before cleaning its integration branch.`);
+    }
+    let existing = '';
+    try {
+      existing = (await execFileAsync('git', ['-C', this.repositoryPath, 'rev-parse', '--verify', `refs/heads/${snapshot.integrationBranch}`])).stdout.trim();
+    } catch {
+      existing = '';
+    }
+    if (existing) {
+      await execFileAsync('git', ['-C', this.repositoryPath, 'branch', '-D', snapshot.integrationBranch]);
+    }
+    return snapshot;
   }
 
 }

@@ -122,7 +122,13 @@ slopify tasks conflict <run-id> [--cwd <repo>] [--store <dir>] [--json]
 slopify tasks resolve-conflict <run-id> --strategy <use-current|use-incoming|manual> [--cwd <repo>] [--store <dir>] [--json]
 slopify tasks resolution <run-id> [--cwd <repo>] [--store <dir>] [--json]
 slopify tasks validate-resolution <run-id> <resolution-id> [--cwd <repo>] [--store <dir>] [--json]
+slopify tasks clean <run-id> [--cwd <repo>] [--store <dir>] [--json]
 ```
+
+`clean` retire du dépôt hôte la branche d'intégration `feature/slopify-<run-id>`
+d'un run terminé (succès, échec, interruption ou conflit) ; l'état durable du store
+(rapports, preuves, checkpoints) est conservé. Un run actif est refusé, et la commande
+est idempotente si la branche a déjà été supprimée.
 
 Le plafond est de dix tâches actives par lot, y compris après reprise. Un échec
 bloque seulement ses descendants ; les tâches indépendantes continuent, sans
