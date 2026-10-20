@@ -358,27 +358,9 @@ export class TaskBatchService {
     snapshot.status = 'running';
     await this.save(snapshot);
     try {
-      // Vérifie si le workspace existe déjà (par exemple après un run précédent ou une reprise).
-      let workspaceExists = false;
-      try {
-        await stat(workspacePath);
-        workspaceExists = true;
-      } catch {
-        workspaceExists = false;
-      }
-      
-      if (!workspaceExists) {
-        await execFileAsync('git', ['clone', '--no-hardlinks', '--quiet', '--', this.repositoryPath, workspacePath]);
-      }
-      // Vérifie si la branche existe avant de tenter de la créer.
-      const branchResult = await execFileAsync('git', ['-C', workspacePath, 'branch', '--list', snapshot.integrationBranch]);
-      const currentIntegrationCommit = branchResult.stdout.trim()
-        ? (await execFileAsync('git', ['-C', workspacePath, 'rev-parse', snapshot.integrationBranch])).stdout.trim()
-        : snapshot.integrationCommit ?? snapshot.runBaseCommit;
-      await execFileAsync('git', ['-C', workspacePath, 'checkout', '--detach', currentIntegrationCommit]);
-      if (!branchResult.stdout.trim()) {
-        await execFileAsync('git', ['-C', workspacePath, 'branch', snapshot.integrationBranch, currentIntegrationCommit]);
-      }
+      const currentIntegrationCommit = await this.git.prepareIntegration(
+        this.repositoryPath, workspacePath, snapshot.integrationBranch,
+        snapshot.runBaseCommit, snapshot.integrationCommit);
       await this.publish(snapshot, workspacePath);
       snapshot.integrationCommit = currentIntegrationCommit;
       snapshot.diagnostics.push({ code: 'host_changes_excluded', message: 'Uncommitted user changes are excluded; the private checkout starts from ' + snapshot.runBaseCommit + '.' });
