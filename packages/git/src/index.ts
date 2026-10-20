@@ -107,3 +107,5 @@ export class GitOperations {
     };
   }
 }
+
+export { RunGitOperations, type RunCheckpointIntegrity, type RunIntegrationInput, type RunIntegrationResult } from './runGitOperations.js';
