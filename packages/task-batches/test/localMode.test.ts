@@ -331,3 +331,52 @@ test('aborting a real local Pi launcher stops its descendant process group', { t
     process.env.PATH = previousPath;
   }
 });
+
+test('resume and resume-task both refuse an unverified crashed local attempt', { timeout: 15000 }, async t => {
+  const f = await localFixture(t, [task('unverified', 'codex')], async () => 0);
+  const service = f.service();
+  const created = await service.run(f.batchFile, { mode: 'local', execute: false });
+  const statePath = path.join(f.root, 'runs', created.runId, 'state.json');
+  const state = JSON.parse(await readFile(statePath, 'utf8'));
+  state.tasks[0].status = 'running';
+  state.tasks[0].attempts.push({
+    attemptId: 'before-crash', taskBaseCommit: created.runBaseCommit, status: 'running',
+    startedAt: new Date().toISOString(),
+  });
+  await writeFile(statePath, JSON.stringify(state, null, 2));
+  await assert.rejects(service.resume(created.runId), /uncertain descendants/i);
+  await assert.rejects(service.resumeTask(created.runId, 'unverified'), /uncertain descendants/i);
+  const unchanged = JSON.parse(await readFile(statePath, 'utf8'));
+  assert.equal(unchanged.tasks[0].attempts.length, 1);
+});
+
+test('simultaneous resume commands admit only one new local attempt', { timeout: 20000 }, async t => {
+  let shouldSucceed = false;
+  let notify!: () => void;
+  const started = new Promise<void>(resolve => { notify = resolve; });
+  let release!: () => void;
+  const blocked = new Promise<void>(resolve => { release = resolve; });
+  t.after(async () => { release(); });
+  let resumedCount = 0;
+  const f = await localFixture(t, [task('only-once', 'codex')], async (_id, clone) => {
+    if (!shouldSucceed) return 1;
+    resumedCount += 1;
+    notify();
+    await blocked;
+    await writeFile(path.join(clone, 'done.txt'), 'done');
+    return 0;
+  });
+  const first = await f.service().run(f.batchFile, { mode: 'local' });
+  assert.equal(first.status, 'failed');
+  shouldSucceed = true;
+  const firstResume = f.service().resume(first.runId);
+  try {
+    await started;
+    await assert.rejects(f.service().resumeTask(first.runId, 'only-once'), /resume lock/i);
+  } finally {
+    release();
+  }
+  const completed = await firstResume;
+  assert.equal(completed.status, 'succeeded');
+  assert.equal(resumedCount, 2, 'implementation and final review each run once, not twice');
+});
