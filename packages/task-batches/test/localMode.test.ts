@@ -291,3 +291,43 @@ test('a durable successful checkpoint is integrated on resume without replaying 
   assert.equal(again.status, 'succeeded');
   assert.equal(executions, firstRunExecutions, 'the durable success is not replayed');
 });
+
+test('aborting a real local Pi launcher stops its descendant process group', { timeout: 20000 }, async t => {
+  if (process.platform === 'win32') return;
+  const { inspectLocalProcessGroup } = await import('@slopify/execution-local');
+  const f = await localFixture(t, [task('stop-pi', 'pi')], async () => 0);
+  const bin = path.join(f.root, 'bin');
+  await mkdir(bin, { recursive: true });
+  const descendant = path.join(f.root, 'descendant.pid');
+  const quote = (s: string) => "'" + s.replace(/'/g, "'\\''") + "'";
+  await writeFile(path.join(bin, 'pi'),
+    '#!/bin/sh\\nsleep 30 &\\necho $! > ' + quote(descendant) + '\\nwait\\n', { mode: 0o755 });
+  const previousPath = process.env.PATH;
+  process.env.PATH = bin + path.delimiter + previousPath;
+  const controller = new AbortController();
+  try {
+    const service = new TaskBatchService({ repositoryPath: f.repo, storePath: path.join(f.root, 'runs') });
+    const running = service.run(f.batchFile, { mode: 'local', signal: controller.signal });
+    let childPid: number | undefined;
+    for (let i = 0; i < 100; i += 1) {
+      try { childPid = Number((await readFile(descendant, 'utf8')).trim()); break; }
+      catch { await new Promise(resolve => setTimeout(resolve, 50)); }
+    }
+    if (!childPid) {
+      controller.abort();
+      await running;
+      assert.fail('fake Pi never created a descendant');
+    }
+    controller.abort();
+    const state = await running;
+    assert.equal(state.status, 'interrupted');
+    const attempt = state.tasks[0].attempts[0];
+    assert.ok(attempt.resource, 'interrupted attempt keeps inspectable evidence');
+    assert.ok(attempt.processIdentity?.processGroupId, 'runner records an isolated POSIX group');
+    assert.equal(await inspectLocalProcessGroup(attempt.processIdentity!.processGroupId!), 'dead',
+      'agent and descendant must no longer hold the process group');
+  } finally {
+    controller.abort();
+    process.env.PATH = previousPath;
+  }
+});
