@@ -38,12 +38,14 @@ export const taskBatchHelp = [
   '  slopify tasks conflict <run-id> [--cwd <repository>] [--store <directory>] [--json]',
   '  slopify tasks validate-resolution <run-id> <resolution-id> [--cwd <repository>] [--store <directory>] [--json]',
   '  slopify tasks resolution <run-id> [--cwd <repository>] [--store <directory>] [--json]',
+  '  slopify tasks clean <run-id> [--cwd <repository>] [--store <directory>] [--json]',
   '',
   'Runs fill up to ten active task places in JSON ready order and integrate checkpoints as they finish.',
   'Execution mode: --mode overrides the project runtime configuration; sandbox is the default. The mode is frozen for the whole run and its resumes.',
   'Execution exit codes: 0 succeeded, 2 failed/interrupted/conflicted, 1 invalid input or command.',
   'Status and final output include progress, issues, evidence paths and next actions.',
   'Status and final output also expose worker pool occupancy, the replacement count and per-worker task links.',
+  'Branch cleanup is opt-in: tasks clean only accepts succeeded runs and never deletes durable evidence.',
   'Status and final output include a reliability summary: failures, retries, worker occupancy, checkpoint integrity, stop reason, wall clock and full manifest accounting.',
   'Watch streams only meaningful state changes; Ctrl-C stops watching without stopping the run.',
   'During execution progress is written to stderr (JSON lines with --json); stdout keeps one final result.',
@@ -59,7 +61,8 @@ export const taskBatchHelp = [
 
 
 type BatchCliService = Pick<TaskBatchService,
-  'run' | 'status' | 'resume' | 'resumeTask' | 'resolveConflict' | 'getConflict' | 'validateResolution' | 'getResolution' | 'recentActivitySignals' | 'allActivitySignals'>;
+  'run' | 'status' | 'resume' | 'resumeTask' | 'resolveConflict' | 'getConflict' | 'validateResolution' | 'getResolution' | 'recentActivitySignals' | 'allActivitySignals'>
+  & Partial<Pick<TaskBatchService, 'clean'>>;
 
 const DEFAULT_WATCH_INTERVAL_MS = 5_000;
 const MIN_WATCH_INTERVAL_MS = 100;
@@ -127,7 +130,7 @@ export async function runTaskBatchCli(
       return 0;
     }
     const action = argv[0];
-    const actions = ['run', 'status', 'watch', 'resume', 'resume-task', 'resolve-conflict', 'conflict', 'validate-resolution', 'resolution'];
+    const actions = ['run', 'status', 'watch', 'resume', 'resume-task', 'resolve-conflict', 'conflict', 'validate-resolution', 'resolution', 'clean'];
     if (!actions.includes(action)) throw new Error(`Unknown tasks command "${action}".\n${taskBatchHelp}`);
     let repositoryPath = baseCwd;
     let storePath: string | undefined;
@@ -177,7 +180,7 @@ export async function runTaskBatchCli(
     if (positional.length !== arity) throw new Error(taskBatchHelp);
     reportStorePath = storePath;
     let lastProgress = '';
-    const onUpdate = action === 'status' || action === 'watch' || action === 'conflict' || action === 'resolution' ? undefined
+    const onUpdate = action === 'status' || action === 'watch' || action === 'conflict' || action === 'resolution' || action === 'clean' ? undefined
       : (snapshot: TaskBatchSnapshot) => {
         const { progress, issues, nextActions } = taskBatchReport(snapshot, storePath);
         const tasks = snapshot.tasks.map(task => ({ id: task.id, agent: task.agent, ...(task.model ? { model: task.model } : {}), ...(task.effort ? { effort: task.effort } : {}), status: task.status }));
@@ -190,7 +193,7 @@ export async function runTaskBatchCli(
             + tasks.map(task => `${task.id}: ${task.status} (${task.agent}${task.model ? `, ${task.model}` : ''}${task.effort ? `, effort ${task.effort}` : ''})`).join(', ')
             + issues.filter(issue => issue.severity !== 'info' && !issue.historical).map(issue => `\n[${issue.code}] ${issue.taskId ?? 'run'}: ${issue.message}`).join(''));
       };
-    const onActivitySignal = action === 'status' || action === 'watch' || action === 'conflict' || action === 'resolution' ? undefined
+    const onActivitySignal = action === 'status' || action === 'watch' || action === 'conflict' || action === 'resolution' || action === 'clean' ? undefined
       : (signal: ActivitySignal) => { emitActivitySignal(signal, json, output); };
     const service = createService({ repositoryPath, storePath, onUpdate, onActivitySignal });
     const [runId, taskId] = positional;
@@ -206,6 +209,15 @@ export async function runTaskBatchCli(
       output.write(json ? JSON.stringify(resolution ?? null) : resolution
         ? `Resolution for run ${runId}:\n${JSON.stringify(resolution, null, 2)}`
         : `No resolution for run ${runId}.`);
+      return 0;
+    }
+    if (action === 'clean') {
+      if (!service.clean) throw new Error('tasks clean requires service support.');
+      const snapshot = await service.clean(runId);
+      output.write(json
+        ? JSON.stringify({ runId: snapshot.runId, status: snapshot.status,
+          integrationBranch: snapshot.integrationBranch, cleaned: true })
+        : `Run ${snapshot.runId}: integration branch ${snapshot.integrationBranch} removed (or already absent). Durable evidence retained.`);
       return 0;
     }
     if (action !== 'status') {
