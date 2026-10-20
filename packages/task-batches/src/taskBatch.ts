@@ -4,10 +4,11 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { homedir } from 'node:os';
 import * as path from 'node:path';
-import { createNodeSubprocessExecutor, type SubprocessExecutor, type TaskDiagnostic, type TaskExecutionResult, type TaskExecutor, type TaskExecutionResource, type TaskAgent, type TaskEffort } from '@slopify/execution';
-import { DockerTaskExecutor, assertWorkerPoolSize } from '@slopify/execution-sandbox';
-import { LocalTaskExecutor, inspectLocalProcess, inspectLocalProcessGroup, readLocalProcessIdentity, type LocalAgentRunner } from '@slopify/execution-local';
-import { DockerRunHealth, type DockerRunSuspension, type TaskWorkerPoolConfig, type TaskWorkerState } from '@slopify/execution-sandbox';
+import { createNodeSubprocessExecutor, assertWorkerPoolSize, type SubprocessExecutor, type TaskDiagnostic, type TaskExecutionResult, type TaskExecutor, type TaskExecutionResource, type TaskAgent, type TaskEffort, type TaskWorkerPoolConfig, type TaskWorkerState, type DockerRunSuspension, type TaskRunRuntimeFactory } from '@slopify/execution';
+
+import type { LocalAgentRunner } from '@slopify/execution-local';
+import { inspectLocalProcess, inspectLocalProcessGroup, readLocalProcessIdentity } from '@slopify/execution-local';
+
 import { loadTaskRuntimeConfig } from './taskRuntimeConfig.js';
 import { RunGitOperations } from '@slopify/git';
 
@@ -57,6 +58,8 @@ export interface TaskBatchServiceOptions {
   subprocessExecutor?: SubprocessExecutor;
   /** Agent local injecté : requis pour exécuter Pi en mode local ; Codex par défaut. */
   localAgentRunner?: LocalAgentRunner;
+  /** Production CLI injects the concrete local/sandbox runtime adapter. */
+  runtimeFactory?: TaskRunRuntimeFactory;
   /** Capacité du lot, entre une et dix tâches actives ; dix par défaut. */
   maxConcurrentTasks?: number;
   /** Reçoit une copie après chaque sauvegarde durable, pour l'avancement de la CLI. */
@@ -186,7 +189,7 @@ export class TaskBatchService {
   readonly storePath: string;
   private readonly subprocessExecutor: SubprocessExecutor;
   private readonly maxConcurrentTasks: number;
-  private readonly localAgentRunner?: LocalAgentRunner;
+  private readonly runtimeFactory?: TaskRunRuntimeFactory;
   private readonly onUpdate?: TaskBatchServiceOptions['onUpdate'];
   private readonly onActivitySignal?: TaskBatchServiceOptions['onActivitySignal'];
   private readonly activityTickIntervalMs: number;
@@ -206,7 +209,7 @@ export class TaskBatchService {
     // Garde partagée avec la configuration du pool de workers : une seule autorité sur l'entier 1–10.
     assertWorkerPoolSize(capacity, 'maxConcurrentTasks');
     this.maxConcurrentTasks = capacity;
-    this.localAgentRunner = options.localAgentRunner;
+    this.runtimeFactory = options.runtimeFactory;
     this.repositoryPath = path.resolve(options.repositoryPath);
     this.onUpdate = options.onUpdate;
     this.subprocessExecutor = options.subprocessExecutor ?? createNodeSubprocessExecutor();
@@ -328,72 +331,18 @@ export class TaskBatchService {
     return diagnostics;
   }
 
-  /** Une invocation possède sa décision de santé et arrête le travail externe sans supprimer les sandboxes inspectables. */
+  /** The CLI owns adapter composition. This service only schedules via a contract. */
   private createExecutionRuntime(snapshot: TaskBatchSnapshot, signal?: AbortSignal) {
-    delete snapshot.suspension;
-    if (this.runMode(snapshot) === 'local') return this.createLocalExecutionRuntime(signal);
-    const subprocess = this.subprocessExecutor ?? createNodeSubprocessExecutor();
-    const previous = new Set(snapshot.tasks.flatMap(task => task.attempts.map(attempt => attempt.attemptId)));
-    const stopped = new Set<string>();
-    const stopSuspendedResources = async () => {
-      if (!snapshot.suspension) return;
-      const suspension = snapshot.suspension;
-      const resources = snapshot.tasks.flatMap(task => task.attempts)
-        .filter(attempt => !previous.has(attempt.attemptId) && attempt.resource && !attempt.integratedCommit)
-        .map(attempt => attempt.resource!);
-      await Promise.all(resources.map(async resource => {
-        if (stopped.has(resource.sandboxName)) return;
-        stopped.add(resource.sandboxName);
-        try {
-          const result = await subprocess({ command: 'sbx', args: ['stop', resource.sandboxName],
-            cwd: resource.diagnosticsDirectory ?? this.repositoryPath, stdin: 'ignore', signal: AbortSignal.timeout(10000) });
-          suspension.stops.push({ sandboxName: resource.sandboxName, exitCode: result.exitCode,
-            ...(result.exitCode ? { error: result.stderr || result.stdout } : {}) });
-        } catch (error) { suspension.stops.push({ sandboxName: resource.sandboxName, error: String(error) }); }
-      }));
-      await this.save(snapshot);
-    };
-    const health = new DockerRunHealth(subprocess, async suspension => {
-      snapshot.suspension = suspension;
-      snapshot.status = 'interrupted';
-      snapshot.diagnostics.push({ code: 'docker_unavailable', message: 'Shared Docker control failed; admission stopped, cancellation and sandbox stops requested, resources retained.' });
-      await this.save(snapshot);
-      await stopSuspendedResources();
-    }, signal);
-    const executor = new DockerTaskExecutor({ executor: health.execute,
-      ...(snapshot.workerPoolConfig ? { pool: snapshot.workerPoolConfig } : {}),
-      onWorkers: async states => {
-        const workers = new Map((snapshot.workers ?? []).map(worker => [worker.workerId, worker]));
-        for (const worker of states) workers.set(worker.workerId, worker);
-        snapshot.workers = [...workers.values()];
-        await this.save(snapshot);
-      },
+    if (!this.runtimeFactory) throw new Error('An execution runtime factory must be injected by the host CLI.');
+    return this.runtimeFactory({
+      snapshot, signal, subprocess: this.subprocessExecutor, repositoryPath: this.repositoryPath,
+      saveSnapshot: () => this.save(snapshot),
     });
-    const close = async () => {
-      try { await executor.close(); }
-      catch (error) {
-        snapshot.diagnostics.push({ code: 'worker_shutdown_failed', message: String(error) });
-        await this.save(snapshot);
-      } finally { health.close(); }
-    };
-    return { executor, health, stopSuspendedResources, close };
   }
 
   /** Mode enregistré à la création : les états plus anciens restent sandbox. */
   private runMode(snapshot: TaskBatchSnapshot): TaskBatchMode {
     return snapshot.mode ?? 'sandbox';
-  }
-
-  /** Exécution locale : pas de contrôle Docker, pas de pool de Workers ; l'arrêt vient du signal passé aux agents. */
-  private createLocalExecutionRuntime(signal?: AbortSignal) {
-    const executor = new LocalTaskExecutor({ executor: this.subprocessExecutor, ...(this.localAgentRunner ? { agentRunner: this.localAgentRunner } : {}) });
-    const controller = new AbortController();
-    const propagate = () => controller.abort(signal?.reason);
-    if (signal?.aborted) propagate();
-    else signal?.addEventListener('abort', propagate, { once: true });
-    const health = { controller, execute: this.subprocessExecutor, close(): void {} };
-    const close = async () => { try { await executor.close(); } finally { signal?.removeEventListener('abort', propagate); } };
-    return { executor, health, stopSuspendedResources: async () => {}, close };
   }
 
   private async executeSchedule(snapshot: TaskBatchSnapshot, signal?: AbortSignal): Promise<void> {
