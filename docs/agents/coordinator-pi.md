@@ -845,3 +845,18 @@ Pi **ne doit pas** :
 ---
 
 *Document version: 1.0 - Aligné sur Slopify V2 spec et ADR 0007-0011*
+
+## Vérification et santé des processus de test
+
+Sur une modification du moteur, commencer par les tests ciblés du package concerné,
+puis lancer `npm test` avant livraison. Les tests automatiques emploient Git réel
+dans des dépôts temporaires et des agents/`sbx` simulés : **pas de Docker réel
+dans la CI**. Tout processus enfant créé par un test doit être attendu et nettoyé
+avec `t.after`. Ne pas laisser de descendants ou de timers persistants.
+Si le sandbox de développement signale `Cannot fork` ou `pthread_create`,
+cesser immédiatement les relances, pousser la branche et consulter les résultats CI.
+
+Les essais réels sont manuels, **sur le poste utilisateur uniquement** :
+`npm run smoke:local` pour les agents natifs, `npm run smoke:docker` pour Docker
+Sandboxes. Ils ne sont jamais déclenchés par `npm test` ni GitHub Actions.
+Voir `docs/testing.md`.
