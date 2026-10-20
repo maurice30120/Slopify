@@ -2,9 +2,8 @@ import { mkdir, readFile, writeFile, rename, stat, rm } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
 import * as path from 'node:path';
-import { createNodeSubprocessExecutor, assertWorkerPoolSize, inspectLocalProcess, inspectLocalProcessGroup, readLocalProcessIdentity, type SubprocessExecutor, type TaskDiagnostic, type TaskExecutionResult, type TaskExecutor, type TaskExecutionResource, type TaskAgent, type TaskEffort, type TaskWorkerPoolConfig, type TaskWorkerState, type DockerRunSuspension, type TaskRunRuntimeFactory } from '@slopify/execution';
+import { createNodeSubprocessExecutor, assertWorkerPoolSize, inspectLocalProcess, inspectLocalProcessGroup, readLocalProcessIdentity, type SubprocessExecutor, type TaskDiagnostic, type TaskExecutionResult, type TaskExecutor, type TaskExecutionResource, type TaskAgent, type TaskEffort, type TaskWorkerPoolConfig, type TaskWorkerState, type DockerRunSuspension, type TaskRunRuntimeFactory, type LocalAgentRunner } from '@slopify/execution';
 
-import type { LocalAgentRunner } from '@slopify/execution-local';
 
 
 import { loadTaskRuntimeConfig } from './taskRuntimeConfig.js';
