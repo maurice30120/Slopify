@@ -1,7 +1,7 @@
 import { DockerTaskExecutor } from './dockerTaskExecutor.js';
 import { DockerRunHealth } from './dockerRunHealth.js';
-import { LocalTaskExecutor, type LocalAgentRunner } from '@slopify/execution-local';
-import type { TaskRunRuntime, TaskRunRuntimeContext } from '@slopify/execution';
+import { LocalTaskExecutor } from '@slopify/execution-local';
+import type { TaskRunRuntime, TaskRunRuntimeContext, LocalAgentRunner } from '@slopify/execution';
 
 /**
  * Concrete adapter composition. The CLI selects this factory and task-batches
