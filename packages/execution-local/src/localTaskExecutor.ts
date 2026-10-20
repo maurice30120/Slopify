@@ -4,6 +4,8 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { mkdir, readFile, writeFile, rename, readdir } from 'node:fs/promises';
 import * as path from 'node:path';
 import { createNodeSubprocessExecutor, type SubprocessExecutor, type TaskDiagnostic, type TaskExecutor, type TaskExecutionRequest, type TaskExecutionResult, type TaskExecutionResource, type TaskAgent } from '@slopify/execution';
+import type { LocalAgentRunRequest, LocalAgentRunResult, LocalAgentRunner } from '@slopify/execution';
+export type { LocalAgentRunRequest, LocalAgentRunResult, LocalAgentRunner } from '@slopify/execution';
 import { readLocalProcessIdentity, inspectLocalProcessGroup, type LocalProcessIdentity } from './localProcessIdentity.js';
 export { readLocalProcessIdentity, inspectLocalProcess, inspectLocalProcessGroup, isLocalProcessAlive } from './localProcessIdentity.js';
 export type { LocalProcessIdentity, LocalProcessLiveness } from './localProcessIdentity.js';
@@ -215,27 +217,6 @@ export async function nativeCodexSessionFailures(directory: string): Promise<Tas
   }
   return diagnostics;
 }
-
-export interface LocalAgentRunRequest extends TaskExecutionRequest {
-  workspacePath: string;
-  logged: SubprocessExecutor;
-  contextPath: string;
-  /** Reçoit l'identité du processus agent local dès son lancement, pour persistance durable. */
-  onProcessSpawn?: (identity: LocalProcessIdentity) => Promise<void>;
-  /** Streame un fragment brut de l'agent local vers les preuves persistées de la tentative. */
-  stream: (stream: 'stdout' | 'stderr', chunk: string) => void;
-}
-
-export interface LocalAgentRunResult {
-  exitCode: number;
-  report: string;
-  diagnostics: TaskDiagnostic[];
-  /** Identité du processus agent local, persistée pour distinguer la tentative d'un PID réutilisé. */
-  processIdentity?: LocalProcessIdentity;
-}
-
-export type LocalAgentRunner = (request: LocalAgentRunRequest) => Promise<LocalAgentRunResult>;
-
 
 /** Signal only a POSIX process group assigned to this agent attempt. */
 function signalAttemptGroup(pid: number, signal: NodeJS.Signals): void {
