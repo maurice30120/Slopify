@@ -52,7 +52,7 @@ jobs:
           tmp="$(mktemp -d)"
           trap 'rm -rf "$tmp"' EXIT
           mkdir -p "$tmp/home" "$tmp/bin" "$tmp/project"
-          printf '#!/bin/sh\\nexit 0\\n' > "$tmp/bin/npx"
+          printf '#!/bin/sh\nexit 0\n' > "$tmp/bin/npx"
           chmod +x "$tmp/bin/npx"
           HOME="$tmp/home" PATH="$tmp/bin:$PATH" bash scripts/install.sh "$tmp/bin"
           PATH="$tmp/bin:$PATH" "$tmp/bin/slopify" --help >/dev/null
