@@ -142,10 +142,15 @@ test('interrupting a local run marks attempts interrupted and keeps clones for r
   const started = new Promise<void>(resolve => { release = resolve; });
   const f = await localFixture(t, [task('slow', 'codex')], async (id, clone, emit, signal) => {
     release();
-    await new Promise<void>((resolve, reject) => {
-      const done = () => resolve();
+    await new Promise<void>(resolve => {
+      const done = () => {
+        clearTimeout(timer);
+        signal?.removeEventListener('abort', done);
+        resolve();
+      };
+      const timer = setTimeout(done, 5000);
       signal?.addEventListener('abort', done, { once: true });
-      setTimeout(done, 5000);
+      if (signal?.aborted) done();
     });
     return signal?.aborted ? 1 : 0;
   });
