@@ -301,7 +301,7 @@ test('aborting a real local Pi launcher stops its descendant process group', { t
   const descendant = path.join(f.root, 'descendant.pid');
   const quote = (s: string) => "'" + s.replace(/'/g, "'\\''") + "'";
   await writeFile(path.join(bin, 'pi'),
-    '#!/bin/sh\\nsleep 30 &\\necho $! > ' + quote(descendant) + '\\nwait\\n', { mode: 0o755 });
+    '#!/bin/sh\nsleep 30 &\necho $! > ' + quote(descendant) + '\nwait\n', { mode: 0o755 });
   const previousPath = process.env.PATH;
   process.env.PATH = bin + path.delimiter + previousPath;
   const controller = new AbortController();
