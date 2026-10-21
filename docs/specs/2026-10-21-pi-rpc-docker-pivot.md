@@ -23,6 +23,33 @@ Branche de réflexion : `feature/pi-rpc-docker-pivot`, issue du commit `2f9d8159
 5. Tests unitaires et d'intégration avec faux Pi RPC et vrais dépôts Git temporaires, sans fournisseur ni Docker en CI ; smoke réel Docker + Pi **manuel sur le Mac** avant validation produit.
 6. Évaluer les états historiques issus des modes `local` et `sandbox` avant toute suppression ; ne pas déclarer les anciennes reprises compatibles sans preuve.
 
+## Composition des environnements Docker — décision de conception à prototyper
+
+L'utilisateur souhaite **deux définitions réellement indépendantes** :
+
+1. Une image `slopify/pi` minimale, possédée par Slopify : exécutable Pi, runtime Node.js nécessaire, extension de sous-agents validée, Git et outils communs. Les binaires et ressources à injecter doivent être regroupés dans un préfixe autonome (par exemple `/opt/slopify-pi`).
+2. Un Dockerfile de développement propre au projet : par exemple image .NET SDK correspondant à `global.json`, ou environnement Python/Java/Rust, **sans connaissance de Pi ni de Slopify**.
+
+**Slopify réalise la composition automatiquement** au démarrage ou lors de la préparation du run : construire/résoudre l'image du projet, puis générer un Dockerfile d'assemblage multi-stage qui prend l'image projet comme base et **copie le bundle Pi** depuis l'image Slopify. Le résultat est une troisième image `slopify/run-<digest>`, mise en cache, à partir de laquelle plusieurs conteneurs de tâches indépendants sont lancés.
+
+Exemple conceptuel du Dockerfile généré (illustration, non encore exécutable sans packaging adapté) :
+
+```dockerfile
+FROM slopify/pi:VERSION AS pi-tools
+FROM projet-dev:VERSION
+COPY --from=pi-tools /opt/slopify-pi/ /opt/slopify-pi/
+ENV PATH="/opt/slopify-pi/bin:${PATH}"
+WORKDIR /workspace
+```
+
+Lancer Pi avec `--mode rpc` dans chaque conteneur final ; le code C# est compilé avec les outils du projet, pas par `docker build` à chaque ticket.
+
+**Limites importantes :** Docker ne fusionne pas arbitrairement deux images avec leurs métadonnées ni toutes leurs dépendances. `COPY --from` transfère des **fichiers**, pas automatiquement les variables d'environnement, services, bibliothèques système et points d'entrée. Vérifier la compatibilité Linux/architecture (`arm64` sur Mac M4), libc et des binaires copiés. Si l'image projet n'est pas compatible, refuser avec un message explicite plutôt que prétendre qu'une fusion universelle fonctionne. Prévoir un smoke de composition .NET SDK + Pi, un test du cache et un test d'exécution du SDK depuis un conteneur assemblé.
+
+Conserver les Dockerfiles du projet **inchangés**. Réutiliser les images construites à identité/digest égale : aucune reconstruction d'image par ticket. Ne pas imposer Docker-in-Docker, monter le socket Docker dans l'agent ou ajouter un deuxième conteneur d'outils pour le POC.
+
+Documentation Docker de référence : https://docs.docker.com/build/building/multi-stage/ (image externe comme source de `COPY --from`).
+
 ## Remarque — capacités RPC à garder en tête, **hors périmètre pour l'instant**
 
 L'intérêt de RPC dépasse le simple lancement d'un agent ; ces fonctionnalités sont des **pistes futures**, et **ne doivent ni bloquer ni complexifier le premier lot** :
