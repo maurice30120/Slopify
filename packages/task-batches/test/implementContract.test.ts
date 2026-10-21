@@ -19,12 +19,15 @@ interface Observation {
   resources: Record<string, string>;
 }
 
-async function contractFixture(t: test.TestContext, mode: 'local' | 'sandbox', agent: 'pi' | 'codex', explicitReview = false) {
+async function contractFixture(t: test.TestContext, mode: 'local' | 'sandbox', agent: 'pi' | 'codex', options: {
+  review?: 'leading' | 'inline';
+  firstSource?: string;
+} = {}) {
   const invocation = agent === 'pi' ? '/skill:implement ' : '$implement\n';
   const reviewInvocation = agent === 'pi' ? '/skill:code-review ' : '$code-review\n';
   const tasks = [
-    { id: 'first', agent, source: 'first.md', dependsOn: [], prompt: ticket },
-    { id: 'final-review', agent, source: 'second.md', dependsOn: ['first'], prompt: (explicitReview ? reviewInvocation : invocation) + ticket },
+    { id: 'first', agent, source: options.firstSource ?? 'first.md', dependsOn: [], prompt: ticket },
+    { id: 'final-review', agent, source: 'second.md', dependsOn: ['first'], prompt: (options.review === 'inline' ? 'Apply ' : '') + (options.review ? reviewInvocation : invocation) + ticket },
   ];
   const f = await prepareSlopifyFixture('slopify-implement-contract-', t, tasks);
   await writeFile(path.join(f.root, 'spec.md'), specification);
@@ -144,8 +147,24 @@ test(`${agent} ${mode} receives the installed implement contract and retains the
 
 for (const agent of ['pi', 'codex'] as const) {
 test(`an explicit native ${agent} review task keeps its requested workflow`, async t => {
-  const f = await contractFixture(t, 'local', agent, true);
+  const f = await contractFixture(t, 'local', agent, { review: 'leading' });
   assert.equal(f.state.status, 'succeeded');
   assert.equal(f.observed[1].prompt, f.tasks[1].prompt);
 });
 }
+
+test('a Codex review reference inside the prompt keeps its requested workflow', async t => {
+  const f = await contractFixture(t, 'local', 'codex', { review: 'inline' });
+  assert.equal(f.state.status, 'succeeded');
+  assert.equal(f.observed[1].prompt, f.tasks[1].prompt);
+});
+
+test('a ticket source named final-review remains an implementation task', async t => {
+  const f = await contractFixture(t, 'local', 'pi', { firstSource: 'final-review' });
+  assert.equal(f.state.status, 'succeeded');
+  assert.match(f.observed[0].prompt, /^\/skill:implement /);
+  assert.ok(f.observed[0].prompt.endsWith(f.tasks[0].prompt));
+  assert.equal(f.state.tasks[0].source, 'final-review');
+  assert.match(f.observed.at(-1)!.prompt, /^\/skill:code-review /);
+  assert.equal(f.state.tasks.at(-1)!.id, 'final-review-2');
+});

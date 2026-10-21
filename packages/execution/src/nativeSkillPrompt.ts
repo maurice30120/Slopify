@@ -10,7 +10,7 @@ export function nativeSkillPrompt(request: Pick<TaskExecutionRequest, 'agent' | 
     if (/^\/skill:(?:implement|code-review)(?: |$)/.test(request.prompt)) return request.prompt;
     return `${command} ${request.prompt}`;
   }
-  if (/^\$code-review(?![\w-])/.test(request.prompt)) return request.prompt;
+  if (/\$code-review(?![\w-])/.test(request.prompt)) return request.prompt;
   if (new RegExp(`\\$${skill}(?![\\w-])`).test(request.prompt)) return request.prompt;
   return `$${skill}\n\n${request.prompt}`;
 }
