@@ -22,8 +22,19 @@ Les six recommandations du premier tour ont été acceptées. Elles cadrent le P
 2. **Q2 — Configuration fournisseur Pi réutilisée.** Réutiliser la configuration Pi existante, avec passage sélectif des seuls paramètres et identifiants nécessaires au conteneur ; pas de second gestionnaire de fournisseurs dans Slopify. Ne pas embarquer de secrets dans l'image, ni monter aveuglément toute la configuration personnelle. Les modalités exactes de sélection et de transfert des identifiants restent à préciser.
 3. **Q3 — Capacité initiale de deux agents principaux.** Deux conteneurs Pi simultanés par défaut pour le POC, plafond configurable de dix. La consommation en mémoire et les sous-agents concurrents restent à mesurer sur le Mac M4 ; ne pas confondre nombre de tâches et nombre total de processus Pi.
 4. **Q4 — Revue obligatoire bloquante.** Une revue requise qui échoue, n'a pas pu démarrer ou fournit un verdict non vérifiable interdit de marquer la tâche comme réussie. Retenir les modifications, événements, logs et preuves pour diagnostic/reprise ; formaliser ensuite le protocole de verdict observable.
-5. **Q5 — Pas de migration complexe des anciens runs.** Préserver la consultation des preuves historiques existantes selon les données disponibles, mais ne pas promettre de reprise automatique d'exécutions `local` et `sandbox` avec le nouveau runtime. Aucun effacement automatique des preuves.
+5. **Q5 — Aucune rétrocompatibilité.** Aucun support, migration, lecture dédiée, reprise ou conversion des anciens runs `local` et `sandbox`. La version pivotée n'a pas à interpréter leurs anciens formats d'état. Les preuves historiques éventuellement présentes ne sont pas effacées automatiquement : supprimer une compatibilité n'implique pas de supprimer les données.
 6. **Q6 — Compatibilité limitée et explicite.** Cibles initiales : images Linux compatibles glibc, architectures ARM64 et x64 ; refuser proprement une base incompatible au lieu de promettre l'assemblage universel de toutes les images Docker (notamment Alpine/musl, Windows ou distroless sans prérequis).
+
+## Décisions validées — entretien Grill with Docs, tour 2 (Q7 à Q12)
+
+Les six recommandations du deuxième tour sont validées ; elles complètent celles du premier tour.
+
+7. **Q7 — Secrets des fournisseurs.** Utiliser exclusivement les identifiants nécessaires à Pi pour les fournisseurs choisis, transmis de manière sélective au démarrage du conteneur (ou par un mécanisme temporaire équivalent), jamais incorporés dans les images Docker et jamais reproduits dans les logs ou preuves. Éviter de monter la configuration personnelle complète.
+8. **Q8 — Aucun Dockerfile choisi : échec explicite.** Si `.slopify/runtime.yaml` ne désigne pas une image de développement ou un Dockerfile valide, refuser le lancement avec un diagnostic utile ; ne pas fabriquer ni choisir arbitrairement un Dockerfile.
+9. **Q9 — Succès fondé sur des preuves.** Le seul signal de fin RPC ne suffit pas. Exiger la fin correcte de Pi, la réussite des validations requises, le succès démontrable de toute revue obligatoire et un checkpoint Git valide. Si une preuve obligatoire manque ou est incertaine, ne pas classer le ticket comme réussi. Définir le format exact du verdict dans le protocole d'exécution.
+10. **Q10 — Sous-agents pilotés par Pi.** Slopify borne le nombre de conteneurs Pi principaux ; Pi orchestre seul ses sous-agents, sans nouvelle couche Slopify de scheduling interne. Observer la consommation réelle sans introduire de limitation complexe au POC.
+11. **Q11 — Image assemblée mise en cache.** Réutiliser l'image Docker résultante tant que les identités immuables de l'image projet et du bundle Pi sont inchangées ; reconstruire uniquement si l'une change ou à la demande explicite. Ne jamais reconstruire une image par ticket.
+12. **Q12 — Réseau Docker simple.** Accès sortant Internet via réseau Docker classique ; aucun port entrant publié et aucun accès au socket Docker hôte depuis les conteneurs Pi. Aucun filtrage avancé par domaine au POC.
 
 ## Périmètre du premier lot — intention
 
@@ -32,7 +43,7 @@ Les six recommandations du premier tour ont été acceptées. Elles cadrent le P
 3. Gérer correctement le démarrage, les événements de fin, les erreurs, l'arrêt et le nettoyage du conteneur. Empêcher qu'une reprise crée silencieusement un deuxième agent encore actif.
 4. Préserver les checkpoints et validations Git existants, la revue finale et la compatibilité des résultats d'exécution.
 5. Tests unitaires et d'intégration avec faux Pi RPC et vrais dépôts Git temporaires, sans fournisseur ni Docker en CI ; smoke réel Docker + Pi **manuel sur le Mac** avant validation produit.
-6. Évaluer les états historiques issus des modes `local` et `sandbox` avant toute suppression ; ne pas déclarer les anciennes reprises compatibles sans preuve.
+6. Ne développer aucune migration ni compatibilité des anciens runs `local` et `sandbox`. Leurs fichiers historiques ne doivent pas être effacés automatiquement.
 
 ## Composition des environnements Docker — décision de conception à prototyper
 
@@ -96,6 +107,6 @@ L'intérêt de RPC dépasse le simple lancement d'un agent ; ces fonctionnalité
 - Images Pi, extension de sous-agents et stratégie de configuration/identification des fournisseurs à retenir.
 - Concurrence par défaut (2 ou 3), ressources Docker et persistance minimale requise pour les smokes.
 - Contrat exact des événements/erreurs RPC et critère de succès fiable en présence d'échecs de sous-agents.
-- Politique de migration ou d'archivage des anciens runs des modes supprimés.
+- Aucune rétrocompatibilité des anciens runs : Q5 est tranchée. Aucun chantier de migration ni d'archivage automatique.
 
 Aucun code produit n'est modifié par ce document.
