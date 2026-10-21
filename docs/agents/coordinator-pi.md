@@ -12,7 +12,26 @@ Pi est l'agent unique qui interagit avec l'utilisateur pour :
 4. **Présenter** le bilan final avec les preuves et les limitations
 5. **Proposer** les interventions nécessaires (reprise, résolution de conflits, correction)
 
-Slopify exécute les tâches dans des sandboxes Docker isolés. Pi ne pilote pas les lancements tâche par tâche, mais reçoit les résultats et les transmet à l'utilisateur.
+Slopify exécute les tâches soit dans des Docker Sandboxes isolées (`sandbox`, mode par défaut),
+soit directement avec les agents Pi/Codex configurés sur la machine (`local`, sans Docker).
+Le mode est commun à tout le lot et figé pour les reprises. Pi ne pilote pas les lancements
+tâche par tâche, mais reçoit les résultats et les transmet à l'utilisateur.
+
+**Choix du mode :** `slopify tasks run batch.json --mode local` ou `--mode sandbox`.
+Sans option, le mode vient de `.slopify/runtime.yaml`, sinon `sandbox` est utilisé.
+Les runs locaux travaillent toujours dans des clones Git privés et ne bénéficient
+pas de l'isolation fichiers/réseau d'un sandbox Docker.
+
+**Reprise après interruption :** `tasks resume` et `tasks resume-task` doivent
+vérifier l'arrêt confirmé de l'ancien agent local et de ses descendants. Si le
+processus est encore vivant ou que son identité est incertaine, la reprise est
+refusée : inspecter les clones et les traces au lieu de relancer en aveugle.
+Un SIGKILL du lanceur n'exécute pas de handler de nettoyage.
+
+**Tests :** `npm test` en CI utilise de faux agents et pas Docker ; les deux smokes
+réels `npm run smoke:local` et `npm run smoke:docker` sont exclusivement manuels
+sur le poste développeur. Les décisions d'architecture sont décrites dans
+l'[ADR dual-mode](../adr/0015-v2-dual-mode-and-packages.md).
 
 ---
 
@@ -845,3 +864,18 @@ Pi **ne doit pas** :
 ---
 
 *Document version: 1.0 - Aligné sur Slopify V2 spec et ADR 0007-0011*
+
+## Vérification et santé des processus de test
+
+Sur une modification du moteur, commencer par les tests ciblés du package concerné,
+puis lancer `npm test` avant livraison. Les tests automatiques emploient Git réel
+dans des dépôts temporaires et des agents/`sbx` simulés : **pas de Docker réel
+dans la CI**. Tout processus enfant créé par un test doit être attendu et nettoyé
+avec `t.after`. Ne pas laisser de descendants ou de timers persistants.
+Si le sandbox de développement signale `Cannot fork` ou `pthread_create`,
+cesser immédiatement les relances, pousser la branche et consulter les résultats CI.
+
+Les essais réels sont manuels, **sur le poste utilisateur uniquement** :
+`npm run smoke:local` pour les agents natifs, `npm run smoke:docker` pour Docker
+Sandboxes. Ils ne sont jamais déclenchés par `npm test` ni GitHub Actions.
+Voir `docs/testing.md`.

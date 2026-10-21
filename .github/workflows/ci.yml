@@ -14,7 +14,12 @@ concurrency:
 
 jobs:
   build-and-test:
-    runs-on: ubuntu-latest
+    name: V2 build and tests (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
 
     steps:
       - name: Check out repository
@@ -29,8 +34,34 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Clean V2 workspaces
+        run: npm run clean
+
       - name: Build workspaces
         run: npm run build
 
-      - name: Test workspaces
+      - name: Test workspaces (fake agents, temporary Git; no Docker/provider)
         run: npm test
+
+      - name: Audit V2 workspace graph and public exports
+        run: npm run audit:v2
+
+      - name: Verify installer, symlink and init assets (fake npx, offline)
+        shell: bash
+        run: |
+          tmp="$(mktemp -d)"
+          trap 'rm -rf "$tmp"' EXIT
+          mkdir -p "$tmp/home" "$tmp/bin" "$tmp/project"
+          printf '#!/bin/sh\nexit 0\n' > "$tmp/bin/npx"
+          chmod +x "$tmp/bin/npx"
+          HOME="$tmp/home" PATH="$tmp/bin:$PATH" bash scripts/install.sh "$tmp/bin"
+          PATH="$tmp/bin:$PATH" "$tmp/bin/slopify" --help >/dev/null
+          PATH="$tmp/bin:$PATH" "$tmp/bin/slopify" tasks --help >/dev/null
+          PATH="$tmp/bin:$PATH" "$tmp/bin/slopify" init --cwd "$tmp/project" --host all --yes --json > "$tmp/init.json"
+          test -f "$tmp/project/.scratch/slopify/spec.md"
+          test -f "$tmp/project/.pi/skills/slopify-launch/SKILL.md"
+          test -f "$tmp/project/.agents/skills/slopify-launch/SKILL.md"
+          node -e "const x=require(process.argv[1]); if(x.result!=='succeeded')process.exit(1)" "$tmp/init.json"
+
+      - name: Verify CLI package metadata
+        run: npm pack --dry-run -w slopify

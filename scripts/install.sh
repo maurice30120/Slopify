@@ -7,7 +7,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-CLI="$REPO_ROOT/slopify/dist/src/cli.js"
+CLI="$REPO_ROOT/apps/cli/dist/src/cli.js"
 BIN_DIR="${1:-${SLOPIFY_BIN_DIR:-$HOME/.local/bin}}"
 MARKER_BEGIN="# >>> slopify install >>>"
 MARKER_END="# <<< slopify install <<<"
