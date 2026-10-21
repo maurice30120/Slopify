@@ -12,7 +12,18 @@ Branche de réflexion : `feature/pi-rpc-docker-pivot`, issue du commit `2f9d8159
 - **Sous-agents Pi conservés** : Pi reste libre de déléguer explorations, recherches et revues à l'intérieur de son conteneur. La version et le contrat de l'extension choisie doivent être vérifiés par un test d'intégration.
 - **Ordonnanceur Slopify conservé** : dépendances, admission dynamique des tickets prêts, parallélisme borné (jusqu'à dix actuellement), état durable, blocage des descendants en échec, reprises explicites, suivi, preuves, checkpoints, résolution de conflits et revue finale.
 - **Git reste sous responsabilité de Slopify** : clones par tentative basés sur un commit épinglé, intégration sérialisée des checkpoints et branche d'intégration par run. Aucun changement implicite dans l'arbre de travail de l'utilisateur.
-- **POC minimal** : commencer prudemment avec environ deux ou trois tâches simultanées, sans remettre en cause la borne configurable existante ; pas de renforcement avancé de sécurité à ce stade (mais ne pas monter l'intégralité du disque ni exposer inutilement des identifiants).
+- **POC minimal** : commencer avec deux tâches simultanées par défaut, sans remettre en cause la borne configurable existante ; pas de renforcement avancé de sécurité à ce stade (mais ne pas monter l'intégralité du disque ni exposer inutilement des identifiants).
+
+## Décisions validées — entretien Grill with Docs, tour 1 (Q1 à Q6)
+
+Les six recommandations du premier tour ont été acceptées. Elles cadrent le POC sans autoriser encore l'implémentation.
+
+1. **Q1 — Désignation explicite de l'environnement projet.** Le projet fournit dans `.slopify/runtime.yaml` une référence explicite à son **image de développement** ou au Dockerfile à construire. Slopify n'infère pas arbitrairement quel Dockerfile choisir ; il produit ensuite automatiquement l'**image d'exécution assemblée**, sans modifier la définition du projet.
+2. **Q2 — Configuration fournisseur Pi réutilisée.** Réutiliser la configuration Pi existante, avec passage sélectif des seuls paramètres et identifiants nécessaires au conteneur ; pas de second gestionnaire de fournisseurs dans Slopify. Ne pas embarquer de secrets dans l'image, ni monter aveuglément toute la configuration personnelle. Les modalités exactes de sélection et de transfert des identifiants restent à préciser.
+3. **Q3 — Capacité initiale de deux agents principaux.** Deux conteneurs Pi simultanés par défaut pour le POC, plafond configurable de dix. La consommation en mémoire et les sous-agents concurrents restent à mesurer sur le Mac M4 ; ne pas confondre nombre de tâches et nombre total de processus Pi.
+4. **Q4 — Revue obligatoire bloquante.** Une revue requise qui échoue, n'a pas pu démarrer ou fournit un verdict non vérifiable interdit de marquer la tâche comme réussie. Retenir les modifications, événements, logs et preuves pour diagnostic/reprise ; formaliser ensuite le protocole de verdict observable.
+5. **Q5 — Pas de migration complexe des anciens runs.** Préserver la consultation des preuves historiques existantes selon les données disponibles, mais ne pas promettre de reprise automatique d'exécutions `local` et `sandbox` avec le nouveau runtime. Aucun effacement automatique des preuves.
+6. **Q6 — Compatibilité limitée et explicite.** Cibles initiales : images Linux compatibles glibc, architectures ARM64 et x64 ; refuser proprement une base incompatible au lieu de promettre l'assemblage universel de toutes les images Docker (notamment Alpine/musl, Windows ou distroless sans prérequis).
 
 ## Périmètre du premier lot — intention
 
