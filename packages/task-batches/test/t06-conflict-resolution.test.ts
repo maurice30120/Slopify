@@ -8,6 +8,7 @@ import test from 'node:test';
 import type { SubprocessExecutor } from '@slopify/execution';
 import { type BatchTask, type TaskBatchConflict } from '@slopify/task-batches';
 import { TaskBatchService } from './taskBatchTestService.js';
+import { stripImplementationInvocation } from './agentPromptFixture.js';
 
 /** T06: Suspend and resolve conflicts on explicit action */
 
@@ -90,7 +91,7 @@ async function fixture(t: { after(fn: () => Promise<void>): void }, tasks: Batch
       if (a.some((v: string) => v.includes('npm root -g'))) return ok('/opt/pi/examples/extensions/subagent/index.ts\n');
       if (a.includes('sh') && a.some((v: string) => v.includes('$HOME/.codex/sessions'))) return ok('/home/agent/.codex/sessions');
       if ((a.includes('codex') && a.includes('--json')) || (a.includes('pi') && a.includes('--print'))) {
-        const id = a.at(-1)!.replace(/^(?:\/skill:implement |\$implement\n\n)/, '');
+        const id = stripImplementationInvocation(a.at(-1)!);
         launched.push(id);
         const exitCode = await agent(id, sandbox);
         const stdout = a.includes('pi')

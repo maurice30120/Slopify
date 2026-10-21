@@ -497,7 +497,9 @@ export class TaskBatchService {
       // disparaît pendant la copie et la tentative échoue pour de faux.
       await this.git.clonePinned(integrationPath, workspacePath, taskBaseCommit);
       const result = await executor.execute({ runId: snapshot.runId, taskId: task.id, attemptId, agent: task.agent,
-        skill: task.source === 'final-review' ? 'code-review' : 'implement',
+        // The service appends its final review after every user task. Provenance
+        // and IDs remain user-controlled, so neither identifies that task.
+        skill: task === snapshot.tasks.at(-1) ? 'code-review' : 'implement',
         ...(task.model ? { model: task.model } : {}), ...(task.effort ? { effort: task.effort } : {}),
         workspacePath, specFile: snapshot.context.specFile, prompt: task.prompt, taskBaseCommit,
         runBaseCommit: snapshot.runBaseCommit, resultDirectory, signal,

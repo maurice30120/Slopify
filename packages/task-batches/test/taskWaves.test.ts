@@ -9,6 +9,7 @@ import type { SubprocessExecutor } from '@slopify/execution';
 import { type BatchTask, type TaskBatchSnapshot, type TaskBatchServiceOptions } from '@slopify/task-batches';
 import { TaskBatchService } from './taskBatchTestService.js';
 import { taskBatchReport, formatTaskBatchReport } from '@slopify/task-batches';
+import { stripImplementationInvocation } from './agentPromptFixture.js';
 
 function git(repo: string, ...args: string[]) {
   return execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8' }).trim();
@@ -91,7 +92,7 @@ async function fixture(t: { after(fn: () => Promise<void>): void }, tasks: Batch
       if (a.some(v => v.includes('npm root -g'))) return ok('/opt/pi/examples/extensions/subagent/index.ts\n');
       if (a.includes('sh') && a.some(v => v.includes('$HOME/.codex/sessions'))) return ok('/home/agent/.codex/sessions');
       if ((a.includes('codex') && a.includes('--json')) || (a.includes('pi') && a.includes('--print'))) {
-        const id = String(a.at(-1)).includes('code-review au diff complet') ? 'final-review' : a.at(-1)!.replace(/^(?:\/skill:implement |\$implement\n\n)/, '');
+        const id = String(a.at(-1)).includes('code-review au diff complet') ? 'final-review' : stripImplementationInvocation(a.at(-1)!);
         launched.push(id);
         const exitCode = await agent(id, sandbox, request.signal);
         const stdout = a.includes('pi')
