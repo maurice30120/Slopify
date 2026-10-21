@@ -36,6 +36,16 @@ Les six recommandations du deuxième tour sont validées ; elles complètent cel
 11. **Q11 — Image assemblée mise en cache.** Réutiliser l'image Docker résultante tant que les identités immuables de l'image projet et du bundle Pi sont inchangées ; reconstruire uniquement si l'une change ou à la demande explicite. Ne jamais reconstruire une image par ticket.
 12. **Q12 — Réseau Docker simple.** Accès sortant Internet via réseau Docker classique ; aucun port entrant publié et aucun accès au socket Docker hôte depuis les conteneurs Pi. Aucun filtrage avancé par domaine au POC.
 
+## Décisions validées — entretien Grill with Docs, tour 3 (Q13 à Q17)
+
+Les cinq recommandations du troisième tour sont validées. Elles fixent les réactions de Slopify aux incidents sans refaire l'ordonnanceur existant.
+
+13. **Q13 — Agent Pi sans réponse.** Prévoir une limite temporelle configurable pour détecter un agent Pi qui ne répond plus. En cas de dépassement du seuil défini, arrêter le conteneur et tous ses descendants, conserver les preuves et marquer la tentative en échec ; préciser ultérieurement les signaux servant à distinguer un long travail légitime d'un blocage.
+14. **Q14 — Reprise après arrêt brutal.** Avant de lancer une nouvelle tentative, vérifier la disparition ou l'arrêt effectif des conteneurs et agents encore associés aux tentatives précédentes. En cas de doute, ne pas redémarrer une deuxième copie susceptible de travailler simultanément ; exiger une inspection ou un nettoyage explicite.
+15. **Q15 — Échec isolé.** L'échec d'une tâche n'interrompt pas les tâches indépendantes déjà admises : celles-ci poursuivent jusqu'à leur propre résultat. Seuls ses descendants dans le graphe de dépendances sont bloqués ; conserver l'état de chacun dans le run.
+16. **Q16 — Indisponibilité Docker.** Une panne de Docker suspend l'ensemble du lot, en conservant l'état persistant et les preuves déjà acquises. Après rétablissement et vérification des conteneurs, la reprise exige une demande explicite ; ne pas relancer silencieusement les tâches.
+17. **Q17 — Validation échouée.** Garder les modifications et diagnostics d'une tentative dont les tests échouent sans intégrer son checkpoint dans la branche finale. Une nouvelle tentative repart d'un état Git précédemment validé, avec ses propres preuves ; ne pas faire passer un résultat non validé pour intégré.
+
 ## Périmètre du premier lot — intention
 
 1. Adapter le contrat `TaskExecutor` existant à un exécuteur Pi RPC utilisant `docker` classique ; **ne pas réécrire le scheduler**.
