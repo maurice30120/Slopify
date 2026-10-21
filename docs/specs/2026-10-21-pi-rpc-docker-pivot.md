@@ -27,7 +27,7 @@ Branche de réflexion : `feature/pi-rpc-docker-pivot`, issue du commit `2f9d8159
 
 L'utilisateur souhaite **deux définitions réellement indépendantes** :
 
-1. Une image `slopify/pi` minimale, possédée par Slopify : exécutable Pi, runtime Node.js nécessaire, extension de sous-agents validée, Git et outils communs. Les binaires et ressources à injecter doivent être regroupés dans un préfixe autonome (par exemple `/opt/slopify-pi`).
+1. Une image `slopify/pi` minimale, possédée par Slopify : exécutable Pi, runtime éventuellement embarqué suivant la variante A/B ci-dessous, extension de sous-agents validée, Git et outils communs. Les binaires et ressources à injecter doivent être regroupés dans un préfixe autonome (par exemple `/opt/slopify-pi`).
 2. Un Dockerfile de développement propre au projet : par exemple image .NET SDK correspondant à `global.json`, ou environnement Python/Java/Rust, **sans connaissance de Pi ni de Slopify**.
 
 **Slopify réalise la composition automatiquement** au démarrage ou lors de la préparation du run : construire/résoudre l'image du projet, puis générer un Dockerfile d'assemblage multi-stage qui prend l'image projet comme base et **copie le bundle Pi** depuis l'image Slopify. Le résultat est une troisième image `slopify/run-<digest>`, mise en cache, à partir de laquelle plusieurs conteneurs de tâches indépendants sont lancés.
@@ -38,15 +38,28 @@ Exemple conceptuel du Dockerfile généré (illustration, non encore exécutable
 FROM slopify/pi:VERSION AS pi-tools
 FROM projet-dev:VERSION
 COPY --from=pi-tools /opt/slopify-pi/ /opt/slopify-pi/
-\# Slopify lance Pi avec /opt/slopify-pi/.../node sans modifier le PATH du projet.
+# Slopify lance Pi depuis son emplacement privé, sans modifier le PATH du projet.
 WORKDIR /workspace
 ```
 
 Lancer Pi avec `--mode rpc` dans chaque conteneur final ; le code C# est compilé avec les outils du projet, pas par `docker build` à chaque ticket.
 
-**Option à privilégier si les tests réussissent : Pi binaire officiel compilé avec Bun.** Les releases officielles Pi fournissent un paquet `pi-linux-arm64.tar.gz` et `pi-linux-x64.tar.gz` construit via `bun build --compile` : cela permet d'ajouter le répertoire complet du binaire Pi dans l'image de développement, sans installer une seconde version de Node.js ni Bun séparément dans l'image finale. Slopify lancerait directement `/opt/slopify-pi/pi --mode rpc`. Ne pas confondre ce binaire officiel autonome avec l'exécution du package npm de Pi sous un Bun arbitraire : celle-ci a présenté des incompatibilités RPC et des problèmes d'arrêt. Des problèmes de résolution de modules existent aussi pour certaines extensions dans les binaires Bun. **Décision conditionnelle :** réaliser un test ciblé du binaire officiel, du protocole RPC (prompt, événements, interruption), de l'extension de sous-agents retenue, et de son éventuel gestionnaire de packages ; vérifier que la version de Node du projet reste intacte. En cas d'incompatibilité, garder en repli Pi npm avec son Node privé, sans modifier le PATH du projet. Références : https://github.com/earendil-works/pi/releases ; https://github.com/earendil-works/pi/blob/main/scripts/build-binaries.sh ; https://github.com/earendil-works/pi/issues/6085 ; https://github.com/earendil-works/pi/issues/10031 .
+### Variantes d'exécution Pi à comparer avant de choisir
 
-**Coexistence de runtimes Node.js (contrainte de conception) :** le projet peut exiger Node.js 20 alors que Pi exige actuellement Node.js >= 22.19. L'image du projet conserve son Node.js et son `PATH` par défaut. L'outillage Slopify embarque sa propre version de Node.js dans `/opt/slopify-pi/`, sans la placer devant le Node du projet dans le `PATH` général ; Slopify démarre Pi avec un chemin explicite vers **son** exécutable Node.js et le point d'entrée JavaScript de Pi (ou un wrapper qui fixe exclusivement cet interpréteur). Ainsi, `node`, `npm` et les outils invoqués dans le terminal de Pi utilisent la version **du projet**, sauf lancement explicite d'un outil Slopify ; Pi et ses extensions tournent sur la version **de Pi**. Ne pas ajouter `/opt/slopify-pi/bin` devant le Node de développement dans le `PATH` général, car cela masquerait le Node du projet. Ajouter un test de composition démontrant simultanément `node -v` = version du projet et Pi RPC opérationnel avec son Node distinct. Contrôler tout de même compatibilité libc/architecture et extensions à modules natifs. Source Pi : https://github.com/earendil-works/pi (README, prérequis Node.js).
+**Ne pas trancher par hypothèse : prototyper et tester les deux possibilités sur la même image de développement (.NET SDK + éventuellement Node.js 20).** Garder la version de Node et le `PATH` du projet inchangés dans les deux cas.
+
+- **Variante A — Pi npm + Node privé.** Copier Pi et une version de Node.js compatible avec Pi (actuellement >= 22.19) sous `/opt/slopify-pi`. Lancer explicitement le point d'entrée de Pi avec **son** Node ; l'agent et les sous-agents n'écrasent jamais le `node` du projet. Plus classique, mais bundle plus volumineux et deux runtimes Node possibles.
+- **Variante B — binaire Pi officiel compilé avec Bun.** Copier l'exécutable officiel Linux adapté à l'architecture, avec les assets dont il dépend, dans `/opt/slopify-pi`. Démarrer directement ce binaire en `--mode rpc`. Il n'exige normalement ni installation séparée de Node.js ni de Bun pour Pi. Risque particulier : chargement de l'extension de sous-agents, imports dynamiques, extensions et sous-processus. Il ne s'agit **pas** de lancer arbitrairement la distribution npm sous Bun.
+
+**Recette comparative minimale, obligatoire pour les deux variantes :** démarrage RPC, prompt et événements, exécution d'une commande du projet, délégation à un sous-agent, collecte d'erreurs de sous-agents, annulation/arrêt sans processus orphelin, résultat et checkpoint Git, ainsi que le maintien du `node --version` propre au projet. Tester sur l'architecture du Mac M4 (conteneurs Linux ARM64) ; vérifier les contraintes de libc/dépendances natives et le fonctionnement des sous-agents. Retenir la solution **la plus simple parmi celles qui passent l'ensemble des tests** ; en cas d'échec du binaire Bun, conserver Node privé. Aucun choix définitif avant preuve.
+
+Références : https://github.com/earendil-works/pi/releases ; https://github.com/earendil-works/pi/issues/6085 ; https://github.com/earendil-works/pi/issues/10031 .
+
+### Extension Pi nécessaire au POC
+
+**Une seule extension explicitement requise : les sous-agents.** L'adaptateur Pi actuel (`packages/agent-pi/src/index.ts`) charge explicitement `examples/extensions/subagent/index.ts`. Garder une seule extension de délégation choisie et sa version épinglée ; s'assurer que ses sous-agents (notamment les rôles de revue Standards/Spec) fonctionnent sous RPC dans les **deux** variantes ci-dessus.
+
+Les outils ordinaires de Pi (lecture, édition, shell), le protocole RPC et les skills `implement`, `tdd`, `code-review` **ne sont pas des extensions supplémentaires**. Conserver ces skills et leurs ressources si la recette en dépend, sans charger d'extensions additionnelles. Les outils de diagnostic facultatifs comme Pi Lens ne constituent pas un prérequis du POC. Une configuration Pi utilisateur pouvant charger d'autres extensions ne doit pas être requise pour la reproductibilité.
 
 **Limites importantes :** Docker ne fusionne pas arbitrairement deux images avec leurs métadonnées ni toutes leurs dépendances. `COPY --from` transfère des **fichiers**, pas automatiquement les variables d'environnement, services, bibliothèques système et points d'entrée. Vérifier la compatibilité Linux/architecture (`arm64` sur Mac M4), libc et des binaires copiés. Si l'image projet n'est pas compatible, refuser avec un message explicite plutôt que prétendre qu'une fusion universelle fonctionne. Prévoir un smoke de composition .NET SDK + Pi, un test du cache et un test d'exécution du SDK depuis un conteneur assemblé.
 
