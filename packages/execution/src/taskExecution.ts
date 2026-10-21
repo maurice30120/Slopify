@@ -23,6 +23,8 @@ export interface TaskExecutionRequest {
   workspacePath: string;
   specFile: string;
   prompt: string;
+  /** Native skill selected by the batch; absent on older callers (implement). */
+  skill?: 'implement' | 'code-review';
   taskBaseCommit: string;
   runBaseCommit: string;
   resultDirectory: string;

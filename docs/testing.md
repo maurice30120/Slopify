@@ -22,6 +22,15 @@ npm test
 
 Toujours commencer par le test le plus ciblé qui couvre le changement. Ne lancer la suite complète qu'après les tests ciblés et avant une livraison ; ne pas la relancer en boucle si le conteneur de travail atteint sa limite de processus.
 
+`implementContract.test.ts` exerce `TaskBatchService.run` avec les adaptateurs
+de production, de vrais dépôts Git temporaires, des exécutables Pi/Codex simulés
+et un faux `sbx`. La matrice local/sandbox vérifie les invocations natives, les
+tickets et la spec conservés, l'accès aux skills et ressources, les baselines,
+la revue finale distincte, les preuves et le workspace utilisateur préservé.
+Elle prouve le contrat transmis et les résultats simulés ; l'obéissance d'un
+LLM réel et l'adjudication complète de l'ADR 0014 ne sont pas établies par ces
+tests. Les tests existants de verdicts et de diagnostics restent applicables.
+
 Si `Cannot fork` ou `pthread_create` apparaît dans un environnement de développement saturé, arrêter immédiatement les relances, pousser le commit sur une branche et consulter les contrôles de CI de la PR. N'essayez pas d'effacer au hasard les processus du système ni de tuer PID 1.
 
 ### Tests sensibles à l'environnement

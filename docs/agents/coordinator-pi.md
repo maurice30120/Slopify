@@ -171,6 +171,9 @@ Pi : "Le ticket task-total dépend de org/repo#44 qui n'est pas dans le lot appr
 
 Le prompt exige les sorties réelles des validations et les résultats des deux reviewers. Il doit demander de signaler toute preuve de TDD ou de délégation manquante comme non vérifiée, sans la déduire des commits.
 
+La revue finale du lot complète les revues demandées par le skill `implement`
+pour chaque ticket. Elle ne dispense d'aucune étape du skill installé.
+
 Pi **ajoute toujours** une tâche finale dépendant de **toutes** les tâches d'implémentation :
 
 ```json
@@ -719,18 +722,19 @@ Dans son sandbox, l'agent reçoit :
 
 ### 8.2 Ce que l'implémenteur doit faire
 
-Suivre le parcours du skill `implement` :
+Le skill `implement` installé et toutes ses ressources font autorité. Les
+sous-skills qu'il demande, notamment `tdd` et `code-review`, restent ceux de
+l'installation, avec leurs propres ressources ; le harnais ne recopie ni ne
+remplace leurs instructions. La revue finale du lot est conservée en complément.
 
-1. **Lire** le ticket et la spec locale
-2. **Travailler en cycles TDD** : rouge → vert par comportement
-3. **Utiliser les interfaces de test approuvées**
-4. **Exécuter** typechecking et tests ciblés régulièrement
-5. **Faire un commit provisoire** avant la revue
-6. **Exécuter la suite complète** (`npm run build`, `npm test`)
-7. **Effectuer la revue** (`code-review` depuis le commit de départ)
-8. **Corriger** si nécessaire
-9. **Faire un commit final**
-10. **Produire un compte rendu** avec preuves et limitations
+Pi reçoit une invocation native `/skill:implement ` en tête (espace avant le
+ticket) et Codex une référence `$implement`. Une invocation native déjà valide
+est conservée ; sinon Slopify ajoute celle de l'agent devant le prompt original,
+sans modifier le ticket. La revue finale utilise de même `code-review`.
+Le harnais accompagne l'invocation avec la spec figée, les baselines de tentative
+et de run, le clone privé, les interfaces de test approuvées et les chemins des
+preuves. En local, la découverte native des skills personnels est conservée ;
+en sandbox, le magasin complet est exposé en lecture seule.
 
 ### 8.3 Preuves attendues
 

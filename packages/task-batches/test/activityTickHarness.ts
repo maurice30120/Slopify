@@ -152,7 +152,7 @@ export function fakeSbxExecutor(options: FakeSbxOptions): SubprocessExecutor {
       if (a.some((v: string) => v.includes('npm root -g'))) return ok('/opt/pi/examples/extensions/subagent/index.ts\n');
       if (a.includes('sh') && a.some((v: string) => v.includes('$HOME/.codex/sessions'))) return ok('/home/agent/.codex/sessions');
       if ((a.includes('codex') && a.includes('--json')) || (a.includes('pi') && a.includes('--print'))) {
-        const id = String(a.at(-1)).includes('code-review au diff complet') ? 'final-review' : a.at(-1)!;
+        const id = String(a.at(-1)).includes('code-review au diff complet') ? 'final-review' : a.at(-1)!.replace(/^(?:\/skill:implement |\$implement\n\n)/, '');
         options.launched?.push(id);
         const emit = (text: string) => request.onOutput?.('stdout', `${text}\n`);
         const exitCode = await options.agent(id, sandbox, emit, request.cwd!);

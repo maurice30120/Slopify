@@ -1,7 +1,7 @@
 import { readFile, readdir } from 'node:fs/promises';
 import * as path from 'node:path';
 import type { TaskAgentAdapter, TaskDiagnostic } from '@slopify/execution';
-import { agentOutcomeDiagnostics } from '@slopify/execution';
+import { agentOutcomeDiagnostics, nativeSkillPrompt } from '@slopify/execution';
 
 export const codexAdapter:TaskAgentAdapter={
   agent:'codex',
@@ -16,7 +16,7 @@ export const codexAdapter:TaskAgentAdapter={
     const codexArgs=['exec','--dangerously-bypass-approvals-and-sandbox','--json'];
     if(context.model)codexArgs.push('--model',context.model);
     if(context.effort)codexArgs.push('-c',`model_reasoning_effort=${context.effort}`);
-    codexArgs.push('-c',`developer_instructions=${JSON.stringify(harness)}`,context.prompt);
+    codexArgs.push('-c',`developer_instructions=${JSON.stringify(harness)}`,nativeSkillPrompt(context));
     const run=await context.command(['exec','-w',context.containerWorkspacePath,context.sandboxName,'codex',...codexArgs]);
     const diagnostics:TaskDiagnostic[]=[];
     const reports:string[]=[];
