@@ -11,7 +11,7 @@ export { readLocalProcessIdentity, inspectLocalProcess, inspectLocalProcessGroup
 export type { LocalProcessIdentity, LocalProcessLiveness } from './localProcessIdentity.js';
 
 
-import { agentOutcomeDiagnostics } from '@slopify/execution';
+import { agentOutcomeDiagnostics, nativeSkillPrompt } from '@slopify/execution';
 
 export interface LocalTaskExecutorOptions {
   executor?: SubprocessExecutor;
@@ -93,8 +93,8 @@ export class LocalTaskExecutor implements TaskExecutor {
         'Read the full frozen spec: ' + path.join(contextPath, 'spec.md'),
         'Task baseline: ' + request.taskBaseCommit + '; run baseline: ' + request.runBaseCommit + '.',
         'Execution is local on the host machine; no Docker sandbox is used for this attempt.',
-        'Use the official implement skill and its referenced resources. The ticket prompt is unchanged.',
-        'TDD interfaces in the ticket are approved. Follow one red/green behavior at a time, targeted validation, full suite, then commit. Independent per-ticket Standards/Spec reviews are not required; the batch performs one final combined review of the integration branch.',
+        'The installed skill selected by the native invocation and all its referenced resources are authoritative. The ticket prompt is unchanged.',
+        'Test interfaces supplied in the ticket are approved.',
         'Read all applicable AGENTS.md and repository standards before implementation.',
         'Actual live raw execution traces: ' + stdoutPath + ' and ' + stderrPath + '. Observed harness commands: ' + eventsPath + '. Keep them intact as evidence for the final combined review.',
         'Uncommitted user changes are excluded from this private checkout.',
@@ -317,7 +317,7 @@ async function spawnLocalAgent(request: LocalAgentRunRequest, command: string, a
 async function runPiLocal(request: LocalAgentRunRequest): Promise<LocalAgentRunResult> {
   const piArgs = ['--print'];
   piArgs.push('--append-system-prompt', path.join(request.contextPath, 'harness.txt'));
-  piArgs.push('--mode', 'json', request.prompt);
+  piArgs.push('--mode', 'json', nativeSkillPrompt(request));
   const run = await spawnLocalAgent(request, 'pi', piArgs);
   const diagnostics: TaskDiagnostic[] = [];
   const reports: string[] = [];
@@ -366,7 +366,7 @@ function createLocalAgentRunner(): LocalAgentRunner {
     const codexArgs = ['exec', '--dangerously-bypass-approvals-and-sandbox', '--json'];
     if (request.model) codexArgs.push('--model', request.model);
     if (request.effort) codexArgs.push('-c', `model_reasoning_effort=${request.effort}`);
-    codexArgs.push('-c', `developer_instructions=${JSON.stringify(harness)}`, request.prompt);
+    codexArgs.push('-c', `developer_instructions=${JSON.stringify(harness)}`, nativeSkillPrompt(request));
     const run = await spawnLocalAgent(request, 'codex', codexArgs);
     const diagnostics: TaskDiagnostic[] = [];
     const reports: string[] = [];

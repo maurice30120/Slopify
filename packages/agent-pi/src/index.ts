@@ -2,7 +2,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import type { TaskAgentAdapter, TaskAgentContext } from '@slopify/execution';
 import type { TaskDiagnostic } from '@slopify/execution';
-import { agentOutcomeDiagnostics } from '@slopify/execution';
+import { agentOutcomeDiagnostics, nativeSkillPrompt } from '@slopify/execution';
 
 /** L'image Pi exige la configuration explicite de Mistral et l'exemple officiel de délégation. */
 export function createPiTaskAdapter(): TaskAgentAdapter {
@@ -58,9 +58,8 @@ export function createPiTaskAdapter(): TaskAgentAdapter {
             compat: { supportsStore: false } }],
         },
       } }, null, 2));
-      const officialReview = await readFile(path.join(context.skillsStore, 'code-review', 'SKILL.md'), 'utf8');
       for (const axis of ['standards', 'spec'] as const) {
-        await writeFile(path.join(configPath, 'agents', `${axis}.md`), reviewerRole(axis, context, officialReview));
+        await writeFile(path.join(configPath, 'agents', `${axis}.md`), reviewerRole(axis, context));
       }
       const harnessPath = path.join(configPath, 'harness.md');
       const sharedHarness = await readFile(path.join(context.containerContextPath, 'harness.txt'), 'utf8');
@@ -70,11 +69,8 @@ export function createPiTaskAdapter(): TaskAgentAdapter {
         `Read the complete frozen specification at ${context.containerContextPath}/spec.md.`,
         `Task baseline: ${context.taskBaseCommit}. Run baseline: ${context.runBaseCommit}.`,
         `Official skills and all their resources are mounted readonly at ${context.skillsStore}.`,
-        `Follow implement with TDD at the approved public seams; commit when green. Skip the implement skill's final /code-review step: independent per-ticket Standards/Spec reviews are not required; the batch performs one final combined review of the integration branch.`,
-        `If the ticket prompt itself delegates a review, run only that delegation.`,
-        `Give a delegated reviewer the chosen fixed point (task baseline for implementation, run baseline for final combined review).`,
         `Subagent delegation always carries the complete task parameter: single mode is {agent, task}, parallel mode is {tasks: [{agent, task}]}, chain mode is {chain: [{agent, task}]}. A call missing task is invalid and answers "Invalid parameters. Provide exactly one mode"; fix the call shape instead of repeating it.`,
-        `Delegated reviewer agents are named standards and spec; any other agent name is rejected as unknown. Delegating the final combined review means one parallel call to both.`,
+        `Delegated reviewer agents are named standards and spec; any other agent name is rejected as unknown.`,
         `Actual execution stdout and stderr are streamed to ${evidenceDirectory}/stdout.log and ${evidenceDirectory}/stderr.log; commands at ${evidenceDirectory}/commands.jsonl. Keep them intact as evidence for the final combined review.`,
         `Read repository AGENTS.md and every applicable standard before implementation.`,
         `Report final validations honestly.`,
@@ -90,7 +86,7 @@ export function createPiTaskAdapter(): TaskAgentAdapter {
         'pi', '--extension', extensionPath, '--offline', '--approve',
         '--provider', 'slopify-mistral', '--model', 'zai-glm-5-3',
         '--skill', context.skillsStore, '--append-system-prompt', `${containerConfig}/harness.md`,
-        '--mode', 'json', '--print', context.prompt]);
+        '--mode', 'json', '--print', nativeSkillPrompt(context)]);
       const diagnostics: TaskDiagnostic[] = [];
       const reports: string[] = [];
       let finalParentMessage = '';
@@ -170,7 +166,7 @@ function assistantText(value: unknown): string {
 /** Point d'entrée reviewerRole du cycle de vie du pipeline.
  * Garantit un résultat conforme au contrat et signale les entrées ou états qui ne peuvent pas être traités.
  */
-function reviewerRole(axis: 'standards' | 'spec', context: TaskAgentContext, officialReview: string): string {
+function reviewerRole(axis: 'standards' | 'spec', context: TaskAgentContext): string {
   return `---\nname: ${axis}\ndescription: Independent ${axis} review\ntools: read, grep, find, ls, bash\n---\n` +
     `Perform only the delegated ${axis} review. Read-only inspection; do not edit or commit.\n` +
     `Read the complete frozen spec at ${context.containerContextPath}/spec.md.\n` +
@@ -181,6 +177,5 @@ function reviewerRole(axis: 'standards' | 'spec', context: TaskAgentContext, off
     `Read the actual streamed execution traces at ${path.dirname(context.containerContextPath)}/stdout.log and ${path.dirname(context.containerContextPath)}/stderr.log, and observed commands at ${path.dirname(context.containerContextPath)}/commands.jsonl.\n` +
     `The task prompt is ${JSON.stringify(context.prompt)}. Do not mistake an agent declaration for observed process evidence.\n` +
     `Report missing evidence as unverified, rather than inferring TDD or successful commands from commits or a final diff.\n` +
-    `For Standards distinguish documented breaches from heuristic smells; repository standards override the baseline. For Spec quote missing, wrong or extra requirements.\n` +
-    `The following installed official skill is reference material, including its full fixed smell baseline. Perform only your delegated axis; do not repeat its parent delegation workflow.\n\n${officialReview}\n`;
+    `Read the installed code-review skill and its referenced resources for the delegated axis.\n`;
 }

@@ -87,8 +87,8 @@ export class DockerTaskExecutor implements TaskExecutor {
       const harness=[
         'Read the full frozen spec: '+path.join(containerContextPath,'spec.md'),
         'Task baseline: '+request.taskBaseCommit+'; run baseline: '+request.runBaseCommit+'.',
-        'Use the official implement skill and its referenced resources. The ticket prompt is unchanged.',
-        'TDD interfaces in the ticket are approved. Follow one red/green behavior at a time, targeted validation, full suite, then commit. Independent per-ticket Standards/Spec reviews are not required; the batch performs one final combined review of the integration branch.',
+        'The installed skill selected by the native invocation and all its referenced resources are authoritative. The ticket prompt is unchanged.',
+        'Test interfaces supplied in the ticket are approved.',
         'Read all applicable AGENTS.md and repository standards before implementation.',
         (lease?'Host-side raw execution traces (outside the task container, preserved by the harness; do not try to read them from inside): ':'Actual live raw execution traces: ')+stdoutPath+' and '+stderrPath+'. Observed harness commands: '+eventsPath+'. Keep them intact as evidence for the final combined review.',
         'Your own native Codex rollout is preserved automatically from $HOME/.codex/sessions; parent and reviewer rollouts live outside this container and the harness collects them itself. Treat reports as declarations: state missing process/delegation evidence as a finding in your final message, not as a task failure; the verdict follows only the required validations and the completeness of the work. End with factual validations, commits and blockers.',

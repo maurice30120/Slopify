@@ -75,6 +75,11 @@ Le lot contient `specFile`, des `defaults` facultatifs et `tasks`. Init propose
 Host choisit les paramètres par tâche et peut les surcharger. `model` et `effort`
 s'appliquent aux tâches Codex. Slopify valide tout le lot avant lancement et
 transmet les prompts sans réécrire les instructions de skills.
+Le skill `implement` installé et ses ressources sont invoqués nativement
+(`/skill:implement ` pour Pi, `$implement` pour Codex), en conservant le ticket.
+Les revues demandées par ce skill restent requises ; la revue finale du lot
+les complète. Le harnais fournit le contexte d'exécution et le protocole de
+résultat, sans définir un autre parcours d'implémentation.
 Il conserve l’état durable, les rapports et la branche `feature/slopify-<run-id>`
 sans modifier la branche de travail de l’utilisateur.
 

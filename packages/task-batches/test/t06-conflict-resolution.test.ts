@@ -90,7 +90,7 @@ async function fixture(t: { after(fn: () => Promise<void>): void }, tasks: Batch
       if (a.some((v: string) => v.includes('npm root -g'))) return ok('/opt/pi/examples/extensions/subagent/index.ts\n');
       if (a.includes('sh') && a.some((v: string) => v.includes('$HOME/.codex/sessions'))) return ok('/home/agent/.codex/sessions');
       if ((a.includes('codex') && a.includes('--json')) || (a.includes('pi') && a.includes('--print'))) {
-        const id = a.at(-1)!;
+        const id = a.at(-1)!.replace(/^(?:\/skill:implement |\$implement\n\n)/, '');
         launched.push(id);
         const exitCode = await agent(id, sandbox);
         const stdout = a.includes('pi')
