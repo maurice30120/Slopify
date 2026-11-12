@@ -1,0 +1,57 @@
+{
+  "version": 1,
+  "source": {
+    "repository": "https://github.com/mattpocock/skills",
+    "commit": "5863806dd4e15c63174bee4e7515a4256792ecfa",
+    "extractedFrom": "skills/engineering"
+  },
+  "bundleRoot": "skills",
+  "roles": {
+    "implementer": {
+      "entry": "skills/engineering/implement/SKILL.md",
+      "summary": "Implements the work described by a spec or tickets: resolves the ticket and states its title, applies TDD at pre-agreed seams, runs the validations, commits before reporting done, and handles the corrections after a review.",
+      "dependencies": [
+        { "path": "skills/engineering/tdd/SKILL.md", "condition": "Where possible, at pre-agreed seams." },
+        { "path": "skills/engineering/tdd/tests.md", "via": "skills/engineering/tdd/SKILL.md" },
+        { "path": "skills/engineering/tdd/mocking.md", "via": "skills/engineering/tdd/SKILL.md" },
+        { "path": "skills/engineering/codebase-design/SKILL.md", "condition": "When the shape of the interface under test is itself in question.", "via": "skills/engineering/tdd/SKILL.md" },
+        { "path": "skills/engineering/codebase-design/DEEPENING.md", "via": "skills/engineering/codebase-design/SKILL.md" },
+        { "path": "skills/engineering/codebase-design/DESIGN-IT-TWICE.md", "via": "skills/engineering/codebase-design/SKILL.md" },
+        { "path": "skills/engineering/code-review/SKILL.md", "condition": "Informational reference to the review stage; entry point of the reviewer role.", "via": "skills/engineering/tdd/SKILL.md" }
+      ]
+    },
+    "reviewer": {
+      "entry": "skills/engineering/code-review/SKILL.md",
+      "summary": "Reviews the diff since a fixed point on two axes, Standards and Spec, in parallel sub-agents, and aggregates the findings without modifying code or creating commits.",
+      "dependencies": []
+    }
+  },
+  "sharedResources": [
+    { "path": "skills/engineering/code-review/SKILL.md", "note": "Reviewer entry point; also referenced by the tdd skill as the review stage." },
+    { "path": "skills/engineering/codebase-design/SKILL.md", "note": "Shared deep-module vocabulary, referenced by the tdd skill and usable by other workflows." }
+  ],
+  "projectProvided": [
+    { "reference": "docs/agents/issue-tracker.md", "note": "Issue tracker workflow of the project under work; used to fetch tickets and specs." },
+    { "reference": "GLOSSARY.md", "note": "Project glossary read while exploring the codebase, if it exists." },
+    { "reference": "docs/adr/", "note": "Architecture decision records respected in the area being touched." },
+    { "reference": "CODING_STANDARDS.md, CONTRIBUTING.md and other documented standards", "note": "Standards sources discovered in the reviewed repository for the Standards axis." },
+    { "reference": "/setup-matt-pocock-skills", "note": "Project-setup skill mentioned as a fallback when no issue tracker is provided; resolved in the target project, not part of the embedded workflows." }
+  ],
+  "adaptations": [
+    {
+      "path": "skills/engineering/implement/SKILL.md",
+      "patch": "patches/implement.patch",
+      "summary": "Role separation: the implementer no longer triggers the independent review (the Controller starts the reviewer separately); skill call to tdd becomes a read-and-apply instruction of the embedded file; the implementer validates and commits before reporting done and also handles the corrections after a review."
+    },
+    {
+      "path": "skills/engineering/tdd/SKILL.md",
+      "patch": "patches/tdd.patch",
+      "summary": "Skill calls become read-and-apply instructions of the embedded files (codebase-design), and the code-review reference points to the embedded reviewer entry; conditional applications stay conditional."
+    },
+    {
+      "path": "skills/engineering/code-review/SKILL.md",
+      "patch": "patches/code-review.patch",
+      "summary": "Findings-only contract: the reviewer reports findings without modifying code or creating commits; the implementer applies the corrections."
+    }
+  ]
+}
