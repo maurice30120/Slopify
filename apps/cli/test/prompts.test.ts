@@ -129,20 +129,25 @@ test('the prompts command rejects unknown roles, missing resources and paths out
   assert.equal(await runPromptsCli(['../package.json'], terminal), 1);
   assert.match(terminal.errors[0], /Refusing to read outside the prompts bundle/);
   terminal.errors.length = 0;
+  assert.equal(await runPromptsCli(['toString'], terminal), 1);
+  assert.match(terminal.errors[0], /Unknown prompts role or resource: toString/);
+  terminal.errors.length = 0;
+  assert.equal(await runPromptsCli(['--check', 'extra'], terminal), 1);
+  assert.match(terminal.errors[0], /takes at most one argument/);
+  terminal.errors.length = 0;
   assert.equal(await runPromptsCli(['--help'], terminal), 0);
   assert.equal(terminal.output[0], `${promptsHelp}\n`);
 });
 
 test('the bundle check reports missing resources, invalid references and undeclared files', async t => {
-  const { writeFile: write } = await import('node:fs/promises');
   const root = await mkdtemp(path.join(tmpdir(), 'slopify-prompts-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   await mkdir(path.join(root, 'skills/entry'), { recursive: true });
   await mkdir(path.join(root, 'skills/reviewer'), { recursive: true });
-  await write(path.join(root, 'skills/entry/SKILL.md'), 'Read [gone](../gone.md).\n');
-  await write(path.join(root, 'skills/reviewer/SKILL.md'), 'Review.\n');
-  await write(path.join(root, 'skills/orphan.md'), 'Undeclared.\n');
-  await write(path.join(root, 'inventory.json'), JSON.stringify({
+  await writeFile(path.join(root, 'skills/entry/SKILL.md'), 'Read [gone](../gone.md).\n');
+  await writeFile(path.join(root, 'skills/reviewer/SKILL.md'), 'Review.\n');
+  await writeFile(path.join(root, 'skills/orphan.md'), 'Undeclared.\n');
+  await writeFile(path.join(root, 'inventory.json'), JSON.stringify({
     version: 1,
     source: { repository: 'fixture', commit: '0'.repeat(40) },
     bundleRoot: 'skills',

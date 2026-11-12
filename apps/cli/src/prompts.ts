@@ -182,6 +182,7 @@ export async function runPromptsCli(argv: string[], terminal: { write(message: s
       terminal.write(promptsHelp);
       return 0;
     }
+    if (argv.length > 1) throw new Error('slopify prompts takes at most one argument. See slopify prompts --help.');
     if (argument === '--check') {
       const problems = await checkPromptsBundle(bundle);
       if (problems.length > 0) {
@@ -192,10 +193,9 @@ export async function runPromptsCli(argv: string[], terminal: { write(message: s
       terminal.write('Prompts bundle check passed: declared resources exist, every bundle file is declared and internal references resolve.');
       return 0;
     }
-    if (argv.length > 1) throw new Error('slopify prompts takes at most one argument. See slopify prompts --help.');
     const role = argument as keyof PromptsInventory['roles'];
     let relative: string;
-    if (role in bundle.inventory.roles) relative = bundle.inventory.roles[role].entry;
+    if (Object.hasOwn(bundle.inventory.roles, role)) relative = bundle.inventory.roles[role].entry;
     else {
       const candidate = path.resolve(bundle.root, argument);
       if (path.relative(bundle.root, candidate).startsWith('..')) throw new Error(`Refusing to read outside the prompts bundle: ${argument}`);
