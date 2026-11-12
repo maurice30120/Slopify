@@ -29,6 +29,11 @@ do test -r "$file" || exit 1
 done
 awk '$4 == "0A" { split($2, address, ":"); port = toupper(address[2]); if (port == "0947" || port == "0948") exposed = 1 } END { exit exposed ? 1 : 0 }' "$@"`;
 
+/** Variables d'environnement transférées du worker au conteneur de tâche : les clés API des
+ * providers natifs Pi configurables en sandbox (MISTRAL_API_KEY, ZAI_API_KEY) doivent y figurer,
+ * car le models.json propagé les référence par variable d'environnement (#196 ; précédent #107). */
+export const TASK_CONTAINER_ENV: readonly string[] = ['HTTP_PROXY','HTTPS_PROXY','NO_PROXY','http_proxy','https_proxy','no_proxy','NODE_USE_ENV_PROXY','MCP_GATEWAY_URL','MCP_SENTINEL_TOKEN_NAME','SBX_CRED_OPENAI_MODE','MISTRAL_API_KEY','ZAI_API_KEY','OPENAI_API_KEY'];
+
 /** A worker retains only immutable images/assets. Every task runs in a fresh Docker container.
  * A replacement is a worker driven out of service by a failure (a retained attempt or a failed
  * reset) whose capacity was restored by a new worker; agent-frontier swaps of idle workers and
@@ -139,7 +144,7 @@ export class TaskWorkerPool {
     await this.execInWorker(lease,['docker','volume','create',lease.contextVolume]);
     await this.execInWorker(lease,['docker','create','--name',lease.seed,'--mount','type=volume,source='+lease.contextVolume+',target=/context','--entrypoint','sleep',worker.image,'infinity']);
     await this.execInWorker(lease,['docker','cp',lease.stage+'/context/.',lease.seed+':/context']);await this.execInWorker(lease,['docker','rm','-v',lease.seed]);
-    const env=['HTTP_PROXY','HTTPS_PROXY','NO_PROXY','http_proxy','https_proxy','no_proxy','NODE_USE_ENV_PROXY','MCP_GATEWAY_URL','MCP_SENTINEL_TOKEN_NAME','SBX_CRED_OPENAI_MODE','MISTRAL_API_KEY','OPENAI_API_KEY'].flatMap(name=>['-e',name]);
+    const env=TASK_CONTAINER_ENV.flatMap(name=>['-e',name]);
     await this.execInWorker(lease,['docker','run','-d','--name',lease.container,'--network','host','--cap-drop','ALL','--security-opt','no-new-privileges','--mount','type=volume,source='+worker.assetsVolume+',target=/slopify-assets,readonly','--mount','type=volume,source='+lease.contextVolume+',target='+path.join(request.resultDirectory,'context')+',readonly',...worker.sharedMounts.flatMap((mount,index)=>['--mount','type=volume,source='+worker.assetsVolume+',target='+mount.slice(0,-3)+',volume-subpath=shared'+index+',readonly']),...env,'-e','NODE_EXTRA_CA_CERTS=/slopify-assets/ca.crt','-e','SSL_CERT_FILE=/slopify-assets/ca.crt','-e','REQUESTS_CA_BUNDLE=/slopify-assets/ca.crt','--entrypoint','sleep',worker.image,'infinity']);
     await this.execInWorker(lease,['docker','cp',lease.stage+'/input.bundle',lease.container+':/tmp/input.bundle']);
     await this.execInWorker(lease,['docker','exec','-u','root',lease.container,'sh','-ec','mkdir -p '+quote(path.dirname(request.workspacePath))+'; chmod 0777 '+quote(path.dirname(request.workspacePath))]);

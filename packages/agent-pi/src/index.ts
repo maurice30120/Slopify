@@ -3,7 +3,9 @@ import * as path from 'node:path';
 import type { TaskAgentAdapter, TaskAgentContext } from '@slopify/execution';
 import type { TaskDiagnostic } from '@slopify/execution';
 import { agentOutcomeDiagnostics } from '@slopify/execution';
-import { loadPiModelSelection, type PiModelSelection } from './piNativeCatalog.js';
+import { loadPiModelSelection, PI_NATIVE_PROVIDERS, type PiModelSelection } from './piNativeCatalog.js';
+
+export { PI_NATIVE_PROVIDERS } from './piNativeCatalog.js';
 
 /** L'image Pi exige la configuration explicite du provider sélectionné et l'exemple officiel de délégation. */
 export function createPiTaskAdapter(): TaskAgentAdapter {
