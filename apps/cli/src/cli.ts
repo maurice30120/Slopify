@@ -6,8 +6,9 @@ import { NodeCliTerminal } from './terminal.js';
 import { runTaskBatchCli, taskBatchHelp, TaskBatchService } from '@slopify/task-batches';
 import { createModeRuntime } from '@slopify/execution-sandbox';
 import { initHelp, runInitCli, projectInitPackageRoot } from '@slopify/project-init';
+import { promptsHelp, runPromptsCli } from './prompts.js';
 
-const generalHelp = `Slopify V2\n\n${initHelp}\n\n${taskBatchHelp}`;
+const generalHelp = `Slopify V2\n\n${initHelp}\n\n${taskBatchHelp}\n\n${promptsHelp}`;
 
 export async function main(argv = process.argv.slice(2)): Promise<number> {
   const terminal = new NodeCliTerminal();
@@ -17,6 +18,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     if (argv[0] === 'init') return await runInitCli(argv.slice(1), terminal, process.cwd(), {
       packageRoot: projectInitPackageRoot(),
     });
+    if (argv[0] === 'prompts') return await runPromptsCli(argv.slice(1), terminal);
     if (['list', 'run', 'resume'].includes(argv[0])) {
       throw new Error(`Legacy command "${argv[0]}" has been removed. Use slopify tasks run <batch.json>, slopify tasks status <run-id> or slopify tasks resume <run-id>. See slopify tasks --help.`);
     }
