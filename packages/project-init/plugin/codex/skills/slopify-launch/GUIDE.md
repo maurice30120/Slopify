@@ -20,7 +20,7 @@ For a Codex task that needs more reasoning than the starter's `medium` default, 
 }
 ```
 
-Codex tasks pass `model` through `--model` and `effort` through `-c model_reasoning_effort=...`. `model` and `effort` are Codex-only settings: Pi uses the provider/model selected in the `pi` section of `.slopify/runtime.yaml` (documented default `mistral`/`zai-glm-5-3`), and task-level Pi model/effort overrides are rejected. Codex defaults are not inherited by a task whose effective agent is Pi.
+Codex tasks pass `model` through `--model` and `effort` through `-c model_reasoning_effort=...`. `model` and `effort` are Codex-only settings: Pi uses the provider/model selected in the `pi` section of `.slopify/runtime.yaml` (documented default `mistral`/`zai-glm-5-3`; the file must be committed at the run base, like inputFiles, since task sandboxes only receive tracked files), and task-level Pi model/effort overrides are rejected. Codex defaults are not inherited by a task whose effective agent is Pi.
 
 The `.acp/acp-agents.json` profiles configure the separate ACP pipeline runtime; they do not configure `slopify tasks run` V2 batches.
 

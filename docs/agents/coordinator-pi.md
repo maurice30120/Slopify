@@ -761,7 +761,7 @@ Aucune configuration spéciale. Pi fonctionne dans la session de l'utilisateur.
 ### 9.2 Pour Pi (implémenteur)
 
 - **Image** : Pi avec kit du provider sélectionné
-- **Sélection provider/modèle** : section `pi` de `.slopify/runtime.yaml` — `pi.provider` (provider natif Pi configurable en sandbox, ex. `mistral` ou `zai`) et `pi.model` (modèle natif de ce provider). Le couple doit être complet ; sans section `pi`, le défaut documenté `mistral`/`zai-glm-5-3` s'applique. Une sélection inconnue ou incompatible échoue avant la création de la sandbox avec la liste des choix valides, sans bascule silencieuse.
+- **Sélection provider/modèle** : section `pi` de `.slopify/runtime.yaml` — `pi.provider` (provider natif Pi configurable en sandbox, ex. `mistral` ou `zai`) et `pi.model` (modèle natif de ce provider). Le couple doit être complet ; sans section `pi`, le défaut documenté `mistral`/`zai-glm-5-3` s'applique. Une sélection inconnue ou incompatible échoue avant la création de la sandbox avec la liste des choix valides, sans bascule silencieuse. Comme `inputFiles`, le fichier doit être **suivi par Git au commit de base du run** : la sélection est lue dans le clone de tâche, et un `.slopify/runtime.yaml` non commité laisse le défaut documenté s'appliquer.
 - **Fournisseur** : provider natif configuré via proxy Docker
 - **Domaine autorisé** : l'hôte du provider sélectionné (ex. `api.mistral.ai:443`)
 - **Skills** : Montage explicite du magasin en lecture seule (`--skill <racine>`)
