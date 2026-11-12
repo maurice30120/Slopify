@@ -143,7 +143,7 @@ Pi construit un **fichier JSON unique** (`batch.json`) contenant :
    - Inclure **toujours** : la description, les critères, les interfaces de test approuvées
 4. **`tasks[i].dependsOn`** : Liste des identifiants de tâches **du même lot**
 5. **`defaults` et choix de l'Agent Host** : `init` prépare les valeurs de base `agent: "codex"`, `model: "gpt-6-luna"`, `effort: "medium"`. L'Agent Host doit choisir le runner, le modèle et l'effort adaptés à chaque tâche, puis écrire les champs tâche par tâche pour surcharger ces valeurs si nécessaire.
-6. **`tasks[i].agent`** : `"pi"` ou `"codex"`. Le champ sélectionne le runner et peut hériter de `defaults.agent`. Les tâches Codex transmettent `model` avec `--model` et `effort` avec `-c model_reasoning_effort=...`; les champs de tâche remplacent les valeurs par défaut. Les tâches Pi utilisent le modèle configuré `zai-glm-5-3` et rejettent les surcharges `model` ou `effort` au niveau de la tâche.
+6. **`tasks[i].agent`** : `"pi"` ou `"codex"`. Le champ sélectionne le runner et peut hériter de `defaults.agent`. Les tâches Codex transmettent `model` avec `--model` et `effort` avec `-c model_reasoning_effort=...`; les champs de tâche remplacent les valeurs par défaut. Les tâches Pi rejettent les surcharges `model` ou `effort` au niveau de la tâche : le couple provider/modèle vient de la section `pi` de `.slopify/runtime.yaml` (voir 9.2), avec le défaut documenté `mistral`/`zai-glm-5-3` ; la sélection est propagée à l'implémenteur, aux corrections, aux sous-agents de revue et à la revue finale, sans bascule silencieuse.
 7. **`tasks[i].source`** : Référence d'origine **non vide** (fichier local ou URL d'issue)
 8. **`inputFiles`** (facultatif) : chemins des manifests et fichiers locaux lus par les tâches. Les déclarer ici permet à Slopify de vérifier qu'ils sont suivis dans le commit de base du run et donc présents dans les sandboxes.
 
@@ -760,9 +760,10 @@ Aucune configuration spéciale. Pi fonctionne dans la session de l'utilisateur.
 
 ### 9.2 Pour Pi (implémenteur)
 
-- **Image** : Pi avec kit Mistral
-- **Fournisseur** : Mistral configuré via proxy Docker
-- **Domaine autorisé** : `api.mistral.ai:443`
+- **Image** : Pi avec kit du provider sélectionné
+- **Sélection provider/modèle** : section `pi` de `.slopify/runtime.yaml` — `pi.provider` (provider natif Pi configurable en sandbox, ex. `mistral` ou `zai`) et `pi.model` (modèle natif de ce provider). Le couple doit être complet ; sans section `pi`, le défaut documenté `mistral`/`zai-glm-5-3` s'applique. Une sélection inconnue ou incompatible échoue avant la création de la sandbox avec la liste des choix valides, sans bascule silencieuse. Comme `inputFiles`, le fichier doit être **suivi par Git au commit de base du run** : la sélection est lue dans le clone de tâche, et un `.slopify/runtime.yaml` non commité laisse le défaut documenté s'appliquer.
+- **Fournisseur** : provider natif configuré via proxy Docker
+- **Domaine autorisé** : l'hôte du provider sélectionné (ex. `api.mistral.ai:443`)
 - **Skills** : Montage explicite du magasin en lecture seule (`--skill <racine>`)
 - **Extensions** : `subagent` pour la délégation des revues
 

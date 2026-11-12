@@ -3,25 +3,29 @@ import * as path from 'node:path';
 import type { TaskAgentAdapter, TaskAgentContext } from '@slopify/execution';
 import type { TaskDiagnostic } from '@slopify/execution';
 import { agentOutcomeDiagnostics } from '@slopify/execution';
+import { loadPiModelSelection, PI_NATIVE_PROVIDERS, type PiModelSelection } from './piNativeCatalog.js';
 
-/** L'image Pi exige la configuration explicite de Mistral et l'exemple officiel de délégation. */
+export { PI_NATIVE_PROVIDERS } from './piNativeCatalog.js';
+
+/** L'image Pi exige la configuration explicite du provider sélectionné et l'exemple officiel de délégation. */
 export function createPiTaskAdapter(): TaskAgentAdapter {
   return {
     agent: 'pi',
 /** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
     async prepare(context) {
+      const selection = await loadPiModelSelection(context.workspacePath);
       const kitPath = path.join(context.resultDirectory, 'pi-kit');
       await mkdir(kitPath, { recursive: true });
       await writeFile(path.join(kitPath, 'spec.yaml'), JSON.stringify({
-        schemaVersion: '2', kind: 'sandbox', name: 'slopify-pi-mistral',
-        displayName: 'Slopify Pi with Mistral',
-        description: 'Pi task execution with proxy-managed Mistral credentials',
+        schemaVersion: '2', kind: 'sandbox', name: `slopify-pi-${selection.provider.id}`,
+        displayName: `Slopify Pi with ${selection.provider.name}`,
+        description: `Pi task execution with proxy-managed ${selection.provider.name} credentials`,
         sandbox: { image: 'docker.io/sbx/pi-image:latest', entrypoint: ['pi'] },
         agentInstructions: { filename: 'AGENTS.md' },
-        permissions: { network: { allow: ['api.mistral.ai:443'] } },
-        credentials: [{ service: 'mistral', apiKey: {
-          name: 'MISTRAL_API_KEY', proxyManaged: true,
-          inject: [{ domain: 'api.mistral.ai', header: 'Authorization', format: 'Bearer %s' }],
+        permissions: { network: { allow: [`${providerHost(selection)}:443`] } },
+        credentials: [{ service: selection.provider.credentialService, apiKey: {
+          name: selection.provider.apiKeyEnv, proxyManaged: true,
+          inject: [{ domain: providerHost(selection), header: 'Authorization', format: 'Bearer %s' }],
         } }],
         environment: { variables: { PI_OFFLINE: '1', PI_TELEMETRY: '0' } },
       }, null, 2));
@@ -31,6 +35,7 @@ export function createPiTaskAdapter(): TaskAgentAdapter {
     },
 /** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
     async run(context) {
+      const selection = await loadPiModelSelection(context.workspacePath);
       const skillsPath = shellQuote(context.skillsStore);
       const readiness = await context.command(['exec', context.sandboxName, 'sh', '-c',
         `set -eu; for skill in implement tdd code-review; do test -r ${skillsPath}/"$skill"/SKILL.md; done; ` +
@@ -50,12 +55,9 @@ export function createPiTaskAdapter(): TaskAgentAdapter {
       const containerConfig = '/tmp/slopify-pi-config';
       await mkdir(path.join(configPath, 'agents'), { recursive: true });
       await writeFile(path.join(configPath, 'models.json'), JSON.stringify({ providers: {
-        'slopify-mistral': {
-          baseUrl: 'https://api.mistral.ai', api: 'mistral-conversations', apiKey: '${MISTRAL_API_KEY}',
-          models: [{ id: 'zai-glm-5-3', name: 'GLM-5.3', reasoning: true,
-            input: ['text'], contextWindow: 1000000, maxTokens: 131072,
-            thinkingLevelMap: { off: null, minimal: null, low: 'low', medium: null, high: 'high', xhigh: null, max: 'max' },
-            compat: { supportsStore: false } }],
+        [selection.provider.id]: {
+          baseUrl: selection.provider.baseUrl, api: selection.provider.api, apiKey: `\${${selection.provider.apiKeyEnv}}`,
+          models: [selection.model],
         },
       } }, null, 2));
       const officialReview = await readFile(path.join(context.skillsStore, 'code-review', 'SKILL.md'), 'utf8');
@@ -70,6 +72,7 @@ export function createPiTaskAdapter(): TaskAgentAdapter {
         `Read the complete frozen specification at ${context.containerContextPath}/spec.md.`,
         `Task baseline: ${context.taskBaseCommit}. Run baseline: ${context.runBaseCommit}.`,
         `Official skills and all their resources are mounted readonly at ${context.skillsStore}.`,
+        `Effective model selection for this task and every delegated subagent: provider ${selection.provider.id}, model ${selection.model.id} (source: ${selection.source === 'configured' ? 'configured in .slopify/runtime.yaml' : 'Slopify default'}).`,
         `Follow implement with TDD at the approved public seams; commit when green. Skip the implement skill's final /code-review step: independent per-ticket Standards/Spec reviews are not required; the batch performs one final combined review of the integration branch.`,
         `If the ticket prompt itself delegates a review, run only that delegation.`,
         `Give a delegated reviewer the chosen fixed point (task baseline for implementation, run baseline for final combined review).`,
@@ -88,7 +91,7 @@ export function createPiTaskAdapter(): TaskAgentAdapter {
       const result = await context.command(['exec', '-w', context.containerWorkspacePath,
         '-e', `PI_CODING_AGENT_DIR=${containerConfig}`, context.sandboxName,
         'pi', '--extension', extensionPath, '--offline', '--approve',
-        '--provider', 'slopify-mistral', '--model', 'zai-glm-5-3',
+        '--provider', selection.provider.id, '--model', selection.model.id,
         '--skill', context.skillsStore, '--append-system-prompt', `${containerConfig}/harness.md`,
         '--mode', 'json', '--print', context.prompt]);
       const diagnostics: TaskDiagnostic[] = [];
@@ -131,14 +134,21 @@ export function createPiTaskAdapter(): TaskAgentAdapter {
         }
       }
       diagnostics.push(...agentOutcomeDiagnostics(finalParentMessage));
+      const selectionTrace = `Pi selection: provider=${selection.provider.id}, model=${selection.model.id} `
+        + `(${selection.source === 'configured' ? 'configured in .slopify/runtime.yaml' : 'Slopify default; configure pi.provider and pi.model in .slopify/runtime.yaml to change it'}).`;
       if (reviews.length) {
         const reviewPath = path.join(context.resultDirectory, 'pi-review-results.json');
         await writeFile(reviewPath, JSON.stringify(reviews, null, 2), { mode: 0o600 });
         reports.push(`Observed delegation results: ${reviewPath}`);
       }
-      return { exitCode: result.exitCode, report: reports.join('\n\n') || result.stdout || result.stderr, diagnostics };
+      return { exitCode: result.exitCode, report: [selectionTrace, ...reports].join('\n\n') || result.stdout || result.stderr, diagnostics };
     },
   };
+}
+
+/** Hôte réseau du provider sélectionné : seule destination autorisée par le kit sandbox. */
+function providerHost(selection: PiModelSelection): string {
+  return new URL(selection.provider.baseUrl).host;
 }
 
 /** Point d'entrée record du cycle de vie du pipeline.
