@@ -65,7 +65,7 @@ const scenario = process.env.SLOPIFY_FAKE_LOCAL_SCENARIO
   : {};
 const logPath = process.env.SLOPIFY_FAKE_LOCAL_LOG;
 const emit = record => process.stdout.write(JSON.stringify(record) + '\\n');
-const log = async entry => { if (logPath) await appendFile(logPath, JSON.stringify({ pid: process.pid, role, ...entry }) + '\\n'); };
+const log = async entry => { if (logPath) await appendFile(logPath, JSON.stringify({ pid: process.pid, role, cwd: process.cwd(), ...entry }) + '\\n'); };
 const readLog = async () => logPath
   ? (await readFile(logPath, 'utf8')).split('\\n').filter(Boolean).map(line => { try { return JSON.parse(line); } catch { return undefined; } }).filter(Boolean)
   : [];
@@ -131,6 +131,7 @@ async function embedLocalSubagentExtension(repo: string) {
 interface LocalRpcLogEntry {
   pid: number;
   role: 'implementer' | 'reviewer';
+  cwd: string;
   kind: 'prompt';
   prompt?: string;
 }
@@ -373,7 +374,9 @@ test('a local Pi RPC review cycle corrects in one persistent implementer process
   // Journal du faux serveur RPC : un processus implémenteur persistant, deux reviewers neufs.
   const log = await readLog();
   const implementer = log.filter(entry => entry.role === 'implementer' && entry.kind === 'prompt' && !entry.prompt?.includes('code-review au diff complet'));
-  const reviewers = log.filter(entry => entry.role === 'reviewer' && entry.kind === 'prompt');
+  const attemptWorkspace = state.tasks[0].attempts[0].resource?.worktreePath;
+  const sameWorkspace = (candidate: string, workspace?: string) => candidate.replace(/^\/private/, '') === workspace?.replace(/^\/private/, '');
+  const reviewers = log.filter(entry => entry.role === 'reviewer' && entry.kind === 'prompt' && sameWorkspace(entry.cwd, attemptWorkspace));
   assert.equal(new Set(implementer.map(entry => entry.pid)).size, 1, 'exactly one persistent implementer process across the correction cycle');
   assert.equal(implementer.length, 2, 'the initial ticket message then the correction message in the same session');
   assert.match(implementer[0].prompt!, /piwork/);
