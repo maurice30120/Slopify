@@ -111,7 +111,6 @@ export function createPiTaskAdapter(): TaskAgentAdapter {
         `Harness context for task ${context.taskId}. Preserve the supplied user prompt verbatim.`,
         `Read the complete frozen specification at ${context.containerContextPath}/spec.md.`,
         `Task baseline: ${context.taskBaseCommit}. Run baseline: ${context.runBaseCommit}.`,
-        `Official skills and all their resources are mounted readonly at ${context.skillsStore}.`,
         `The workflow skills of the distribution are mounted readonly at ${resources.skillsDirectory}: the implementer entry is ${resources.implementer} and the reviewer entry is ${resources.reviewer}, with every transitive dependency resolved from the distributed inventory.`,
         `Effective model selection for this task and every delegated subagent: provider ${selection.provider.id}, model ${selection.model.id} (source: ${selection.source === 'configured' ? 'configured in .slopify/runtime.yaml' : 'Slopify default'}).`,
         `Follow implement with TDD at the approved public seams; commit when green. Skip the implement skill's final /code-review step: independent per-ticket Standards/Spec reviews are not required; the batch performs one final combined review of the integration branch.`,

@@ -123,6 +123,8 @@ test('reviewer instructions reference the distributed skill rather than embeddin
     assert.match(f.copied[axis], /skills\/engineering\/code-review\/SKILL\.md/);
     assert.doesNotMatch(f.copied[axis], /Official fixed smell baseline\./);
   }
+  assert.match(f.copied['harness.md'], /skills\/engineering/);
+  assert.doesNotMatch(f.copied['harness.md'], /official-skills/, 'the harness never references the global skills store');
 });
 
 test('prepare mounts the distributed skills directory readonly and pi uses it as its only skill source', async t => {

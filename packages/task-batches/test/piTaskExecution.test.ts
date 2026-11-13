@@ -173,6 +173,15 @@ test('missing official Pi delegation capability fails before any model request',
   assert.equal(f.removed,false);
 });
 
+test('a Pi-only batch runs from the distribution without a global official skills store',async t=>{
+  const f=await fixture(t);
+  const withoutStore:SubprocessExecutor=request=>request.command==='sbx'&&request.args[0]==='skills'
+    ?Promise.resolve({exitCode:1,stdout:'',stderr:'the global official skills store is not installed'})
+    :f.execute(request);
+  const state=await new TaskBatchService({repositoryPath:f.repo,storePath:path.join(f.root,'runs'),subprocessExecutor:withoutStore,workflowResourcesRoot:f.distribution}).run(f.batchFile);
+  assert.equal(state.status,'succeeded');
+});
+
 test('Pi terminal agent summary cannot hide a provider error in its messages',async t=>{
   const f=await fixture(t,JSON.stringify({type:'agent_end',messages:[{role:'assistant',content:[],stopReason:'error',errorMessage:'Mistral service unavailable'}]})+'\n');
   const state=await new TaskBatchService({repositoryPath:f.repo,storePath:path.join(f.root,'runs'),subprocessExecutor:f.execute,workflowResourcesRoot:f.distribution}).run(f.batchFile);
