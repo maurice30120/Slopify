@@ -43,8 +43,123 @@ async function localFixture(t: { after(fn: () => Promise<void>): void }, tasks: 
   return { root, repo, head, dirty, batchFile, seen, service };
 }
 
-
 const task = (id: string, agent: 'pi' | 'codex', dependsOn: string[] = []): BatchTask => ({ id, agent, dependsOn, prompt: id, source: `${id}.md` });
+
+/**
+ * Faux serveur RPC Pi local (protocole JSONL simulé sur stdio, sans Docker ni appel
+ * fournisseur), écrit par le test dans le faux binaire `pi` du PATH. Le rôle vient du
+ * chemin --append-system-prompt (harness.txt = implémenteur, reviewer.txt = reviewer) ;
+ * scénario et journal passent par SLOPIFY_FAKE_LOCAL_SCENARIO / SLOPIFY_FAKE_LOCAL_LOG.
+ * Un processus fake = une session RPC ; le journal prouve les identités persistantes.
+ */
+const fakeLocalRpcServerScript = `#!/usr/bin/env node
+import { appendFile, readFile, writeFile } from 'node:fs/promises';
+import { createInterface } from 'node:readline';
+import { execFileSync } from 'node:child_process';
+const args = process.argv.slice(2);
+const option = name => { const index = args.indexOf(name); return index >= 0 ? args[index + 1] : undefined; };
+// Le faux pi local travaille directement dans son cwd : le runner local lance pi dans le clone de la tentative.
+const role = (await import('node:path')).basename(option('--append-system-prompt') ?? '') === 'reviewer.txt' ? 'reviewer' : 'implementer';
+const scenario = process.env.SLOPIFY_FAKE_LOCAL_SCENARIO
+  ? JSON.parse(await readFile(process.env.SLOPIFY_FAKE_LOCAL_SCENARIO, 'utf8'))
+  : {};
+const logPath = process.env.SLOPIFY_FAKE_LOCAL_LOG;
+const emit = record => process.stdout.write(JSON.stringify(record) + '\\n');
+const log = async entry => { if (logPath) await appendFile(logPath, JSON.stringify({ pid: process.pid, role, ...entry }) + '\\n'); };
+const readLog = async () => logPath
+  ? (await readFile(logPath, 'utf8')).split('\\n').filter(Boolean).map(line => { try { return JSON.parse(line); } catch { return undefined; } }).filter(Boolean)
+  : [];
+let implementerPrompts = 0;
+let pendingPrompts = 0;
+const stdin = createInterface({ input: process.stdin });
+stdin.on('line', line => {
+  let command;
+  try { command = JSON.parse(line); } catch { return; }
+  if (!command || command.type !== 'prompt') return;
+  pendingPrompts += 1;
+  void (async () => {
+    try {
+      await log({ kind: 'prompt', prompt: String(command.message ?? '').slice(0, 160) });
+      emit({ id: command.id, type: 'response', command: 'prompt', success: true, data: { disposition: 'started' } });
+      if (role === 'implementer') {
+        implementerPrompts += 1;
+        const message = String(command.message ?? '');
+        if (message.includes('code-review au diff complet')) {
+          emit({ type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: 'Final combined review report\\nSLOPIFY_RESULT={"status":"succeeded"}' }] } });
+          emit({ type: 'agent_settled' });
+          return;
+        }
+        const text = scenario.implementerVerdict === 'missing' ? 'Pi report without explicit verdict'
+          : 'Pi local run report\\nSLOPIFY_RESULT={"status":"succeeded"}';
+        if (text.includes('SLOPIFY_RESULT')) {
+          const file = implementerPrompts === 1 ? 'implemented-local.txt' : 'corrected-local-' + (implementerPrompts - 1) + '.txt';
+          await writeFile(file, 'local implementation');
+          execFileSync('git', ['add', file]);
+          execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', 'commit', '-qm', 'fake local implementation']);
+        }
+        emit({ type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text }] } });
+        emit({ type: 'agent_settled' });
+        return;
+      }
+      const pass = (await readLog()).filter(entry => entry.role === 'reviewer' && entry.kind === 'prompt').length;
+      const verdicts = scenario.verdicts ?? ['SLOPIFY_REVIEW={"verdict":"approved"}'];
+      const verdict = verdicts[Math.min(pass, verdicts.length) - 1];
+      emit({ type: 'tool_execution_end', toolName: 'subagent', isError: false, result: { details: { mode: 'parallel', results: [
+        { agent: 'standards', exitCode: 0, messages: [{ role: 'assistant', content: [{ type: 'text', text: 'Independent local Standards findings cycle ' + pass }] }] },
+        { agent: 'spec', exitCode: 0, messages: [{ role: 'assistant', content: [{ type: 'text', text: 'Independent local Spec findings cycle ' + pass }] }] },
+      ] } } });
+      emit({ type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: 'Independent local review report cycle ' + pass + '\\n' + verdict }] } });
+      emit({ type: 'agent_settled' });
+    } finally { pendingPrompts -= 1; }
+  })();
+});
+// Arrêt ordonné : fermeture du stdin = sortie au code zéro après le travail en vol.
+stdin.on('close', () => {
+  const finish = () => { if (pendingPrompts > 0) setTimeout(finish, 10); else process.exit(0); };
+  finish();
+});
+`;
+
+/** L'extension officielle subagent simulée, committée dans le dépôt : les clones de tentatives l'auto-découvrent. */
+async function embedLocalSubagentExtension(repo: string) {
+  await mkdir(path.join(repo, '.pi', 'extensions', 'subagent'), { recursive: true });
+  await writeFile(path.join(repo, '.pi', 'extensions', 'subagent', 'index.ts'), 'export function activate() { return {}; }');
+  await writeFile(path.join(repo, '.pi', 'extensions', 'subagent', 'agents.ts'), 'export const agents = {};');
+  git(repo, 'add', '.pi'); git(repo, 'commit', '-qm', 'pi subagent extension', '--', '.pi');
+}
+
+interface LocalRpcLogEntry {
+  pid: number;
+  role: 'implementer' | 'reviewer';
+  kind: 'prompt';
+  prompt?: string;
+}
+
+/** Met le faux serveur RPC sur le PATH ; retourne la lecture du journal des sessions. */
+async function fakeLocalRpcOnPath(t: { after(fn: () => Promise<void>): void }, root: string, scenario: Record<string, unknown>) {
+  const bin = path.join(root, 'bin');
+  await mkdir(bin, { recursive: true });
+  const scenarioFile = path.join(root, 'fake-local-scenario.json');
+  const logFile = path.join(root, 'fake-local-log.jsonl');
+  const serverScript = path.join(root, 'fake-pi-rpc.mjs');
+  await writeFile(scenarioFile, JSON.stringify(scenario));
+  await writeFile(logFile, '');
+  await writeFile(serverScript, fakeLocalRpcServerScript, { mode: 0o600 });
+  await writeFile(path.join(bin, 'pi'), `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(serverScript)} "$@"\n`, { mode: 0o755 });
+  const previousPath = process.env.PATH;
+  const previousScenario = process.env.SLOPIFY_FAKE_LOCAL_SCENARIO;
+  const previousLog = process.env.SLOPIFY_FAKE_LOCAL_LOG;
+  process.env.PATH = `${bin}${path.delimiter}${previousPath}`;
+  process.env.SLOPIFY_FAKE_LOCAL_SCENARIO = scenarioFile;
+  process.env.SLOPIFY_FAKE_LOCAL_LOG = logFile;
+  t.after(async () => {
+    process.env.PATH = previousPath;
+    if (previousScenario === undefined) delete process.env.SLOPIFY_FAKE_LOCAL_SCENARIO; else process.env.SLOPIFY_FAKE_LOCAL_SCENARIO = previousScenario;
+    if (previousLog === undefined) delete process.env.SLOPIFY_FAKE_LOCAL_LOG; else process.env.SLOPIFY_FAKE_LOCAL_LOG = previousLog;
+  });
+  return async (): Promise<LocalRpcLogEntry[]> =>
+    (await readFile(logFile, 'utf8')).split('\n').filter(Boolean).map(line => JSON.parse(line) as LocalRpcLogEntry);
+}
 
 test('a local Codex batch runs without sbx or Docker, keeps the user workspace intact and cleans integrated clones', async t => {
   const f = await localFixture(t, [task('work', 'codex')], async (id, clone) => {
@@ -223,24 +338,60 @@ test('Pi local provider errors are visible and fail the attempt even with a zero
   assert.ok(attempt.diagnostics?.some(d => d.code === 'pi_provider_error'));
 });
 
-test('a missing or invalid Pi verdict fails the local attempt', async t => {
-  // Le vrai runner Pi local est exercé avec un faux exécutable pi sur le PATH : il sort un
-  // message final sans ligne SLOPIFY_RESULT ; le verdict explicite manque et la tentative
-  // échoue malgré un code de sortie zéro.
+test('a missing or invalid Pi verdict fails the local attempt', { timeout: 30000 }, async t => {
+  // Le vrai runner Pi local est exercé avec un faux serveur RPC pi sur le PATH : il règle
+  // son tour sans ligne SLOPIFY_RESULT ; le verdict explicite manque et la tentative
+  // échoue, et la revue indépendante ne démarre jamais.
   const f = await localFixture(t, [task('no-verdict', 'pi')], async () => 0);
-  const bin = path.join(f.root, 'bin');
-  await mkdir(bin, { recursive: true });
-  await writeFile(path.join(bin, 'pi'), '#!/bin/sh\ncat <<EOF\n' + JSON.stringify({ type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: 'work done, no verdict' }] } }) + '\nEOF\n', { mode: 0o755 });
+  await embedLocalSubagentExtension(f.repo);
+  const readLog = await fakeLocalRpcOnPath(t, f.root, { implementerVerdict: 'missing' });
   const service = new TaskBatchService({ repositoryPath: f.repo, storePath: path.join(f.root, 'runs') });
-  const previousPath = process.env.PATH;
-  process.env.PATH = `${bin}:${previousPath}`;
-  try {
-    const state = await service.run(f.batchFile, { mode: 'local' });
-    assert.equal(state.status, 'failed');
-    assert.ok(state.tasks[0].attempts[0].diagnostics?.some(d => /SLOPIFY_RESULT/.test(d.message)));
-  } finally {
-    process.env.PATH = previousPath;
-  }
+  const state = await service.run(f.batchFile, { mode: 'local' });
+  assert.equal(state.status, 'failed');
+  assert.ok(state.tasks[0].attempts[0].diagnostics?.some(d => /SLOPIFY_RESULT/.test(d.message)));
+  const log = await readLog();
+  assert.equal(log.some(entry => entry.role === 'reviewer'), false, 'a missing verdict is never reviewed');
+  assert.equal(log.length > 0, true, 'the runner really talked to the fake RPC server');
+});
+
+test('a local Pi RPC review cycle corrects in one persistent implementer process with a fresh reviewer per pass', { timeout: 60000 }, async t => {
+  const f = await localFixture(t, [task('piwork', 'pi')], async () => 0);
+  await embedLocalSubagentExtension(f.repo);
+  const head = git(f.repo, 'rev-parse', 'HEAD');
+  const readLog = await fakeLocalRpcOnPath(t, f.root, {
+    verdicts: ['SLOPIFY_REVIEW={"verdict":"rejected","reason":"standards breach"}', 'SLOPIFY_REVIEW={"verdict":"approved"}'],
+  });
+  const service = new TaskBatchService({ repositoryPath: f.repo, storePath: path.join(f.root, 'runs') });
+  const state = await service.run(f.batchFile, { mode: 'local' });
+  assert.equal(state.status, 'succeeded');
+  assert.equal(state.mode, 'local');
+  // Intégration durable des deux passes ; le workspace utilisateur reste intact.
+  assert.equal(git(f.repo, 'show', `${state.integrationBranch}:implemented-local.txt`), 'local implementation');
+  assert.equal(git(f.repo, 'show', `${state.integrationBranch}:corrected-local-1.txt`), 'local implementation');
+  assert.equal(git(f.repo, 'status', '--porcelain=v1'), f.dirty);
+  assert.equal(git(f.repo, 'rev-parse', 'HEAD'), head, 'the run never moves the user repository HEAD');
+  // Journal du faux serveur RPC : un processus implémenteur persistant, deux reviewers neufs.
+  const log = await readLog();
+  const implementer = log.filter(entry => entry.role === 'implementer' && entry.kind === 'prompt' && !entry.prompt?.includes('code-review au diff complet'));
+  const reviewers = log.filter(entry => entry.role === 'reviewer' && entry.kind === 'prompt');
+  assert.equal(new Set(implementer.map(entry => entry.pid)).size, 1, 'exactly one persistent implementer process across the correction cycle');
+  assert.equal(implementer.length, 2, 'the initial ticket message then the correction message in the same session');
+  assert.match(implementer[0].prompt!, /piwork/);
+  assert.match(implementer[1].prompt!, /standards breach/);
+  assert.equal(reviewers.length, 2, 'a fresh reviewer process per pass');
+  assert.equal(new Set(reviewers.map(entry => entry.pid)).size, 2);
+  assert.ok(reviewers.every(entry => /Independent review, cycle [12]/.test(entry.prompt!)));
+  // La revue finale du lot passe aussi par une session RPC implémenteur dédiée.
+  assert.ok(log.some(entry => entry.role === 'implementer' && entry.kind === 'prompt' && /code-review au diff complet/.test(entry.prompt!)));
+  // Rapport de la tentative : trace de sessions RPC et rapports de revue durables.
+  const attempt = state.tasks[0].attempts[0];
+  const report = await readFile(attempt.reportPath!, 'utf8');
+  assert.match(report, /Pi RPC sessions: implementer/);
+  assert.match(report, /Independent local Standards findings cycle 1/);
+  assert.match(report, /Independent local Spec findings cycle 2/);
+  // Le processus local leader de son groupe POSIX est persisté dans l'état durable de la tentative.
+  assert.ok(attempt.processIdentity?.processGroupId, 'runner records an isolated POSIX group');
+  assert.ok(attempt.processIdentities?.length, 'every local RPC session identity is retained for safe resume');
 });
 
 
@@ -297,6 +448,7 @@ test('aborting a real local Pi launcher stops its descendant process group', { t
   if (process.platform === 'win32') return;
   const { inspectLocalProcessGroup } = await import('@slopify/execution-local');
   const f = await localFixture(t, [task('stop-pi', 'pi')], async () => 0);
+  await embedLocalSubagentExtension(f.repo);
   const bin = path.join(f.root, 'bin');
   await mkdir(bin, { recursive: true });
   const descendant = path.join(f.root, 'descendant.pid');
