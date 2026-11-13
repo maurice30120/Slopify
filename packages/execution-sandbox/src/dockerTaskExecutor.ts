@@ -205,7 +205,7 @@ export class DockerTaskExecutor implements TaskExecutor {
     if(spawnRequest.signal?.aborted)onAbort();
     else spawnRequest.signal?.addEventListener('abort',onAbort,{once:true});
     return {
-      writeLine:line=>{try{child.stdin.write(line+'\n');}catch{/* stdin fermé : la mort du processus est observée par onExit */}},
+      writeLine:line=>{try{if(!child.stdin.writableEnded)child.stdin.write(line+'\n');}catch{/* stdin fermé : la mort du processus est observée par onExit */}},
       close,
       get alive(){return exitCode===undefined;},
       describe:()=>`sbx ${args.map(value=>/^[\w:./=-]+$/.test(value)?value:JSON.stringify(value)).join(' ')} (pid ${child.pid ?? 'unknown'})`,

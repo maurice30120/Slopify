@@ -10,6 +10,7 @@ import { activityJournalPath, readAllActivitySignals } from '@slopify/activity';
 import { parseActivitySignal, type ActivitySignal } from '@slopify/activity';
 import { readAttemptLogTail } from '@slopify/activity';
 import { fakeSbxExecutor, gate, git, ManualActivityClock, prepareSlopifyFixture, task } from './activityTickHarness.js';
+import { installFakeSbxRpc } from './piRpcSandboxBridge.js';
 
 /** Tick minute du Signal d'activité dans le service d'exécution (ADR 0013) :
  * comportement externe uniquement — le seam onActivitySignal, le journal du run
@@ -53,6 +54,14 @@ async function fixture(
   const launched: string[] = [];
   const removed: string[] = [];
   const execute = fakeSbxExecutor({ root, skills, agent, sandboxes, onSbx: hooks.onSbx, launched, removed });
+  // Transport RPC Pi natif : le pont place un faux sbx RPC sur le PATH et proxifie le
+  // travail des tâches Pi vers la fermeture agent de ce test, qui alimente aussi la
+  // liste des tâches lancées, comme le faisait l'ancien exécuteur one-shot.
+  const bridgedAgent = (id: string, sandbox: string, emit: (text: string) => void, cwd: string) => {
+    launched.push(id);
+    return agent(id, sandbox, emit, cwd);
+  };
+  await installFakeSbxRpc(t, { root, agent: bridgedAgent });
   const signals: ActivitySignal[] = [];
   const clock = new ManualActivityClock();
   const updates: TaskBatchSnapshot[] = [];
@@ -481,14 +490,16 @@ test('un ActivitySink injecté reçoit chaque tick sans toucher au journal du ru
   t.after(() => { hold.release(); });
   const ticks: unknown[] = [];
   const { root, repo, head, skills, batchFile } = await prepareSlopifyFixture('slopify-activity-sink-', t, [task('sunk', 'pi')]);
-  const execute = fakeSbxExecutor({ root, skills, sandboxes: new Map(), agent: async (id, sandbox, emit) => {
+  const sinkAgent = async (id: string, sandbox: string, emit: (text: string) => void) => {
     if (id === 'final-review') { await writeFile(path.join(sandbox, 'review.txt'), 'review'); return 0; }
     started.release();
     emit('Je lis la spécification figée');
     await hold.promise;
     await writeFile(path.join(sandbox, 'result.txt'), 'done');
     return 0;
-  } });
+  };
+  const execute = fakeSbxExecutor({ root, skills, sandboxes: new Map(), agent: sinkAgent });
+  await installFakeSbxRpc(t, { root, agent: sinkAgent });
   const clock = new ManualActivityClock();
   const storePath = path.join(root, 'runs');
   const service = new TaskBatchService({

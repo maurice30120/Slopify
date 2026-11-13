@@ -471,7 +471,7 @@ function spawnLocalRpcChannel(request: LocalAgentRunRequest, args: string[], age
     return closing;
   };
   return {
-    writeLine: line => { try { child.stdin.write(line + '\n'); } catch { /* stdin fermé : la mort du processus est observée par onExit */ } },
+    writeLine: line => { try { if (!child.stdin.writableEnded) child.stdin.write(line + '\n'); } catch { /* stdin fermé : la mort du processus est observée par onExit */ } },
     close,
     get alive() { return exitCode === undefined; },
     describe: () => `pi ${args.map(value => /^[\w:./=-]+$/.test(value) ? value : JSON.stringify(value)).join(' ')} (pid ${pid ?? 'unknown'})`,
