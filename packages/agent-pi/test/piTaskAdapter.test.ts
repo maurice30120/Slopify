@@ -7,6 +7,27 @@ import type { SubprocessResult, TaskAgentContext } from '@slopify/execution';
 import { createPiTaskAdapter } from '../src/index.js';
 
 /**
+ * Bundle de test minimal de la distribution: inventory.json + skills/engineering,
+ * conforme à la forme livrée par #184. Aucun store global de skills n'est lu.
+ */
+async function miniDistribution(root: string): Promise<string> {
+  const workflowResourcesRoot = path.join(root, 'distribution');
+  for (const relative of [
+    'skills/engineering/implement/SKILL.md',
+    'skills/engineering/tdd/SKILL.md',
+    'skills/engineering/code-review/SKILL.md',
+  ]) {
+    await mkdir(path.join(workflowResourcesRoot, path.dirname(relative)), { recursive: true });
+    await writeFile(path.join(workflowResourcesRoot, relative), `Content of ${path.basename(path.dirname(relative))} workflow skill.`);
+  }
+  await writeFile(path.join(workflowResourcesRoot, 'inventory.json'), JSON.stringify({ roles: {
+    implementer: { entry: 'skills/engineering/implement/SKILL.md', dependencies: [{ path: 'skills/engineering/tdd/SKILL.md' }] },
+    reviewer: { entry: 'skills/engineering/code-review/SKILL.md', dependencies: [] },
+  } }));
+  return workflowResourcesRoot;
+}
+
+/**
  * Fixture d'adaptateur Pi simulée : chaque commande sbx est feintée sans réseau,
  * sans Docker et sans appel fournisseur ; les fichiers générés sont relus pour
  * vérifier la propagation de la sélection provider/modèle.
@@ -20,6 +41,7 @@ async function fixture(t: { after(fn: () => Promise<void>): void }, runtimeYaml?
     await mkdir(path.join(workspace, '.slopify'), { recursive: true });
     await writeFile(path.join(workspace, '.slopify', 'runtime.yaml'), runtimeYaml);
   }
+  const workflowResourcesRoot = await miniDistribution(root);
   const skillsStore = path.join(root, 'official-skills');
   await mkdir(path.join(skillsStore, 'code-review'), { recursive: true });
   await writeFile(path.join(skillsStore, 'code-review', 'SKILL.md'), 'Official fixed smell baseline.');
@@ -42,7 +64,7 @@ async function fixture(t: { after(fn: () => Promise<void>): void }, runtimeYaml?
     }
     if (args[0] === 'exec') {
       if (args.includes('pi') && args.includes('--print')) {
-        return ok(JSON.stringify({ type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: 'Pi run report\nSLOPIFY_RESULT={"status":"succeeded"}' }] } }) + '\n');
+        return ok(JSON.stringify({ type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: 'Pi run report\nSLOPIFY_RESULT={\"status\":\"succeeded\"}' }] } }) + '\n');
       }
       if (args.some(value => value.includes('npm root -g'))) return ok('/opt/pi/node_modules/@earendil-works/pi-coding-agent/examples/extensions/subagent/index.ts\n');
       return ok();
@@ -54,9 +76,9 @@ async function fixture(t: { after(fn: () => Promise<void>): void }, runtimeYaml?
     workspacePath: workspace, specFile: path.join(contextDirectory, 'spec.md'),
     prompt: '$implement\nApproved ticket', taskBaseCommit: 'base', runBaseCommit: 'base',
     resultDirectory, sandboxName: 'sandbox-1', containerWorkspacePath: '/workspace',
-    containerContextPath: contextDirectory, skillsStore, command,
+    containerContextPath: contextDirectory, skillsStore, workflowResourcesRoot, command,
   };
-  return { root, workspace, resultDirectory, calls, copied, context };
+  return { root, workflowResourcesRoot, workspace, resultDirectory, calls, copied, context };
 }
 
 function piInvocation(calls: string[][]): string[] {
@@ -90,6 +112,70 @@ test('default selection propagates the native mistral provider and model to kit,
   assert.equal(invocation[invocation.indexOf('--model') + 1], 'zai-glm-5-3');
   assert.match(f.copied['harness.md'], /provider mistral, model zai-glm-5-3/);
   assert.match(run.report, /Pi selection: provider=mistral, model=zai-glm-5-3/);
+});
+
+test('reviewer instructions reference the distributed skill rather than embedding a second copy', async t => {
+  const f = await fixture(t);
+  const adapter = createPiTaskAdapter();
+  await adapter.prepare(f.context);
+  await adapter.run(f.context);
+  for (const axis of ['standards.md', 'spec.md']) {
+    assert.match(f.copied[axis], /skills\/engineering\/code-review\/SKILL\.md/);
+    assert.doesNotMatch(f.copied[axis], /Official fixed smell baseline\./);
+  }
+  assert.match(f.copied['harness.md'], /skills\/engineering/);
+  assert.doesNotMatch(f.copied['harness.md'], /official-skills/, 'the harness never references the global skills store');
+});
+
+test('prepare mounts the distributed skills directory readonly and pi uses it as its only skill source', async t => {
+  const f = await fixture(t);
+  const adapter = createPiTaskAdapter();
+  const preparation = await adapter.prepare(f.context);
+  assert.deepEqual(preparation.createMounts, [`${path.join(f.workflowResourcesRoot, 'skills', 'engineering')}:ro`]);
+  await adapter.run(f.context);
+  const invocation = piInvocation(f.calls);
+  const skillIndex = invocation.indexOf('--skill');
+  assert.equal(skillIndex > -1, true);
+  assert.equal(invocation[skillIndex + 1], path.join(f.workflowResourcesRoot, 'skills', 'engineering'));
+});
+
+test('a missing workflow resources root fails explicitly without any fallback or sbx command', async t => {
+  const f = await fixture(t);
+  const adapter = createPiTaskAdapter();
+  const context = { ...f.context, workflowResourcesRoot: undefined };
+  await assert.rejects(adapter.prepare(context), (error: Error & { code?: string }) => {
+    assert.equal(error.code, 'pi_workflow_resources_missing');
+    assert.match(error.message, /workflow resources/);
+    return true;
+  });
+  assert.equal(f.calls.length, 0, 'no sbx command runs when the distribution root is absent');
+  const run = await adapter.run(context);
+  assert.equal(run.exitCode, 1);
+  assert.ok(run.diagnostics.some(diagnostic => diagnostic.code === 'pi_workflow_resources_missing'));
+  assert.equal(f.calls.length, 0, 'no silent fallback happens during the run either');
+});
+
+test('an invalid distributed bundle fails explicitly before any sbx command', async t => {
+  const f = await fixture(t);
+  const broken = path.join(f.root, 'broken-distribution');
+  await mkdir(path.join(broken, 'skills/engineering/implement'), { recursive: true });
+  await writeFile(path.join(broken, 'skills/engineering/implement/SKILL.md'), 'implementation');
+  await writeFile(path.join(broken, 'inventory.json'), JSON.stringify({ roles: {
+    implementer: { entry: 'skills/engineering/implement/SKILL.md', dependencies: [{ path: 'skills/engineering/tdd/SKILL.md' }] },
+    reviewer: { entry: 'skills/engineering/code-review/SKILL.md', dependencies: [] },
+  } }));
+  const adapter = createPiTaskAdapter();
+  const context = { ...f.context, workflowResourcesRoot: broken };
+  await assert.rejects(adapter.prepare(context), (error: Error & { code?: string }) => {
+    assert.equal(error.code, 'pi_workflow_resources_invalid');
+    assert.match(error.message, /tdd\/SKILL\.md/);
+    return true;
+  });
+  assert.equal(f.calls.length, 0);
+  const run = await adapter.run(context);
+  assert.equal(run.exitCode, 1);
+  assert.ok(run.diagnostics.some(diagnostic => diagnostic.code === 'pi_workflow_resources_invalid' && /tdd\/SKILL\.md/.test(diagnostic.message)));
+  assert.equal(f.calls.length, 0);
 });
 
 test('a configured compatible mistral selection replaces the default couple everywhere', async t => {
@@ -152,4 +238,17 @@ test('a provider outside the native catalog fails with the supported providers b
   const adapter = createPiTaskAdapter();
   await assert.rejects(adapter.prepare(f.context), /not a natively supported Pi provider.*mistral, zai/);
   assert.equal(f.calls.length, 0);
+});
+
+test('the readiness check verifies every resolved resource of the distribution and the readonly mount', async t => {
+  const f = await fixture(t);
+  const adapter = createPiTaskAdapter();
+  await adapter.prepare(f.context);
+  await adapter.run(f.context);
+  const readiness = f.calls.find(args => args.some(value => value.includes('findmnt')))!;
+  const script = readiness.join(' ');
+  assert.match(script, /skills\/engineering\/implement\/SKILL\.md/);
+  assert.match(script, /skills\/engineering\/tdd\/SKILL\.md/);
+  assert.match(script, /skills\/engineering\/code-review\/SKILL\.md/);
+  assert.match(script, /findmnt/);
 });

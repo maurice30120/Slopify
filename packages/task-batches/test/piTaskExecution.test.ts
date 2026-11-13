@@ -22,6 +22,16 @@ async function fixture(t: {after(fn:()=>Promise<void>):void}, events?: string, u
   await writeFile(path.join(repo,'base.txt'),'dirty user content');
   const skills = path.join(root,'official skills');await mkdir(path.join(skills, 'code-review'), {recursive:true});
   await writeFile(path.join(skills, 'code-review', 'SKILL.md'), 'Official fixed smell baseline: Mysterious Name, Refused Bequest.');
+  // Distribution du bundle de workflows : Pi lit les prompts et dépendances ici, jamais le store global.
+  const distribution = path.join(root, 'distribution');
+  for (const relative of ['skills/engineering/implement/SKILL.md', 'skills/engineering/tdd/SKILL.md', 'skills/engineering/code-review/SKILL.md']) {
+    await mkdir(path.join(distribution, path.dirname(relative)), {recursive: true});
+    await writeFile(path.join(distribution, relative), `Content of the ${path.basename(path.dirname(relative))} workflow skill.`);
+  }
+  await writeFile(path.join(distribution, 'inventory.json'), JSON.stringify({ roles: {
+    implementer: { entry: 'skills/engineering/implement/SKILL.md', dependencies: [{ path: 'skills/engineering/tdd/SKILL.md' }] },
+    reviewer: { entry: 'skills/engineering/code-review/SKILL.md', dependencies: [] },
+  } }));
   await writeFile(path.join(root,'spec.md'),'# Approved full specification');
   const prompt = '$implement\nOriginal approved ticket';
   const batchFile=path.join(root,'batch.json');
@@ -47,7 +57,7 @@ async function fixture(t: {after(fn:()=>Promise<void>):void}, events?: string, u
       const source=a[1];
       if(source.endsWith('models.json')){const provider=JSON.parse(await readFile(source,'utf8')).providers['mistral'];assert.equal(provider.models[0].id,'zai-glm-5-3');assert.equal(provider.apiKey,'${MISTRAL_API_KEY}');}
       if(source.endsWith('harness.md')){const harness=await readFile(source,'utf8');assert.match(harness,/\{agent, task\}/);assert.match(harness,/\{tasks: \[\{agent, task\}\]\}/);assert.match(harness,/Invalid parameters\. Provide exactly one mode/);assert.match(harness,/fix the call shape/);assert.match(harness,/Delegated reviewer agents are named standards and spec/);}
-      if(source.endsWith('standards.md')) {const role=await readFile(source,'utf8');assert.match(role,/AGENTS\.md/);assert.match(role,/Official fixed smell baseline/);assert.match(role,/stdout/);}
+      if(source.endsWith('standards.md')) {const role=await readFile(source,'utf8');assert.match(role,/AGENTS\.md/);assert.match(role,/skills\/engineering\/code-review\/SKILL\.md/);assert.doesNotMatch(role,/Official fixed smell baseline/);assert.match(role,/stdout/);}
       if(source.endsWith('spec.md') && source.includes('agents'))assert.match(await readFile(source,'utf8'), /full.*spec|complete.*spec/i);
       return ok();
     }
@@ -69,12 +79,12 @@ async function fixture(t: {after(fn:()=>Promise<void>):void}, events?: string, u
     }
     throw new Error(`Unhandled sbx ${a.join(' ')}`);
   };
-  return {root,repo,head,batchFile,prompt,calls,execute,sandboxes,get removed(){return removed;}};
+  return {root,repo,head,batchFile,prompt,calls,execute,distribution,sandboxes,get removed(){return removed;}};
 }
 
 test('one Pi task publishes durable checkpoint, logs and report without altering the user workspace',async t=>{
   const f=await fixture(t);
-  const service=new TaskBatchService({repositoryPath:f.repo,storePath:path.join(f.root,'runs'),subprocessExecutor:f.execute});
+  const service=new TaskBatchService({repositoryPath:f.repo,storePath:path.join(f.root,'runs'),subprocessExecutor:f.execute,workflowResourcesRoot:f.distribution});
   const state=await service.run(f.batchFile);
   assert.equal(state.status,'succeeded');
   assert.equal(git(f.repo,'show',`${state.integrationBranch}:implemented.txt`),'implementation result');
@@ -94,7 +104,8 @@ test('one Pi task publishes durable checkpoint, logs and report without altering
   assert.equal(f.removed,true);
   const create=f.calls.find(a=>a[0]==='create' && !a.includes('--help'))!;
   assert.ok(create.includes('readonly'));
-  assert.ok(create.some(arg=>arg.endsWith('official skills:ro')));
+  const distributionSkills=path.join(f.distribution,'skills','engineering');
+  assert.ok(create.some(arg=>arg===`${distributionSkills}:ro`), 'the distributed workflow skills directory is the only skills mount');
   const kitArg=create.find(arg=>arg.endsWith('pi-kit'))!;
   const kit=JSON.parse(await readFile(path.join(kitArg,'spec.yaml'),'utf8'));
   assert.equal(kit.sandbox.image,'docker.io/sbx/pi-image:latest');
@@ -109,7 +120,7 @@ for (const verdict of ['SLOPIFY_RESULT={"status":"failed","reason":"Final review
 test(`Pi cannot publish a process-zero task with verdict: ${verdict}`, async t => {
   const events = JSON.stringify({ type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: verdict }] } });
   const f = await fixture(t, events);
-  const state = await new TaskBatchService({ repositoryPath: f.repo, storePath: path.join(f.root, 'runs'), subprocessExecutor: f.execute }).run(f.batchFile);
+  const state = await new TaskBatchService({ repositoryPath: f.repo, storePath: path.join(f.root, 'runs'), subprocessExecutor: f.execute, workflowResourcesRoot: f.distribution }).run(f.batchFile);
   assert.equal(state.status, 'failed');
   assert.equal(state.tasks[0].attempts[0].resourceState, 'retained');
   assert.equal(git(f.repo, 'rev-parse', state.integrationBranch), f.head);
@@ -123,7 +134,7 @@ test('a failed Pi reviewer is visible and retains the sandbox even when the pare
     {agent:'spec',exitCode:0,messages:[{role:'assistant',content:[{type:'text',text:'Spec report independently observed'}]}]},
   ]}}})+'\n'+JSON.stringify({type:'message_end',message:{role:'assistant',content:[{type:'text',text:'Parent claims success'}]}})+'\n';
   const f=await fixture(t,events);
-  const state=await new TaskBatchService({repositoryPath:f.repo,storePath:path.join(f.root,'runs'),subprocessExecutor:f.execute}).run(f.batchFile);
+  const state=await new TaskBatchService({repositoryPath:f.repo,storePath:path.join(f.root,'runs'),subprocessExecutor:f.execute,workflowResourcesRoot:f.distribution}).run(f.batchFile);
   assert.equal(state.status,'failed');
   assert.equal(f.removed,false);
   const attempt=state.tasks[0].attempts[0];
@@ -135,7 +146,7 @@ test('a failed Pi reviewer is visible and retains the sandbox even when the pare
 
 test('a Pi provider error encoded in JSONL fails a parent process that returned zero', async t=>{
   const f=await fixture(t,JSON.stringify({type:'message_end',message:{role:'assistant',content:[],stopReason:'error',errorMessage:'HTTP 422: provider refused store'}})+'\n');
-  const state=await new TaskBatchService({repositoryPath:f.repo,storePath:path.join(f.root,'runs'),subprocessExecutor:f.execute}).run(f.batchFile);
+  const state=await new TaskBatchService({repositoryPath:f.repo,storePath:path.join(f.root,'runs'),subprocessExecutor:f.execute,workflowResourcesRoot:f.distribution}).run(f.batchFile);
   assert.equal(state.status,'failed');
   const attempt=state.tasks[0].attempts[0];
   assert.ok(attempt.diagnostics?.some(d=>d.code==='pi_provider_error' && d.message.includes('HTTP 422')));
@@ -145,7 +156,7 @@ test('a Pi provider error encoded in JSONL fails a parent process that returned 
 
 test('Pi refuses a writable shared skill mount before starting the model', async t=>{
   const f=await fixture(t,undefined,'readonly');
-  const state=await new TaskBatchService({repositoryPath:f.repo,storePath:path.join(f.root,'runs'),subprocessExecutor:f.execute}).run(f.batchFile);
+  const state=await new TaskBatchService({repositoryPath:f.repo,storePath:path.join(f.root,'runs'),subprocessExecutor:f.execute,workflowResourcesRoot:f.distribution}).run(f.batchFile);
   assert.equal(state.status,'failed');
   assert.ok(state.tasks[0].attempts[0].diagnostics?.some(d=>d.code==='pi_capability' && /writable/.test(d.message)));
   assert.equal(f.calls.some(a=>a.includes('pi') && a.includes('--print')),false);
@@ -155,16 +166,25 @@ test('Pi refuses a writable shared skill mount before starting the model', async
 
 test('missing official Pi delegation capability fails before any model request',async t=>{
   const f=await fixture(t,undefined,'extension');
-  const state=await new TaskBatchService({repositoryPath:f.repo,storePath:path.join(f.root,'runs'),subprocessExecutor:f.execute}).run(f.batchFile);
+  const state=await new TaskBatchService({repositoryPath:f.repo,storePath:path.join(f.root,'runs'),subprocessExecutor:f.execute,workflowResourcesRoot:f.distribution}).run(f.batchFile);
   assert.equal(state.status,'failed');
   assert.ok(state.tasks[0].attempts[0].diagnostics?.some(d=>d.code==='pi_subagent_unavailable'));
   assert.equal(f.calls.some(a=>a.includes('pi') && a.includes('--print')),false);
   assert.equal(f.removed,false);
 });
 
+test('a Pi-only batch runs from the distribution without a global official skills store',async t=>{
+  const f=await fixture(t);
+  const withoutStore:SubprocessExecutor=request=>request.command==='sbx'&&request.args[0]==='skills'
+    ?Promise.resolve({exitCode:1,stdout:'',stderr:'the global official skills store is not installed'})
+    :f.execute(request);
+  const state=await new TaskBatchService({repositoryPath:f.repo,storePath:path.join(f.root,'runs'),subprocessExecutor:withoutStore,workflowResourcesRoot:f.distribution}).run(f.batchFile);
+  assert.equal(state.status,'succeeded');
+});
+
 test('Pi terminal agent summary cannot hide a provider error in its messages',async t=>{
   const f=await fixture(t,JSON.stringify({type:'agent_end',messages:[{role:'assistant',content:[],stopReason:'error',errorMessage:'Mistral service unavailable'}]})+'\n');
-  const state=await new TaskBatchService({repositoryPath:f.repo,storePath:path.join(f.root,'runs'),subprocessExecutor:f.execute}).run(f.batchFile);
+  const state=await new TaskBatchService({repositoryPath:f.repo,storePath:path.join(f.root,'runs'),subprocessExecutor:f.execute,workflowResourcesRoot:f.distribution}).run(f.batchFile);
   assert.equal(state.status,'failed');
   assert.ok(state.tasks[0].attempts[0].diagnostics?.some(d=>d.code==='pi_provider_error' && /Mistral service unavailable/.test(d.message)));
 });

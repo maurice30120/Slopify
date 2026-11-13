@@ -10,6 +10,13 @@ export interface TaskAgentContext extends TaskExecutionRequest {
   containerWorkspacePath: string;
   containerContextPath: string;
   skillsStore: string;
+  /**
+   * Racine du bundle de workflows de la distribution (répertoire contenant inventory.json et skills/),
+   * indépendante du répertoire courant. L'adaptateur résout les rôles et dépendances transitives via
+   * resolveWorkflowResources ; son absence ou son invalidité doit produire une erreur explicite,
+   * sans repli silencieux vers le store global des skills.
+   */
+  workflowResourcesRoot?: string;
   /** Commande sbx déjà routée par l'environnement d'exécution (pool, sandbox ou hôte). */
   command(args: string[]): Promise<SubprocessResult>;
 }

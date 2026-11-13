@@ -6,7 +6,7 @@ import { NodeCliTerminal } from './terminal.js';
 import { runTaskBatchCli, taskBatchHelp, TaskBatchService } from '@slopify/task-batches';
 import { createModeRuntime } from '@slopify/execution-sandbox';
 import { initHelp, runInitCli, projectInitPackageRoot } from '@slopify/project-init';
-import { promptsHelp, runPromptsCli } from './prompts.js';
+import { promptsHelp, promptsPackageRoot, runPromptsCli } from './prompts.js';
 
 const generalHelp = `Slopify V2\n\n${initHelp}\n\n${taskBatchHelp}\n\n${promptsHelp}`;
 
@@ -14,7 +14,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
   const terminal = new NodeCliTerminal();
   try {
     if (argv[0] === 'tasks') return await runTaskBatchCli(argv.slice(1), terminal, process.cwd(), options =>
-      new TaskBatchService({ ...options, runtimeFactory: createModeRuntime }));
+      new TaskBatchService({ ...options, runtimeFactory: context => createModeRuntime(context, undefined, promptsPackageRoot()) }));
     if (argv[0] === 'init') return await runInitCli(argv.slice(1), terminal, process.cwd(), {
       packageRoot: projectInitPackageRoot(),
     });

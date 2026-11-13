@@ -11,7 +11,7 @@ export { assertWorkerPoolSize, assertSharedWorkerMounts } from '@slopify/executi
 export type { TaskWorkerPoolConfig, TaskWorkerState, TaskWorkerStatus } from '@slopify/execution';
 
 interface Worker extends TaskWorkerState { created: boolean; assetsVolume: string; image: string; sharedMounts: string[]; outOfServiceByFailure?: boolean; replaced?: boolean; }
-export interface WorkerLease { worker: Worker; container: string; contextVolume: string; seed: string; stage: string; request: TaskExecutionRequest; skillsStore?:string; }
+export interface WorkerLease { worker: Worker; container: string; contextVolume: string; seed: string; stage: string; request: TaskExecutionRequest; }
 const quote=(value:string)=>"'"+value.replaceAll("'", "'\\''")+"'";
 /** Refuses an exposed Docker TCP daemon (ports 2375 and 2376) from inside the worker sandbox.
  * Probes ss first, then /proc/net/tcp and /proc/net/tcp6; fails closed when no listener source is readable. */
@@ -130,7 +130,9 @@ export class TaskWorkerPool {
       await this.execInWorker(lease,['docker','pull',worker.image]);
       await this.execInWorker(lease,['docker','volume','create',worker.assetsVolume]);
       await this.execInWorker(lease,['docker','create','--name',lease.seed,'--mount','type=volume,source='+worker.assetsVolume+',target=/assets','--entrypoint','sleep',worker.image,'infinity']);
-      await this.execInWorker(lease,['sh','-ec','mkdir -p '+quote(lease.stage+'/assets/skills')+' '+quote(lease.stage+'/assets/codex')+'; cp -aL '+(request.agent==='pi'&&lease.skillsStore?quote(lease.skillsStore+'/.'):'"$HOME/.agents/skills/."')+' '+quote(lease.stage+'/assets/skills/')+'; cp /etc/ssl/certs/ca-certificates.crt '+quote(lease.stage+'/assets/ca.crt')+'; for f in config.toml auth.json; do if test -f "$HOME/.codex/$f"; then cp "$HOME/.codex/$f" '+quote(lease.stage+'/assets/codex/')+'; fi; done']);
+      // Une tâche Pi lit ses skills dans la distribution montée readonly par l'adaptateur : ses
+      // assets n'embarquent jamais de copie du store global des skills officiel.
+      await this.execInWorker(lease,['sh','-ec','mkdir -p '+quote(lease.stage+'/assets/skills')+' '+quote(lease.stage+'/assets/codex')+'; '+(request.agent==='pi'?'':'cp -aL "$HOME/.agents/skills/." '+quote(lease.stage+'/assets/skills/')+'; ')+'cp /etc/ssl/certs/ca-certificates.crt '+quote(lease.stage+'/assets/ca.crt')+'; for f in config.toml auth.json; do if test -f "$HOME/.codex/$f"; then cp "$HOME/.codex/$f" '+quote(lease.stage+'/assets/codex/')+'; fi; done']);
       for(const [index,mount] of worker.sharedMounts.entries()){
         await this.execInWorker(lease,['sh','-ec','mkdir -p '+quote(lease.stage+'/assets/shared'+index)+'; cp -aL '+quote(mount.slice(0,-3))+'/. '+quote(lease.stage+'/assets/shared'+index+'/')]);
       }
