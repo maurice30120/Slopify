@@ -503,8 +503,14 @@ export class TaskBatchService {
         onResource: async (resource: TaskExecutionResource) => {
           attempt.resource = resource; attempt.resourceState = 'active'; await this.save(snapshot);
         },
+        onProcessStarting: async () => {
+          attempt.processSpawnPending = true;
+          await this.save(snapshot);
+        },
         onProcessSpawn: async identity => {
-          attempt.processIdentity = identity;
+          attempt.processIdentity ??= identity;
+          (attempt.processIdentities ??= []).push(identity);
+          attempt.processSpawnPending = false;
           await this.save(snapshot);
         } });
       Object.assign(attempt, result);
@@ -644,17 +650,23 @@ export class TaskBatchService {
 
   /** No optimistic retries when an old local agent, or any descendant, may survive. */
   private async assertLocalAttemptStopped(task: BatchTaskState): Promise<void> {
-    if (task.status !== 'running' && task.status !== 'interrupted') return;
+    if (!['running', 'interrupted', 'failed'].includes(task.status)) return;
     const attempt = task.attempts.at(-1);
-    if (!attempt || (attempt.status !== 'running' && attempt.status !== 'interrupted')) return;
-    const identity = attempt.processIdentity;
-    const own = await inspectLocalProcess(identity);
-    const group = identity?.processGroupId
-      ? await inspectLocalProcessGroup(identity.processGroupId) : 'unknown';
-    if (own !== 'dead' || group !== 'dead') {
-      throw new Error('Task "' + task.id + '" has a live local agent process or uncertain descendants (pid ' +
-        (identity?.pid ?? 'unknown') + ', process=' + own + ', group=' + group +
-        '). Stop and inspect the retained attempt before retrying.');
+    if (!attempt || !['running', 'interrupted', 'failed'].includes(attempt.status)) return;
+    if (attempt.status === 'failed' && !attempt.processSpawnPending && !attempt.processIdentity && !attempt.processIdentities?.length) return;
+    if (attempt.processSpawnPending) {
+      throw new Error('Task "' + task.id + '" has an uncertain local process start; inspect the retained attempt before retrying.');
+    }
+    const identities = attempt.processIdentities?.length ? attempt.processIdentities : [attempt.processIdentity];
+    for (const identity of identities) {
+      const own = await inspectLocalProcess(identity);
+      const group = identity?.processGroupId
+        ? await inspectLocalProcessGroup(identity.processGroupId) : 'unknown';
+      if (own !== 'dead' || group !== 'dead') {
+        throw new Error('Task "' + task.id + '" has a live local agent process or uncertain descendants (pid ' +
+          (identity?.pid ?? 'unknown') + ', process=' + own + ', group=' + group +
+          '). Stop and inspect the retained attempt before retrying.');
+      }
     }
   }
 
