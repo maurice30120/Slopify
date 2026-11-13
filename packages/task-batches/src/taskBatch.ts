@@ -53,6 +53,8 @@ export interface TaskBatchServiceOptions {
   subprocessExecutor?: SubprocessExecutor;
   /** Agent local injecté : requis pour exécuter Pi en mode local ; Codex par défaut. */
   localAgentRunner?: LocalAgentRunner;
+  /** Racine du bundle de workflows de la distribution (inventory.json, skills/**) : requise par l'agent Pi en mode sandbox, fournie par le CLI hôte. */
+  workflowResourcesRoot?: string;
   /** Production CLI injects the concrete local/sandbox runtime adapter. */
   runtimeFactory?: TaskRunRuntimeFactory;
   /** Capacité du lot, entre une et dix tâches actives ; dix par défaut. */

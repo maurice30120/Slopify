@@ -8,7 +8,7 @@ import type { TaskRunRuntime, TaskRunRuntimeContext, LocalAgentRunner } from '@s
  * receives only a runtime contract, never importing Docker or local executors.
  * Tests may inject a fake subprocess or a local agent runner here.
  */
-export function createModeRuntime(context: TaskRunRuntimeContext, localRunner?: LocalAgentRunner): TaskRunRuntime {
+export function createModeRuntime(context: TaskRunRuntimeContext, localRunner?: LocalAgentRunner, workflowResourcesRoot?: string): TaskRunRuntime {
   const { snapshot, subprocess, repositoryPath, signal, saveSnapshot } = context;
   delete snapshot.suspension;
   if ((snapshot.mode ?? 'sandbox') === 'local') {
@@ -57,6 +57,7 @@ export function createModeRuntime(context: TaskRunRuntimeContext, localRunner?: 
   }, signal);
   const executor = new DockerTaskExecutor({
     executor: health.execute,
+    ...(workflowResourcesRoot ? { workflowResourcesRoot } : {}),
     ...(snapshot.workerPoolConfig ? { pool: snapshot.workerPoolConfig } : {}),
     onWorkers: async states => {
       const workers = new Map((snapshot.workers ?? []).map(worker => [worker.workerId, worker]));

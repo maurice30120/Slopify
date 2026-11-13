@@ -14,18 +14,20 @@ import { createPiTaskAdapter } from '@slopify/agent-pi';
 
 
 /** Contrat fonctionnel de DockerTaskExecutorOptions dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
-export interface DockerTaskExecutorOptions { executor?: SubprocessExecutor; adapters?: TaskAgentAdapter[]; pool?: TaskWorkerPoolConfig; onWorkers?: (workers: TaskWorkerState[]) => void | Promise<void> }
+export interface DockerTaskExecutorOptions { executor?: SubprocessExecutor; adapters?: TaskAgentAdapter[]; pool?: TaskWorkerPoolConfig; onWorkers?: (workers: TaskWorkerState[]) => void | Promise<void>; /** Racine du bundle de workflows de la distribution (inventory.json, skills/**) : requise par l'adaptateur Pi, sans repli vers le store global des skills. */ workflowResourcesRoot?: string }
 
 /** Possède uniquement le cycle de vie de la sandbox ; les adaptateurs possèdent les capacités, arguments et rapports de l'agent. */
 export class DockerTaskExecutor implements TaskExecutor {
   private readonly executor: SubprocessExecutor;
   private readonly pool?: TaskWorkerPool;
+  private readonly workflowResourcesRoot?: string;
   private preparation?: { runId: string; promise: Promise<void> };
   private skillsInventory?: {store:string;skills:string[]};
   private readonly adapters: Map<string, TaskAgentAdapter>;
 /** Initialise ce composant pour le cycle de vie du pipeline concerné. */
   constructor(options: DockerTaskExecutorOptions = {}) {
     this.executor = options.executor ?? createNodeSubprocessExecutor();
+    this.workflowResourcesRoot = options.workflowResourcesRoot;
     if (options.pool) this.pool = new TaskWorkerPool(this.executor,options.pool,options.onWorkers);
     this.adapters = new Map([...(options.adapters ?? []), codexAdapter, createPiTaskAdapter()].map(a => [a.agent,a]));
   }
@@ -97,7 +99,8 @@ export class DockerTaskExecutor implements TaskExecutor {
         'Report failed if final required validations fail or work is incomplete. Expected intermediate TDD red tests are not final failures. A process exit code of zero does not establish task success. Missing or invalid verdicts fail the task. Never put this marker in reviewer reports or intermediate messages.',
       ].join('\n');
       await writeFile(path.join(containerContextPath,'harness.txt'),harness,{mode:0o600});
-      const context:TaskAgentContext={...request,sandboxName,containerWorkspacePath:request.workspacePath,containerContextPath,skillsStore:inventory.store,command};
+      const context:TaskAgentContext={...request,sandboxName,containerWorkspacePath:request.workspacePath,containerContextPath,skillsStore:inventory.store,
+        ...(this.workflowResourcesRoot?{workflowResourcesRoot:this.workflowResourcesRoot}:{}),command};
       const preparation=await adapter.prepare(context);
       await requireSuccess(['create','--clone','--name',sandboxName,'--skills','readonly',preparation.createTarget,request.workspacePath,`${request.resultDirectory}:ro`,...(preparation.createMounts??[])]);
       resource={sandboxName,inspectCommand:['sbx','exec',sandboxName,'sh'],diagnosticsDirectory:request.resultDirectory};

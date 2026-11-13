@@ -2,6 +2,7 @@ export { createNodeSubprocessExecutor, type SubprocessExecutor, type SubprocessR
 export type { TaskDiagnostic, TaskEffort, TaskAgent } from './types.js';
 export { agentOutcomeDiagnostics } from './agentOutcome.js';
 export type { TaskAgentAdapter, TaskAgentContext } from './taskAgentAdapter.js';
+export { resolveWorkflowResources, type WorkflowResources, type WorkflowResourcesInventory, type WorkflowResourceDependency, type WorkflowResourceRole, type WorkflowRoleResources } from './workflowResources.js';
 export type {
   TaskExecutor,
   TaskExecutorFactory,
