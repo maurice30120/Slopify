@@ -418,6 +418,8 @@ function spawnLocalRpcChannel(request: LocalAgentRunRequest, args: string[], age
     detached: isolated,
   });
   const pid = child.pid;
+  // EPIPE est un événement asynchrone du stream : sans handler, écrire sur le stdin d'un fils déjà mort devient une uncaughtException.
+  child.stdin.on('error', () => { /* la mort du processus est observée par onExit/close */ });
   let pending = '';
   let stderrTail = '';
   let exitCode: number | undefined;
@@ -499,7 +501,7 @@ function spawnLocalRpcChannel(request: LocalAgentRunRequest, args: string[], age
     return closing;
   };
   return {
-    writeLine: line => { try { if (!child.stdin.writableEnded) child.stdin.write(line + '\n'); } catch { /* stdin fermé : la mort du processus est observée par onExit */ } },
+    writeLine: line => { try { if (child.stdin.writable && !child.stdin.writableEnded) child.stdin.write(line + '\n'); } catch { /* stdin fermé : la mort du processus est observée par onExit */ } },
     close,
     get alive() { return exitCode === undefined; },
     describe: () => `pi ${args.map(value => /^[\w:./=-]+$/.test(value) ? value : JSON.stringify(value)).join(' ')} (pid ${pid ?? 'unknown'})`,

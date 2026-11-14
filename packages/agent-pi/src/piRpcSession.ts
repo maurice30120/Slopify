@@ -84,7 +84,7 @@ export class PiRpcSession {
       role: this.role,
       onRecord: line => this.ingest(line),
       onStderr: () => { /* Les flux bruts sont journalisés par l'environnement d'exécution. */ },
-      onExit: exit => { this.exit = exit; this.flush(); },
+      onExit: exit => { this.exit = exit; const waiter = this.abortWaiter; this.abortWaiter = undefined; waiter?.(); this.flush(); },
     });
   }
 
@@ -127,9 +127,11 @@ export class PiRpcSession {
    * et attend le retour au repos avant de répondre. La conversation de la session
    * vivante est conservée : un message ultérieur poursuit le même contexte. La réponse
    * est attendue brièvement : l'arrêt ordonné du canal reste l'autorité finale.
+   * Si la mort du processus est déjà observée, aucune commande n'est écrite et
+   * la réponse est immédiate (pas d'attente du timeout).
    */
   async abort(): Promise<void> {
-    if (this.exit) return;
+    if (this.exit || !this.channel.alive) return;
     this.channel.writeLine(JSON.stringify({ id: `abort-${randomUUID()}`, type: 'abort' }));
     await new Promise<void>(resolve => {
       const timer = setTimeout(() => { this.abortWaiter = undefined; resolve(); }, 1000);

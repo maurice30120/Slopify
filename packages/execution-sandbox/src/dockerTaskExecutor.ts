@@ -162,6 +162,7 @@ export class DockerTaskExecutor implements TaskExecutor {
     const args=context.lease?this.pool!.rewriteExecArgs(context.lease,spawnRequest.args):spawnRequest.args;
     appendFileSync(context.eventsPath,JSON.stringify({type:'start',command:'sbx',args,rpc:true,time:new Date().toISOString()})+'\n');
     const child=spawn('sbx',args,{cwd:context.workspacePath,stdio:['pipe','pipe','pipe']});
+    child.stdin.on('error',()=>{/* EPIPE asynchrone : la mort du processus est observée par onExit */});
     let pending='';
     let stderrTail='';
     let exitCode:number|undefined;
@@ -210,7 +211,7 @@ export class DockerTaskExecutor implements TaskExecutor {
     if(spawnRequest.signal?.aborted)onAbort();
     else spawnRequest.signal?.addEventListener('abort',onAbort,{once:true});
     return {
-      writeLine:line=>{try{if(!child.stdin.writableEnded)child.stdin.write(line+'\n');}catch{/* stdin fermé : la mort du processus est observée par onExit */}},
+      writeLine:line=>{try{if(child.stdin.writable&&!child.stdin.writableEnded)child.stdin.write(line+'\n');}catch{/* stdin fermé : la mort du processus est observée par onExit */}},
       close,
       get alive(){return exitCode===undefined;},
       describe:()=>`sbx ${args.map(value=>/^[\w:./=-]+$/.test(value)?value:JSON.stringify(value)).join(' ')} (pid ${child.pid ?? 'unknown'})`,
