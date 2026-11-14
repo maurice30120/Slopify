@@ -27,6 +27,13 @@ export interface TaskExecutionRequest {
   runBaseCommit: string;
   resultDirectory: string;
   signal?: AbortSignal;
+  /**
+   * Marque la tâche comme la revue finale combinée du lot : son exécution est
+   * une seule session reviewer neuve en lecture seule (Standards/Spec délégués,
+   * rapports distincts), sans session implémenteur ni correction automatique.
+   * Un échec de revue remonte comme constat et échec, jamais comme succès.
+   */
+  finalReview?: boolean;
   onResource?: (resource: TaskExecutionResource) => Promise<void>;
   /** Persist local agent identity immediately when spawned, before awaiting its result. */
   onProcessSpawn?: (identity: NonNullable<TaskExecutionResult['processIdentity']>) => Promise<void>;

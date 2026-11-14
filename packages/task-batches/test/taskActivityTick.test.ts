@@ -439,7 +439,9 @@ test('les traces de preuve gelées et les prompts restent intacts pendant que le
   // Le prompt et la spécification figée traversent le mécanisme sans réécriture.
   assert.equal(state.tasks[0].prompt, 'evidence');
   assert.equal(state.context.specText, '# Approved specification');
-  assert.deepEqual(f.launched.sort(), ['evidence', 'final-review']);
+  assert.deepEqual(f.launched.sort(), ['evidence'], 'launched lists implementer work only');
+  // La revue finale combinée n'est pas un travail d'implémenteur : verdict de session reviewer dans son rapport.
+  assert.match(await readFile(state.tasks[1].attempts[0].reportPath!, 'utf8'), /Combined final review verdict: approved/);
   // Le journal du run, et lui seul, porte les signaux.
   const journal = await readAllActivitySignals(activityJournalPath(f.storePath, state.runId));
   assert.deepEqual(journal, f.signals);

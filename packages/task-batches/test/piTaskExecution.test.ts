@@ -58,7 +58,7 @@ stdin.on('line', line => {
   pendingPrompts += 1;
   void (async () => {
     try {
-      await log({ kind: 'prompt', prompt: String(command.message ?? '').slice(0, 160) });
+      await log({ kind: 'prompt', prompt: String(command.message ?? '').slice(0, 600) });
       emit({ id: command.id, type: 'response', command: 'prompt', success: true, data: { disposition: 'started' } });
       if (role === 'implementer') {
         implementerPrompts += 1;
@@ -71,18 +71,16 @@ stdin.on('line', line => {
           emit({ type: 'message_end', message: { role: 'assistant', content: [], stopReason: 'error', errorMessage: scenario.providerError } });
         }
         const message = String(command.message ?? '');
-        if (message.includes('code-review au diff complet')) {
-          emit({ type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: 'Final combined review report\\nSLOPIFY_RESULT={"status":"succeeded"}' }] } });
-          emit({ type: 'agent_settled' });
-          return;
-        }
         const verdict = scenario.implementerVerdict ?? 'succeeded';
         const text = verdict === 'succeeded' ? 'Pi tests and review report\\nSLOPIFY_RESULT={"status":"succeeded"}'
           : verdict === 'failed' ? 'Blocked by final validation\\nSLOPIFY_RESULT={"status":"failed","reason":"final validation failed"}'
           : verdict === 'missing' ? 'Pi report without explicit verdict'
           : 'SLOPIFY_RESULT={"status":"maybe"}';
         const file = implementerPrompts === 1 ? 'implemented.txt' : 'corrected-' + (implementerPrompts - 1) + '.txt';
-        await writeFile(path.join(workdir, file), 'implementation result');
+        // Lot multi-tickets : le fichier d'un premier ticket peut déjà être intégré au commit
+        // de base de la tâche suivante ; le contenu porte la sandbox pour rester un vrai changement.
+        const existing = await readFile(path.join(workdir, file), 'utf8').catch(() => '');
+        await writeFile(path.join(workdir, file), existing ? 'implementation result ' + sandboxName.slice(-6) : 'implementation result');
         execFileSync('git', ['-C', workdir, 'add', file]);
         execFileSync('git', ['-C', workdir, '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', 'commit', '-qm', 'fake implementation']);
         emit({ type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text }] } });
@@ -90,7 +88,12 @@ stdin.on('line', line => {
         return;
       }
       const pass = (await readLog()).filter(entry => entry.role === 'reviewer' && entry.kind === 'prompt').length;
-      const verdict = scenarioVerdicts()[Math.min(pass, scenarioVerdicts().length) - 1];
+      // La revue finale combinée du lot est elle aussi servie par une session reviewer neuve :
+      // son brief contient le diff complet du lot (code-review au diff complet) et un verdict dédié.
+      const isFinal = String(command.message ?? '').includes('code-review au diff complet');
+      const verdict = isFinal
+        ? (scenario.finalVerdict ?? 'SLOPIFY_REVIEW={"verdict":"approved"}')
+        : scenarioVerdicts()[Math.min(pass, scenarioVerdicts().length) - 1];
       const standards = scenario.reviewerStandardsFails
         ? { agent: 'standards', exitCode: 1, stderr: 'Mistral review request rejected', messages: [] }
         : { agent: 'standards', exitCode: 0, messages: [{ role: 'assistant', content: [{ type: 'text', text: 'Independent Standards findings cycle ' + pass }] }] };
@@ -120,6 +123,8 @@ interface RpcLogEntry {
 
 interface FakeScenario {
   verdicts?: string[];
+  /** Verdict de la session reviewer de la revue finale combinée (approuvé par défaut). */
+  finalVerdict?: string;
   implementerCrash?: boolean;
   providerError?: string;
   implementerVerdict?: 'succeeded' | 'failed' | 'missing' | 'invalid';
@@ -185,7 +190,7 @@ async function fixture(t: { after(fn: () => Promise<void>): void }, scenario: Fa
       const source = a[1];
       if (source.endsWith('models.json')) { const provider = JSON.parse(await readFile(source, 'utf8')).providers['mistral']; assert.equal(provider.models[0].id, 'zai-glm-5-3'); assert.equal(provider.apiKey, '${MISTRAL_API_KEY}'); }
       if (source.endsWith('harness.md')) { const harness = await readFile(source, 'utf8'); assert.match(harness, /\{agent, task\}/); assert.match(harness, /\{tasks: \[\{agent, task\}\]\}/); assert.match(harness, /Invalid parameters\. Provide exactly one mode/); assert.match(harness, /fix the call shape/); assert.match(harness, /Do not trigger the independent review yourself/); }
-      if (source.endsWith('reviewer.md')) { const reviewer = await readFile(source, 'utf8'); assert.match(reviewer, /read-only session that never shares the implementer conversation/); assert.match(reviewer, /Delegated agents are named standards and spec/); assert.match(reviewer, /SLOPIFY_REVIEW/); }
+      if (source.endsWith('reviewer.md')) { const reviewer = await readFile(source, 'utf8'); assert.match(reviewer, /read-only session/, 'reviewer harness: the task review and the combined final review are both read-only'); assert.match(reviewer, /never shares/, 'the reviewer session never shares any implementer conversation'); assert.match(reviewer, /Delegated agents are named standards and spec/); assert.match(reviewer, /SLOPIFY_REVIEW/); }
       if (source.endsWith('standards.md')) { const role = await readFile(source, 'utf8'); assert.match(role, /AGENTS\.md/); assert.match(role, /skills\/engineering\/code-review\/SKILL\.md/); assert.doesNotMatch(role, /Official fixed smell baseline/); assert.match(role, /stdout/); }
       if (source.endsWith('spec.md') && source.includes('agents')) assert.match(await readFile(source, 'utf8'), /full.*spec|complete.*spec/i);
       return ok();
@@ -246,8 +251,10 @@ test('a Pi RPC task corrects in one persistent implementer session, integrates d
   assert.equal(reviewers.length, 2);
   assert.equal(new Set(reviewers.map(entry => entry.pid)).size, 2, 'a fresh reviewer process per pass');
   assert.ok(reviewers.every(entry => /Independent review, cycle [12]/.test(entry.prompt!)));
-  // La revue finale du lot passe aussi par une session RPC implémenteur dédiée.
-  assert.ok(log.some(entry => entry.role === 'implementer' && entry.kind === 'prompt' && /code-review au diff complet/.test(entry.prompt!)));
+  // La revue finale du lot est une session reviewer neuve, sans session implémenteur dédiée.
+  const finalPass = log.find(entry => entry.kind === 'prompt' && /code-review au diff complet/.test(entry.prompt ?? ''))!;
+  assert.ok(finalPass, 'the generated final review reaches the independent reviewer workflow');
+  assert.equal(finalPass.role, 'reviewer', 'the final combined review runs as a read-only reviewer session');
   // Preuves durables du workflow : événements ordonnés à séquence dense, sessions reviewers distinctes.
   const evidence = path.join(path.dirname(attempt.stdoutPath!), 'pi-rpc');
   const events = (await readFile(path.join(evidence, 'workflow-events.jsonl'), 'utf8')).trim().split('\n').map(line => JSON.parse(line));
@@ -369,4 +376,100 @@ test('a Pi-only batch runs from the distribution without a global official skill
   const service = new TaskBatchService({ repositoryPath: f.repo, storePath: path.join(f.root, 'runs'), subprocessExecutor: withoutStore, workflowResourcesRoot: f.distribution });
   const state = await service.run(f.batchFile);
   assert.equal(state.status, 'succeeded');
+});
+
+/** Lot multi-tâches jusqu'à la revue intégrée unique : deux tickets Pi séquentiels, revue finale générée. */
+async function multiTaskBatch(f: { batchFile: string }) {
+  await writeFile(f.batchFile, JSON.stringify({ specFile: 'spec.md', tasks: [
+    { id: 'first', prompt: '$implement\nFirst approved ticket', agent: 'pi', source: '01.md', dependsOn: [] },
+    { id: 'second', prompt: '$implement\nSecond approved ticket', agent: 'pi', source: '02.md', dependsOn: ['first'] },
+  ] }));
+}
+
+/** Preuves RPC de la tentative de revue finale : sessions, événements et rapports durables. */
+async function finalReviewEvidence(attempt: { stdoutPath?: string }) {
+  const evidence = path.join(path.dirname(attempt.stdoutPath!), 'pi-rpc');
+  return {
+    sessions: (await readFile(path.join(evidence, 'sessions.jsonl'), 'utf8')).trim().split('\n').map(line => JSON.parse(line)),
+    events: (await readFile(path.join(evidence, 'workflow-events.jsonl'), 'utf8')).trim().split('\n').map(line => JSON.parse(line)),
+    reviews: (await readFile(path.join(evidence, 'reviews.jsonl'), 'utf8')).trim().split('\n').map(line => JSON.parse(line)),
+  };
+}
+
+test('a multi-task Pi batch reaches exactly one integrated final review, read-only, over the native RPC transport', { timeout: 60000 }, async t => {
+  const f = await fixture(t, {});
+  await multiTaskBatch(f);
+  const state = await f.service().run(f.batchFile);
+  const review = state.tasks.find(task => task.source === 'final-review')!;
+  assert.equal(state.status, 'succeeded');
+  assert.equal(review.status, 'succeeded');
+  // Un seul processus de revue finale : une session reviewer neuve, aucun implémenteur, fermée après son verdict.
+  const attempt = review.attempts[0];
+  const evidence = await finalReviewEvidence(attempt);
+  const started = evidence.sessions.filter(record => record.event === 'started');
+  assert.deepEqual([...new Set(started.map(record => record.role))], ['reviewer'], 'the final review starts no implementer session');
+  assert.equal(started.length, 1, 'exactly one reviewer session for the whole combined final review');
+  assert.ok(evidence.sessions.some(record => record.event === 'stopped'), 'the reviewer session is closed after its reports');
+  assert.deepEqual(evidence.events.map(event => event.phase).filter(Boolean),
+    ['session_started', 'review_started', 'review_settled', 'review_verdict', 'session_stopped', 'workflow_succeeded'],
+    'the begin, progression and verdict of the final review are observable in the durable journal');
+  // Rapports Standards et Spec distincts et visibles, verdict et sélection observables dans le rapport de la tentative.
+  const report = await readFile(attempt.reportPath!, 'utf8');
+  assert.match(report, /Combined final review verdict: approved/);
+  assert.match(report, /## Standards report\nIndependent Standards findings/);
+  assert.match(report, /## Spec report\nIndependent Spec findings/);
+  assert.match(report, /Pi selection: provider=mistral, model=/);
+  assert.match(report, /reviews .*reviews\.jsonl/, 'the durable report references are part of the run status');
+  assert.deepEqual(evidence.reviews.map(reviewRecord => [reviewRecord.cycle, reviewRecord.verdict]), [[1, 'approved']]);
+  // Le brief de la revue finale épinglera le diff complet du lot, et la sélection est transmise aux sous-agents.
+  const config = path.dirname(attempt.reportPath!);
+  const standardsBrief = await readFile(path.join(config, 'pi-config', 'agents', 'standards.md'), 'utf8');
+  const specBrief = await readFile(path.join(config, 'pi-config', 'agents', 'spec.md'), 'utf8');
+  const reviewerBrief = await readFile(path.join(config, 'pi-config', 'reviewer.md'), 'utf8');
+  for (const brief of [standardsBrief, specBrief]) {
+    assert.match(brief, new RegExp(`git diff ${state.runBaseCommit}\\.\\.\\.HEAD`), 'the whole lot diff is pinned');
+    assert.match(brief, /provider mistral, model /, 'the explicit provider/model selection reaches the delegated subagents');
+  }
+  assert.match(reviewerBrief, new RegExp(`diff ${state.runBaseCommit}\\.\\.\\.HEAD`), 'the session harness pins the whole lot diff');
+  assert.match(reviewerBrief, /provider mistral, model /, 'the explicit selection is observable in the final review harness');
+  assert.match(reviewerBrief, /read-only session/);
+  assert.match(reviewerBrief, /no automatic correction follows/);
+  assert.equal(f.calls.some(a => a.includes('pi') && a.includes('--print')), false, 'only the native RPC transport is used');
+  // Une seule revue finale dans le journal du faux serveur, après les deux tâches implémentées.
+  const log = await f.readRpcLog();
+  const finalPasses = log.filter(entry => /code-review au diff complet/.test(entry.prompt ?? ''));
+  assert.equal(finalPasses.length, 1, 'the integrated final review runs exactly once');
+  assert.equal(finalPasses[0].role, 'reviewer');
+  assert.equal(new Set(log.filter(entry => entry.role === 'implementer').map(entry => entry.pid)).size, 2, 'one persistent implementer session per ticket, never for the final review');
+  assert.equal(git(f.repo, 'rev-parse', 'HEAD'), f.head, 'the host workspace stays untouched');
+});
+
+test('a rejected integrated final review fails the lot visibly, without any correction, new review or relaunch', { timeout: 60000 }, async t => {
+  const f = await fixture(t, { finalVerdict: 'SLOPIFY_REVIEW={"verdict":"rejected","reason":"cross-task standards breach in the integrated lot"}' });
+  await multiTaskBatch(f);
+  const state = await f.service().run(f.batchFile);
+  assert.equal(state.status, 'failed', 'a rejected final review can never read as a success of the lot');
+  const review = state.tasks.find(task => task.source === 'final-review')!;
+  assert.equal(review.status, 'failed');
+  const attempt = review.attempts[0];
+  assert.equal(review.attempts.length, 1, 'no new attempt follows the rejected final review');
+  assert.ok(attempt.diagnostics?.some(d => d.code === 'pi_final_review_rejected' && /cross-task standards breach/.test(d.message)),
+    'the failure is reported through the public run status');
+  const report = await readFile(attempt.reportPath!, 'utf8');
+  assert.match(report, /Combined final review verdict: rejected: cross-task standards breach in the integrated lot/);
+  assert.match(report, /## Standards report/);
+  assert.match(report, /## Spec report/);
+  // Constats visibles, sans correction automatique : aucune session implémenteur ni nouveau passage de revue.
+  const evidence = await finalReviewEvidence(attempt);
+  const started = evidence.sessions.filter(record => record.event === 'started');
+  assert.deepEqual([...new Set(started.map(record => record.role))], ['reviewer']);
+  assert.equal(started.length, 1, 'the rejected final review never goes back to an implementer session');
+  assert.equal(evidence.events.at(-1)!.phase, 'workflow_blocked', 'the lot ends blocked with its reports and no automatic relaunch');
+  assert.deepEqual(evidence.reviews.map(reviewRecord => [reviewRecord.verdict, reviewRecord.reason]),
+    [['rejected', 'cross-task standards breach in the integrated lot']]);
+  const log = await f.readRpcLog();
+  assert.equal(log.filter(entry => /code-review au diff complet/.test(entry.prompt ?? '')).length, 1, 'no second final review pass');
+  assert.equal(new Set(log.filter(entry => entry.role === 'implementer').map(entry => entry.pid)).size, 2, 'the implementer sessions of the tickets are never relaunched');
+  assert.equal(attempt.resourceState, 'retained', 'the review sandbox is retained for inspection');
+  assert.equal(git(f.repo, 'rev-parse', 'HEAD'), f.head, 'the host workspace stays untouched');
 });

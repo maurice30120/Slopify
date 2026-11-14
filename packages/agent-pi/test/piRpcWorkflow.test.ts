@@ -3,7 +3,7 @@ import test from 'node:test';
 import { mkdtemp, mkdir, readFile, rm } from 'node:fs/promises';
 import * as path from 'node:path';
 import { tmpdir } from 'node:os';
-import { runPiRpcWorkflow, MAX_REVIEW_CYCLES, type PiReviewOutcome } from '../src/piRpcWorkflow.js';
+import { runPiRpcWorkflow, runPiCombinedFinalReview, MAX_REVIEW_CYCLES, type PiReviewOutcome } from '../src/piRpcWorkflow.js';
 import type { PiRpcChannel, PiRpcChannelFactory } from '../src/piRpcSession.js';
 import type { PiWorkflowEvent } from '../src/piRpcEvidence.js';
 
@@ -105,13 +105,85 @@ async function fixture(t: { after(fn: () => Promise<void>): void }, options: Fak
     verifyReadyForReview: async () => { if (options.dirtyWorkspace) throw new Error('workspace is not committed'); },
     onEvent: event => events.push(event),
   });
+  const runFinal = (signal?: AbortSignal) => runPiCombinedFinalReview({
+    runId: 'run-1', taskId: 'final-review', attemptId: 'attempt-1', resultDirectory, signal,
+    openChannel: factory,
+    reviewMessage: 'Final combined review of the complete lot diff',
+    onEvent: event => events.push(event),
+  });
   const evidence = {
     sessions: async () => (await readFile(path.join(resultDirectory, 'pi-rpc', 'sessions.jsonl'), 'utf8')).trim().split('\n').map(line => JSON.parse(line)),
     reviews: async () => (await readFile(path.join(resultDirectory, 'pi-rpc', 'reviews.jsonl'), 'utf8')).trim().split('\n').map(line => JSON.parse(line)),
     events: async () => (await readFile(path.join(resultDirectory, 'pi-rpc', 'workflow-events.jsonl'), 'utf8')).trim().split('\n').map(line => JSON.parse(line)),
   };
-  return { root, resultDirectory, channels, events, run, evidence };
+  return { root, resultDirectory, channels, events, run, runFinal, evidence };
 }
+
+test('the combined final review runs exactly one fresh read-only reviewer session, closed after a distinct approval', async t => {
+  const f = await fixture(t, {
+    reviewerReply: () => ({ final: 'Final combined review findings\nSLOPIFY_REVIEW={"verdict":"approved"}', standards: 'Final Standards report', spec: 'Final Spec report' }),
+  });
+  const result = await f.runFinal();
+  assert.equal(result.exitCode, 0, result.report);
+  assert.deepEqual(result.diagnostics, []);
+  assert.equal(f.channels.filter(channel => channel.role === 'implementer').length, 0, 'the final review never starts an implementer session');
+  const reviewers = f.channels.filter(channel => channel.role === 'reviewer');
+  assert.equal(reviewers.length, 1, 'a single combined final review process');
+  assert.equal(reviewers[0].prompts.length, 1, 'exactly one pass: no correction or second review ever follows');
+  assert.match(reviewers[0].prompts[0], /Final combined review of the complete lot diff/);
+  assert.ok(reviewers[0].closed, 'the reviewer session is closed after its verdict');
+  assert.equal(result.verdict, 'approved');
+  assert.equal(result.standards, 'Final Standards report', 'the Standards report stays distinct');
+  assert.equal(result.spec, 'Final Spec report', 'the Spec report stays distinct');
+  assert.match(result.report, /Final Standards report/);
+  assert.match(result.report, /Final Spec report/);
+  const reviews = await f.evidence.reviews();
+  assert.deepEqual(reviews.map(review => [review.cycle, review.verdict, review.standards, review.spec]),
+    [[1, 'approved', 'Final Standards report', 'Final Spec report']]);
+  const events = await f.evidence.events();
+  assert.ok(events.some(event => event.phase === 'review_started'), 'the final review start is observable');
+  assert.ok(events.some(event => event.phase === 'review_verdict'), 'the final review verdict is observable');
+  assert.equal(events.at(-1)!.phase, 'workflow_succeeded');
+  const sessions = await f.evidence.sessions();
+  const started = sessions.filter(record => record.event === 'started');
+  assert.deepEqual([...new Set(started.map(record => record.role))], ['reviewer'], 'no implementer session is ever started for the final review');
+  assert.ok(started[0].description.length > 0, 'the session process description is preserved as evidence');
+});
+
+test('a rejected combined final review fails the lot observably without any correction or new review', async t => {
+  const f = await fixture(t, {
+    reviewerReply: () => ({ final: 'Blocking integrated lot findings\nSLOPIFY_REVIEW={"verdict":"rejected","reason":"standards breach in the integrated lot"}',
+      standards: 'Final Standards blocker report', spec: 'Final Spec blocker report' }),
+  });
+  const result = await f.runFinal();
+  assert.equal(result.exitCode, 1, 'a rejected final review can never read as a success');
+  assert.equal(result.verdict, 'rejected');
+  assert.equal(result.reason, 'standards breach in the integrated lot');
+  assert.ok(result.diagnostics.some(diagnostic => diagnostic.code === 'pi_final_review_rejected' && /standards breach in the integrated lot/.test(diagnostic.message)),
+    'the failure is reported through the public diagnostics, not folded into an approval');
+  assert.equal(f.channels.filter(channel => channel.role === 'implementer').length, 0, 'a rejection never goes back to any implementer session');
+  assert.equal(f.channels.filter(channel => channel.role === 'reviewer').length, 1, 'no new final review pass follows the rejection');
+  assert.ok(f.channels[0].closed, 'the reviewer session is still closed after its reports');
+  assert.match(result.report, /Final Standards blocker report/);
+  assert.match(result.report, /Final Spec blocker report/);
+  const events = await f.evidence.events();
+  assert.equal(events.at(-1)!.phase, 'workflow_blocked', 'the lot ends blocked with its reports, without automatic relaunch');
+  const reviews = await f.evidence.reviews();
+  assert.equal(reviews[0].verdict, 'rejected');
+  assert.equal(reviews[0].standards, 'Final Standards blocker report');
+  assert.equal(reviews[0].spec, 'Final Spec blocker report');
+});
+
+test('an invalid combined final review verdict is a visible reviewer failure, never an approval', async t => {
+  const f = await fixture(t, { reviewerReply: () => ({ final: 'Findings without any verdict line', standards: 'S', spec: 'P' }) });
+  const result = await f.runFinal();
+  assert.equal(result.exitCode, 1);
+  assert.equal(result.verdict, undefined);
+  assert.ok(result.diagnostics.some(diagnostic => diagnostic.code === 'pi_review_verdict_invalid'));
+  assert.equal(f.channels.filter(channel => channel.role === 'reviewer').length, 1);
+  const events = await f.evidence.events();
+  assert.equal(events.at(-1)!.phase, 'workflow_failed');
+});
 
 test('two correction cycles run in the same persistent implementer session, with a fresh reviewer session per pass', async t => {
   const verdicts = ['rejected', 'rejected', 'approved'];

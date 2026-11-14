@@ -4,12 +4,12 @@ import type { TaskAgentAdapter, TaskAgentContext, AgentRpcProcess, WorkflowResou
 import type { TaskDiagnostic } from '@slopify/execution';
 import { resolveWorkflowResources } from '@slopify/execution';
 import { loadPiModelSelection, PI_NATIVE_PROVIDERS, type PiModelSelection } from './piNativeCatalog.js';
-import { runPiRpcWorkflow, MAX_REVIEW_CYCLES, type PiReviewOutcome, type PiRpcWorkflowResult } from './piRpcWorkflow.js';
+import { runPiRpcWorkflow, runPiCombinedFinalReview, MAX_REVIEW_CYCLES, type PiReviewOutcome, type PiRpcWorkflowResult } from './piRpcWorkflow.js';
 import type { PiRpcChannel, PiRpcChannelFactory } from './piRpcSession.js';
 
 export { PI_NATIVE_PROVIDERS } from './piNativeCatalog.js';
-export { runPiRpcWorkflow, MAX_REVIEW_CYCLES } from './piRpcWorkflow.js';
-export type { PiReviewOutcome, PiRpcWorkflowOptions, PiRpcWorkflowResult } from './piRpcWorkflow.js';
+export { runPiRpcWorkflow, runPiCombinedFinalReview, MAX_REVIEW_CYCLES } from './piRpcWorkflow.js';
+export type { PiReviewOutcome, PiRpcWorkflowOptions, PiRpcWorkflowResult, PiFinalReviewOptions, PiFinalReviewResult } from './piRpcWorkflow.js';
 export type { PiRpcChannel, PiRpcChannelFactory, PiRpcSession, PiRpcTurn } from './piRpcSession.js';
 export { redactSecrets, type PiWorkflowEvent } from './piRpcEvidence.js';
 
@@ -117,9 +117,55 @@ export function createPiTaskAdapter(): TaskAgentAdapter {
         },
       } }, null, 2));
       for (const axis of ['standards', 'spec'] as const) {
-        await writeFile(path.join(configPath, 'agents', `${axis}.md`), reviewerRole(axis, context, resources));
+        await writeFile(path.join(configPath, 'agents', `${axis}.md`), context.finalReview
+          ? finalReviewerRole(axis, context, resources, selection)
+          : reviewerRole(axis, context, resources));
       }
-      await writeFile(path.join(configPath, 'reviewer.md'), reviewerHarness(context));
+      await writeFile(path.join(configPath, 'reviewer.md'), context.finalReview
+        ? finalReviewerHarness(context, selection)
+        : reviewerHarness(context));
+      // Revue finale combinée : une seule session reviewer neuve en lecture seule, sans implémenteur — le harness implémenteur n'existe pas pour ce rôle.
+      if (context.finalReview) {
+        const created = await context.command(['exec', context.sandboxName, 'mkdir', '-p', `${containerConfig}/agents`]);
+        if (created.exitCode !== 0) throw new Error(`Cannot create Pi configuration directory: ${created.stderr}`);
+        for (const relative of ['models.json', 'reviewer.md', 'agents/standards.md', 'agents/spec.md']) {
+          const copied = await context.command(['cp', path.join(configPath, relative), `${context.sandboxName}:${containerConfig}/${relative}`]);
+          if (copied.exitCode !== 0) throw new Error(`Cannot provide Pi ${relative}: ${copied.stderr}`);
+        }
+        const openChannel: PiRpcChannelFactory = session => {
+          const process: AgentRpcProcess = context.spawnRpc!({
+            args: rpcInvocation(context, selection, extensionPath, containerConfig, 'reviewer', resources),
+            onRecord: session.onRecord,
+            onStderr: session.onStderr,
+            onExit: session.onExit,
+            signal: context.signal,
+          });
+          return {
+            writeLine: line => process.writeLine(line),
+            close: () => process.close(),
+            get alive() { return process.alive; },
+            describe: () => process.describe(),
+          };
+        };
+        const finalReview = await runPiCombinedFinalReview({
+          runId: context.runId, taskId: context.taskId, attemptId: context.attemptId,
+          resultDirectory: context.resultDirectory, signal: context.signal,
+          openChannel,
+          reviewMessage: finalReviewMessage(context),
+        });
+        const selectionTrace = `Pi selection: provider=${selection.provider.id}, model=${selection.model.id} `
+          + `(${selection.source === 'configured' ? 'configured in .slopify/runtime.yaml' : 'Slopify default; configure pi.provider and pi.model in .slopify/runtime.yaml to change it'}).`;
+        const report = [
+          selectionTrace,
+          `Combined final review verdict: ${finalReview.verdict ?? 'unresolved'}${finalReview.reason ? `: ${finalReview.reason}` : ''}.`,
+          ...(finalReview.standards !== undefined ? [`## Standards report\n${finalReview.standards}`] : []),
+          ...(finalReview.spec !== undefined ? [`## Spec report\n${finalReview.spec}`] : []),
+          ...(finalReview.findings !== undefined ? [`## Findings without correction\n${finalReview.findings}`] : []),
+          `Durable review evidence: sessions ${finalReview.evidence.sessionsPath}; reviews ${finalReview.evidence.reviewsPath}; events ${finalReview.evidence.eventsPath}.`,
+          finalReview.report,
+        ].filter(Boolean).join('\n\n');
+        return { exitCode: finalReview.exitCode, report, diagnostics: finalReview.diagnostics };
+      }
       const harnessPath = path.join(configPath, 'harness.md');
       const sharedHarness = await readFile(path.join(context.containerContextPath, 'harness.txt'), 'utf8');
       const evidenceDirectory = path.dirname(context.containerContextPath);
@@ -233,5 +279,52 @@ function reviewerRole(axis: 'standards' | 'spec', context: TaskAgentContext, res
     `The task prompt is ${JSON.stringify(context.prompt)}. Do not mistake an agent declaration for observed process evidence.\n` +
     `Report missing evidence as unverified, rather than inferring TDD or successful commands from commits or a final diff.\n` +
     `For Standards distinguish documented breaches from heuristic smells; repository standards override the baseline. For Spec quote missing, wrong or extra requirements.\n` +
+    `Read the shared reviewer skill as reference material, including its full fixed smell baseline. Perform only your delegated axis; do not repeat its parent delegation workflow.\n`;
+}
+
+/**
+ * Brief unique envoyé à la session reviewer neuve de la revue finale combinée :
+ * le prompt du lot (skill code-review, diff complet, validations figées) suivi des
+ * mêmes règles de délégation parallèle que les revues de tâche, en lecture seule,
+ * sans aucune correction ni nouveau passage après le verdict.
+ */
+function finalReviewMessage(context: TaskAgentContext): string {
+  return `${context.prompt}\n\n` +
+    `This is the final combined review of the integrated lot: delegate the Standards and Spec reviews now in one parallel subagent call ({tasks: [{agent, task}, {agent, task}]}); this is a read-only review, never edit or commit.\n` +
+    `The reports of both axes stay distinct; report every finding as a finding: no correction follows this review and your verdict decides the lot.\n` +
+    `End with exactly one standalone verdict line SLOPIFY_REVIEW={"verdict":"approved"} or SLOPIFY_REVIEW={"verdict":"rejected","reason":"concrete reason"}.`;
+}
+
+/**
+ * Brief système de la session reviewer de la revue finale combinée : lecture seule
+ * sur le diff complet du lot, délégation parallèle Standards/Spec avec rapports
+ * distincts, choix de fournisseur/modèle transmis et observable, verdict unique
+ * obligatoire — sans implémenteur ni correction après le verdict.
+ */
+function finalReviewerHarness(context: TaskAgentContext, selection: PiModelSelection): string {
+  return `Combined final review harness for the integrated lot (task ${context.taskId}). This is a read-only session that reviews the complete lot diff ${context.runBaseCommit}...HEAD and never shares any implementer conversation: judge only from the durable repository evidence.\n` +
+    `Delegated agents are named standards and spec; delegate both axes in one parallel subagent call ({tasks: [{agent, task}, {agent, task}]}), then verify their findings yourself; their reports stay distinct.\n` +
+    `Report every finding without editing or committing anything: no automatic correction follows this review and a rejected verdict fails the lot without a new review.\n` +
+    `Effective model selection for this session and every delegated subagent: provider ${selection.provider.id}, model ${selection.model.id} (source: ${selection.source === 'configured' ? 'configured in .slopify/runtime.yaml' : 'Slopify default'}).\n` +
+    `End your final assistant message with exactly one standalone verdict line: SLOPIFY_REVIEW={"verdict":"approved"} or SLOPIFY_REVIEW={"verdict":"rejected","reason":"concrete remaining blocker"}. Never put this verdict line in intermediate messages or reviewer reports.`;
+}
+
+/**
+ * Brief d'un sous-agent Standards/Spec délégué de la revue finale combinée : même
+ * workflow de revue que les revues de tâche, sur le diff complet du lot au lieu du
+ * diff du ticket, avec la sélection fournisseur/modèle du run transmise explicitement.
+ */
+function finalReviewerRole(axis: 'standards' | 'spec', context: TaskAgentContext, resources: WorkflowResources, selection: PiModelSelection): string {
+  return `---\nname: ${axis}\ndescription: Independent ${axis} review of the integrated lot\ntools: read, grep, find, ls, bash\n---\n` +
+    `Perform only the delegated ${axis} review of the integrated lot. Read-only inspection; do not edit or commit.\n` +
+    `Read the complete frozen spec at ${context.containerContextPath}/spec.md.\n` +
+    `Read AGENTS.md and every applicable repository instruction and standards source, including inherited references.\n` +
+    `Shared reviewer skill source of the distribution: ${resources.reviewer}; all its referenced resources are available in the readonly mounted distribution.\n` +
+    `Default diff: git diff ${context.runBaseCommit}...HEAD; commits: git log ${context.runBaseCommit}..HEAD --oneline.\n` +
+    `Read the actual streamed execution traces at ${path.dirname(context.containerContextPath)}/stdout.log and ${path.dirname(context.containerContextPath)}/stderr.log, and observed commands at ${path.dirname(context.containerContextPath)}/commands.jsonl.\n` +
+    `The final review brief is ${JSON.stringify(context.prompt)}. Do not mistake an agent declaration for observed process evidence.\n` +
+    `Report missing evidence as unverified, rather than inferring TDD or successful commands from commits or a final diff.\n` +
+    `For Standards distinguish documented breaches from heuristic smells; repository standards override the baseline. For Spec quote missing, wrong or extra requirements, including interactions between tasks of the lot.\n` +
+    `Effective model selection for this review: provider ${selection.provider.id}, model ${selection.model.id} (source: ${selection.source === 'configured' ? 'configured in .slopify/runtime.yaml' : 'Slopify default'}).\n` +
     `Read the shared reviewer skill as reference material, including its full fixed smell baseline. Perform only your delegated axis; do not repeat its parent delegation workflow.\n`;
 }

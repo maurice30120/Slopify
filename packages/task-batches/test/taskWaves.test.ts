@@ -450,7 +450,10 @@ test('checkpoints ready together integrate serially in JSON order without rerunn
   f.launched.length = 0;
   const resumed = await f.service.resume(produced.runId);
   assert.equal(resumed.status, 'succeeded');
-  assert.deepEqual(f.launched, ['final-review']);
+  assert.deepEqual(f.launched, [], 'the resumed final review reruns no implementer work: it is an independent reviewer session');
+  const resumedReview = resumed.tasks.find(item => item.source === 'final-review')!;
+  assert.equal(resumedReview.status, 'succeeded');
+  assert.match(await readFile(resumedReview.attempts[0].reportPath!, 'utf8'), /Combined final review verdict: approved/);
   const [first, second] = resumed.tasks;
   assert.equal(first.attempts[0].integratedCommit, first.attempts[0].checkpoint!.commit);
   assert.equal(git(f.repo, 'rev-parse', `${second.attempts[0].integratedCommit}^1`), first.attempts[0].integratedCommit);

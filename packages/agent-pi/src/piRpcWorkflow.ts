@@ -236,6 +236,173 @@ export async function runPiRpcWorkflow(options: PiRpcWorkflowOptions): Promise<P
   }
 }
 
+/** Critères d'exécution de la revue finale combinée du lot intégré. */
+export interface PiFinalReviewOptions {
+  runId: string;
+  taskId: string;
+  attemptId: string;
+  resultDirectory: string;
+  signal?: AbortSignal;
+  /** Transport : ouvre le canal RPC de la session reviewer neuve de la revue finale. */
+  openChannel: PiRpcChannelFactory;
+  /** Brief unique envoyé à la session reviewer : revue du diff complet du lot, délégation des deux axes, verdict explicite. */
+  reviewMessage: string;
+  /** Remontée hôte agrégée : changements de phase seulement, jamais les messages internes bruts. */
+  onEvent?: (event: PiWorkflowEvent) => void;
+  now?: () => string;
+}
+
+/** Verdict de la revue finale combinée : rapports des deux axes distincts, constats rédigés, sans correction. */
+export interface PiFinalReviewResult {
+  exitCode: number;
+  report: string;
+  diagnostics: TaskDiagnostic[];
+  /** Session reviewer neuve de la revue finale, fermée après l'émission du verdict. */
+  sessionId: string;
+  verdict?: 'approved' | 'rejected';
+  reason?: string;
+  findings?: string;
+  /** Rapport de l'axe Standards, distinct de l'axe Spec. */
+  standards?: string;
+  /** Rapport de l'axe Spec, distinct de l'axe Standards. */
+  spec?: string;
+  evidence: { sessionsPath: string; reviewsPath: string; eventsPath: string };
+}
+
+/**
+ * Revue finale combinée du lot intégré : une seule session reviewer Pi neuve et
+ * indépendante, qui reçoit le diff complet du lot et délègue les axes Standards
+ * et Spec en lecture seule ; elle est fermée après l'émission de ses rapports.
+ * Un refus remonte ses constats comme échec visible (le lot n'est pas déclaré
+ * réussi) sans relancer d'implémenteur ni de nouvelle revue : aucun correctif
+ * automatique ne suit, la suite relève de la décision explicite de l'agent hôte.
+ */
+export async function runPiCombinedFinalReview(options: PiFinalReviewOptions): Promise<PiFinalReviewResult> {
+  const signal = options.signal;
+  const evidence = new PiRpcEvidence({
+    runId: options.runId, taskId: options.taskId, attemptId: options.attemptId,
+    resultDirectory: options.resultDirectory, onEvent: options.onEvent, now: options.now,
+  });
+  const diagnostics: TaskDiagnostic[] = [];
+  const reports: string[] = [];
+  let reviewer: PiRpcSession | undefined;
+  let review: PiReviewOutcome | undefined;
+  const now = () => new Date().toISOString();
+
+  /** Arrêt ordonné de la session reviewer vivante, journalisé comme preuve ; un arrêt défaillant escalade en échec. */
+  const stopSession = async (session: PiRpcSession): Promise<void> => {
+    const closed = await session.stop();
+    await evidence.session({ timestamp: now(), role: 'reviewer', sessionId: session.sessionId, event: 'stopped', cycle: 1, exitCode: closed.exitCode });
+    await evidence.event('session_stopped', { role: 'reviewer', sessionId: session.sessionId, cycle: 1, detail: `Ordered stop, exit code ${closed.exitCode}.` });
+  };
+
+  const finish = async (exitCode: number, phase: PiWorkflowPhase, detail: string): Promise<PiFinalReviewResult> => {
+    // Identifiant de session capturé avant l'arrêt ordonné : le verdict et les rapports restent corrélés dans les preuves.
+    const sessionId = reviewer?.sessionId ?? review?.sessionId ?? 'none';
+    if (reviewer) {
+      if (reviewer.alive) try { await reviewer.abort(); } catch { /* best effort */ }
+      try { await stopSession(reviewer); } catch (error) {
+        diagnostics.push({ code: 'pi_session_cleanup_failed', message: error instanceof Error ? error.message : String(error) });
+      }
+      reviewer = undefined;
+    }
+    if (diagnostics.some(diagnostic => diagnostic.code === 'pi_session_cleanup_failed')) {
+      exitCode = 1; phase = 'workflow_failed'; detail = 'A Pi session or its descendants could not be confirmed stopped.';
+    }
+    await evidence.event(phase, { role: 'reviewer', sessionId, cycle: 1, detail, evidencePath: exitCode === 0 ? evidence.eventsPath : evidence.reviewsPath });
+    return {
+      exitCode, report: reports.join('\n\n'), diagnostics,
+      sessionId: review?.sessionId ?? 'none',
+      ...(review?.verdict !== undefined ? { verdict: review.verdict } : {}),
+      ...(review?.reason !== undefined ? { reason: review.reason } : {}),
+      ...(review?.findings !== undefined ? { findings: review.findings } : {}),
+      ...(review?.standards !== undefined ? { standards: review.standards } : {}),
+      ...(review?.spec !== undefined ? { spec: review.spec } : {}),
+      evidence: { sessionsPath: evidence.sessionsPath, reviewsPath: evidence.reviewsPath, eventsPath: evidence.eventsPath },
+    };
+  };
+
+  /** Interrompt l'attente d'un tour si l'hôte annule ; l'arrêt ordonné est fait par finish. */
+  const raceAbort = <T>(pending: Promise<T>): Promise<T> => {
+    if (!signal) return pending;
+    return new Promise<T>((resolve, reject) => {
+      const onAbort = () => reject(new WorkflowCancelled());
+      if (signal.aborted) { onAbort(); return; }
+      signal.addEventListener('abort', onAbort, { once: true });
+      pending.then(value => { signal.removeEventListener('abort', onAbort); resolve(value); },
+        error => { signal.removeEventListener('abort', onAbort); reject(error); });
+    });
+  };
+
+  class ReviewFailed extends Error {}
+
+  try {
+    // Session reviewer neuve et indépendante pour toute la revue finale, en lecture seule.
+    reviewer = new PiRpcSession({ role: 'reviewer', openChannel: options.openChannel });
+    const sessionId = reviewer.sessionId;
+    await evidence.session({ timestamp: now(), role: 'reviewer', sessionId, event: 'started', cycle: 1, description: redactSecrets(reviewer.describe()) });
+    await evidence.event('session_started', { role: 'reviewer', sessionId, cycle: 1, detail: redactSecrets(reviewer.describe()) });
+    await evidence.event('review_started', { role: 'reviewer', sessionId, cycle: 1, detail: 'Combined final review of the integrated lot diff in a fresh read-only session.' });
+    await evidence.session({ timestamp: now(), role: 'reviewer', sessionId, event: 'prompt', cycle: 1, promptChars: options.reviewMessage.length });
+    let turn: PiRpcTurn;
+    try { turn = await raceAbort(reviewer.prompt(options.reviewMessage)); }
+    catch (error) {
+      if (error instanceof WorkflowCancelled) throw error;
+      diagnostics.push({ code: 'pi_workflow_failed', message: error instanceof Error ? error.message : String(error) });
+      throw new ReviewFailed();
+    }
+    if (!turn.settled) {
+      const exit = reviewer.exited ?? { exitCode: 1, stderrTail: '' };
+      await evidence.session({ timestamp: now(), role: 'reviewer', sessionId, event: 'exit', cycle: 1, exitCode: exit.exitCode, detail: redactSecrets(exit.stderrTail).slice(0, 2000) });
+      await evidence.event('session_crashed', { role: 'reviewer', sessionId, cycle: 1, detail: `Pi RPC reviewer process exited with code ${exit.exitCode} before settling.` });
+      diagnostics.push({ code: 'pi_rpc_session_crashed', message: `Pi RPC reviewer session ${sessionId} exited with code ${exit.exitCode} before agent_settled${exit.stderrTail ? `: ${redactSecrets(exit.stderrTail).slice(0, 500)}` : ''}.` });
+      throw new ReviewFailed();
+    }
+    await evidence.session({ timestamp: now(), role: 'reviewer', sessionId, event: 'settled', cycle: 1 });
+    await evidence.event('review_settled', { role: 'reviewer', sessionId, cycle: 1 });
+    reports.push(...turn.reports);
+    diagnostics.push(...turn.diagnostics);
+    // Une approbation explicite ne remplace jamais une revue Standards/Spec incomplete ou défaillante.
+    if (turn.diagnostics.length > 0 || !['standards', 'spec'].every(axis =>
+      turn.subagents.some(child => child.agent === axis && child.exitCode === 0 && child.text.trim()))) {
+      diagnostics.push({ code: 'pi_review_incomplete', message: 'Independent Standards and Spec reviews must both complete successfully with reports.' });
+      throw new ReviewFailed();
+    }
+    const outcome = reviewVerdict(1, sessionId, turn);
+    if ('invalid' in outcome) {
+      diagnostics.push({ code: 'pi_review_verdict_invalid', message: `${outcome.invalid} Reviewer session ${sessionId} final message follows: ${turn.finalText.slice(0, 1000)}` });
+      throw new ReviewFailed();
+    }
+    review = outcome;
+    await evidence.review({ timestamp: now(), cycle: 1, sessionId, verdict: outcome.verdict,
+      ...(outcome.reason !== undefined ? { reason: outcome.reason } : {}),
+      ...(outcome.standards !== undefined ? { standards: outcome.standards } : {}),
+      ...(outcome.spec !== undefined ? { spec: outcome.spec } : {}) });
+    await evidence.event('review_verdict', { role: 'reviewer', sessionId, cycle: 1, detail: `Final combined review verdict: ${outcome.verdict}${outcome.reason ? `: ${outcome.reason}` : ''}.`, evidencePath: evidence.reviewsPath });
+    // La session reviewer est fermée après l'émission de ses rapports, comme à chaque passage de revue.
+    try { await stopSession(reviewer); } catch (error) {
+      diagnostics.push({ code: 'pi_session_cleanup_failed', message: error instanceof Error ? error.message : String(error) });
+    }
+    reviewer = undefined;
+    if (outcome.verdict === 'approved') {
+      return await finish(0, 'workflow_succeeded', 'Combined final review approved the integrated lot after one read-only pass.');
+    }
+    // Refus : constat visible et échec du lot ; aucune correction automatique ni nouvelle revue n'est lancée.
+    diagnostics.push({ code: 'pi_final_review_rejected', message: `Combined final review rejected the integrated lot${outcome.reason ? `: ${outcome.reason}` : ''}. Findings are reported without any automatic correction: ${outcome.findings.slice(0, 2000)}` });
+    return await finish(1, 'workflow_blocked', 'Combined final review rejected the integrated lot; findings are reported and the host decides what follows.');
+  } catch (error) {
+    if (error instanceof WorkflowCancelled) {
+      diagnostics.push({ code: 'pi_workflow_cancelled', message: 'Pi RPC combined final review was cancelled; the live reviewer session received an ordered stop.' });
+      return await finish(1, 'workflow_cancelled', 'Cancelled by the host; the live reviewer session was stopped in order.');
+    }
+    if (error instanceof ReviewFailed) {
+      return await finish(1, 'workflow_failed', diagnostics.map(diagnostic => diagnostic.message).join(' | ').slice(0, 2000));
+    }
+    diagnostics.push({ code: 'pi_workflow_failed', message: error instanceof Error ? error.message : String(error) });
+    return await finish(1, 'workflow_failed', diagnostics.map(diagnostic => diagnostic.message).join(' | ').slice(0, 2000));
+  }
+}
+
 type ReviewVerdict = PiReviewOutcome | { invalid: string };
 
 /** Extrait le verdict d'un passage de revue du message final du reviewer ; un verdict absent ou invalide n'approuve jamais. */
