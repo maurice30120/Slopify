@@ -84,11 +84,6 @@ stdin.on('line', line => {
       if (role === 'implementer') {
         implementerPrompts += 1;
         const message = String(command.message ?? '');
-        if (message.includes('code-review au diff complet')) {
-          emit({ type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: 'Final combined review report\\nSLOPIFY_RESULT={"status":"succeeded"}' }] } });
-          emit({ type: 'agent_settled' });
-          return;
-        }
         const text = scenario.implementerVerdict === 'missing' ? 'Pi report without explicit verdict'
           : 'Pi local run report\\nSLOPIFY_RESULT={"status":"succeeded"}';
         if (text.includes('SLOPIFY_RESULT')) {
@@ -102,8 +97,11 @@ stdin.on('line', line => {
         return;
       }
       const pass = (await readLog()).filter(entry => entry.role === 'reviewer' && entry.kind === 'prompt').length;
-      const verdicts = scenario.verdicts ?? ['SLOPIFY_REVIEW={"verdict":"approved"}'];
-      const verdict = verdicts[Math.min(pass, verdicts.length) - 1];
+      // La revue finale combinée du lot est servie par une session reviewer neuve, avec un verdict dédié.
+      const isFinal = String(command.message ?? '').includes('code-review au diff complet');
+      const verdict = isFinal
+        ? (scenario.finalVerdict ?? 'SLOPIFY_REVIEW={"verdict":"approved"}')
+        : (scenario.verdicts ?? ['SLOPIFY_REVIEW={"verdict":"approved"}'])[Math.min(pass, (scenario.verdicts ?? ['SLOPIFY_REVIEW={"verdict":"approved"}']).length) - 1];
       emit({ type: 'tool_execution_end', toolName: 'subagent', isError: false, result: { details: { mode: 'parallel', results: [
         { agent: 'standards', exitCode: 0, messages: [{ role: 'assistant', content: [{ type: 'text', text: 'Independent local Standards findings cycle ' + pass }] }] },
         { agent: 'spec', exitCode: 0, messages: [{ role: 'assistant', content: [{ type: 'text', text: 'Independent local Spec findings cycle ' + pass }] }] },
@@ -384,8 +382,10 @@ test('a local Pi RPC review cycle corrects in one persistent implementer process
   assert.equal(reviewers.length, 2, 'a fresh reviewer process per pass');
   assert.equal(new Set(reviewers.map(entry => entry.pid)).size, 2);
   assert.ok(reviewers.every(entry => /Independent review, cycle [12]/.test(entry.prompt!)));
-  // La revue finale du lot passe aussi par une session RPC implémenteur dédiée.
-  assert.ok(log.some(entry => entry.role === 'implementer' && entry.kind === 'prompt' && /code-review au diff complet/.test(entry.prompt!)));
+  // La revue finale du lot est elle aussi une session reviewer neuve, en lecture seule.
+  const finalPass = log.find(entry => entry.kind === 'prompt' && /code-review au diff complet/.test(entry.prompt ?? ''))!;
+  assert.ok(finalPass, 'the final review reaches the independent reviewer workflow');
+  assert.equal(finalPass.role, 'reviewer', 'the local final review runs as a read-only reviewer session');
   // Rapport de la tentative : trace de sessions RPC et rapports de revue durables.
   const attempt = state.tasks[0].attempts[0];
   const report = await readFile(attempt.reportPath!, 'utf8');
@@ -397,6 +397,50 @@ test('a local Pi RPC review cycle corrects in one persistent implementer process
   assert.ok(attempt.processIdentities?.length, 'every local RPC session identity is retained for safe resume');
 });
 
+
+test('a local Pi final review runs as one fresh read-only reviewer session with distinct combined reports', { timeout: 60000 }, async t => {
+  const f = await localFixture(t, [task('piwork', 'pi')], async () => 0);
+  await embedLocalSubagentExtension(f.repo);
+  const readLog = await fakeLocalRpcOnPath(t, f.root, {});
+  const service = new TaskBatchService({ repositoryPath: f.repo, storePath: path.join(f.root, 'runs') });
+  const state = await service.run(f.batchFile, { mode: 'local' });
+  assert.equal(state.status, 'succeeded');
+  const review = state.tasks.find(task => task.source === 'final-review')!;
+  assert.equal(review.status, 'succeeded');
+  // Une seule session reviewer neuve pour la revue finale locale, aucune session implémenteur.
+  const log = await readLog();
+  const finalPasses = log.filter(entry => /code-review au diff complet/.test(entry.prompt ?? ''));
+  assert.equal(finalPasses.length, 1, 'the local integrated final review runs exactly once');
+  assert.equal(finalPasses[0].role, 'reviewer', 'the final review is an independent read-only reviewer session');
+  const attempt = review.attempts[0];
+  const evidence = (await readFile(path.join(path.dirname(attempt.reportPath!), 'pi-rpc', 'sessions.jsonl'), 'utf8')).trim().split('\n').map(line => JSON.parse(line));
+  const started = evidence.filter(record => record.event === 'started');
+  assert.deepEqual([...new Set(started.map(record => record.role))], ['reviewer'], 'the local final review starts no implementer session');
+  const report = await readFile(attempt.reportPath!, 'utf8');
+  assert.match(report, /Combined final review verdict: approved/);
+  assert.match(report, /## Standards report/);
+  assert.match(report, /## Spec report/);
+});
+
+test('a rejected local final review fails the lot with visible findings, without correction or new review', { timeout: 60000 }, async t => {
+  const f = await localFixture(t, [task('piwork', 'pi')], async () => 0);
+  await embedLocalSubagentExtension(f.repo);
+  const readLog = await fakeLocalRpcOnPath(t, f.root, { finalVerdict: 'SLOPIFY_REVIEW={\"verdict\":\"rejected\",\"reason\":\"local lot standards breach\"}' });
+  const service = new TaskBatchService({ repositoryPath: f.repo, storePath: path.join(f.root, 'runs') });
+  const state = await service.run(f.batchFile, { mode: 'local' });
+  assert.equal(state.status, 'failed', 'a rejected local final review can never read as a success');
+  const review = state.tasks.find(task => task.source === 'final-review')!;
+  assert.equal(review.status, 'failed');
+  assert.equal(review.attempts.length, 1, 'no relaunch follows the rejected local final review');
+  const attempt = review.attempts[0];
+  assert.ok(attempt.diagnostics?.some(d => d.code === 'pi_final_review_rejected' && /local lot standards breach/.test(d.message ?? '')),
+    'the rejection is visible in the public run status');
+  const report = await readFile(attempt.reportPath!, 'utf8');
+  assert.match(report, /Combined final review verdict: rejected: local lot standards breach/);
+  const log = await readLog();
+  assert.equal(log.filter(entry => /code-review au diff complet/.test(entry.prompt ?? '')).length, 1, 'no second local final review pass');
+  assert.equal(log.filter(entry => entry.role === 'implementer').length, 1, 'the ticket implementer session is never relaunched');
+});
 
 test('resume refuses to double an attempt whose local agent process is still alive', { timeout: 15000 }, async t => {
   const { readLocalProcessIdentity } = await import('@slopify/execution-local');

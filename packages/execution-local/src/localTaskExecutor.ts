@@ -7,7 +7,7 @@ import * as path from 'node:path';
 import { createNodeSubprocessExecutor, type SubprocessExecutor, type TaskDiagnostic, type TaskExecutor, type TaskExecutionRequest, type TaskExecutionResult, type TaskExecutionResource, type TaskAgent } from '@slopify/execution';
 import type { LocalAgentRunRequest, LocalAgentRunResult, LocalAgentRunner } from '@slopify/execution';
 export type { LocalAgentRunRequest, LocalAgentRunResult, LocalAgentRunner } from '@slopify/execution';
-import { runPiRpcWorkflow, type PiReviewOutcome, type PiRpcWorkflowResult } from '@slopify/agent-pi';
+import { runPiRpcWorkflow, runPiCombinedFinalReview, type PiFinalReviewResult, type PiReviewOutcome, type PiRpcWorkflowResult } from '@slopify/agent-pi';
 import type { PiRpcChannel, PiRpcChannelFactory } from '@slopify/agent-pi';
 import { readLocalProcessIdentity, inspectLocalProcessGroup, type LocalProcessIdentity } from './localProcessIdentity.js';
 export { readLocalProcessIdentity, inspectLocalProcess, inspectLocalProcessGroup, isLocalProcessAlive } from './localProcessIdentity.js';
@@ -324,6 +324,34 @@ async function runPiLocal(request: LocalAgentRunRequest): Promise<LocalAgentRunR
   if (await readable(userModels)) {
     await writeFile(path.join(configDirectory, 'models.json'), await readFile(userModels, 'utf8'), { mode: 0o600 });
   }
+  // Revue finale combinée du lot : une seule session reviewer neuve en lecture seule, sans implémenteur ni correction.
+  if (request.finalReview) {
+    await writeFile(path.join(configDirectory, 'reviewer.txt'), localFinalReviewerHarness(request));
+    for (const axis of ['standards', 'spec'] as const) {
+      await writeFile(path.join(configDirectory, 'agents', `${axis}.md`), localFinalReviewerRole(axis, request));
+    }
+    const extensionArgs2 = extension.explicit ? ['--extension', extension.path] : [];
+    const finalChannel: PiRpcChannelFactory = session => spawnLocalRpcChannel(request,
+      ['--mode', 'rpc', '--no-session', '--append-system-prompt', path.join(configDirectory, 'reviewer.txt'), ...extensionArgs2],
+      { PI_CODING_AGENT_DIR: configDirectory }, session);
+    const finalReview = await runPiCombinedFinalReview({
+      runId: request.runId, taskId: request.taskId, attemptId: request.attemptId,
+      resultDirectory: request.resultDirectory, signal: request.signal,
+      openChannel: finalChannel,
+      reviewMessage: localFinalReviewMessage(request),
+    });
+    return {
+      exitCode: finalReview.exitCode,
+      report: [
+        `Combined final review verdict: ${finalReview.verdict ?? 'unresolved'}${finalReview.reason ? `: ${finalReview.reason}` : ''} (reviewer session ${finalReview.sessionId}).`,
+        ...(finalReview.standards !== undefined ? [`## Standards report\n${finalReview.standards}`] : []),
+        ...(finalReview.spec !== undefined ? [`## Spec report\n${finalReview.spec}`] : []),
+        `Durable workflow evidence: sessions ${finalReview.evidence.sessionsPath}; reviews ${finalReview.evidence.reviewsPath}; events ${finalReview.evidence.eventsPath}.`,
+        finalReview.report,
+      ].filter(Boolean).join('\n\n'),
+      diagnostics: finalReview.diagnostics,
+    };
+  }
   await writeFile(path.join(configDirectory, 'reviewer.txt'), localReviewerHarness(request));
   for (const axis of ['standards', 'spec'] as const) {
     await writeFile(path.join(configDirectory, 'agents', `${axis}.md`), localReviewerRole(axis, request));
@@ -498,6 +526,37 @@ function localReviewerHarness(request: LocalAgentRunRequest): string {
   return `Independent local review harness for task ${request.taskId}. This is a read-only session that never shares the implementer conversation: judge only from the durable repository evidence, never from implementer declarations.\n` +
     `Delegated agents are named standards and spec; delegate both axes in one parallel subagent call ({tasks: [{agent, task}, {agent, task}]}), then verify their findings yourself.\n` +
     `End your final assistant message with exactly one standalone verdict line: SLOPIFY_REVIEW={"verdict":"approved"} or SLOPIFY_REVIEW={"verdict":"rejected","reason":"concrete remaining blocker"}. Never put this verdict line in intermediate messages or reviewer reports.`;
+}
+
+/**
+ * Brief unique envoyé à la session reviewer neuve de la revue finale combinée locale :
+ * prompt du lot puis règles de délégation parallèle, lecture seule, verdict unique,
+ * sans correction ni nouveau passage.
+ */
+function localFinalReviewMessage(request: LocalAgentRunRequest): string {
+  return `${request.prompt}\n\n` +
+    `This is the final combined review of the integrated lot: delegate the Standards and Spec reviews now in one parallel subagent call ({tasks: [{agent, task}, {agent, task}]}); this is a read-only review, never edit or commit.\n` +
+    `The reports of both axes stay distinct; report every finding as a finding: no correction follows this review and your verdict decides the lot.\n` +
+    `End with exactly one standalone verdict line SLOPIFY_REVIEW={"verdict":"approved"} or SLOPIFY_REVIEW={"verdict":"rejected","reason":"concrete reason"}.`;
+}
+
+/** Brief système de la session reviewer locale de la revue finale combinée : lecture seule sur le diff complet du lot, rapports distincts, verdict unique. */
+function localFinalReviewerHarness(request: LocalAgentRunRequest): string {
+  return `Combined local final review harness for the integrated lot (task ${request.taskId}). This is a read-only session that reviews the complete lot diff ${request.runBaseCommit}...HEAD and never shares any implementer conversation: judge only from the durable repository evidence.\n` +
+    `Delegated agents are named standards and spec; delegate both axes in one parallel subagent call ({tasks: [{agent, task}, {agent, task}]}), then verify their findings yourself; their reports stay distinct.\n` +
+    `Report every finding without editing or committing anything: no automatic correction follows this review and a rejected verdict fails the lot without a new review.\n` +
+    `End your final assistant message with exactly one standalone verdict line: SLOPIFY_REVIEW={"verdict":"approved"} or SLOPIFY_REVIEW={"verdict":"rejected","reason":"concrete remaining blocker"}. Never put this verdict line in intermediate messages or reviewer reports.`;
+}
+
+/** Brief d'un sous-agent local Standards/Spec délégué de la revue finale combinée : même workflow de revue, sur le diff complet du lot. */
+function localFinalReviewerRole(axis: 'standards' | 'spec', request: LocalAgentRunRequest): string {
+  return `---\nname: ${axis}\ndescription: Independent ${axis} review of the integrated lot\ntools: read, grep, find, ls, bash\n---\n` +
+    `Perform only the delegated ${axis} review of the integrated lot. Read-only inspection; do not edit or commit.\n` +
+    `Read the complete frozen spec at ${path.join(request.contextPath, 'spec.md')}.\n` +
+    `Read AGENTS.md and every applicable repository instruction and standards source, including inherited references.\n` +
+    `Default diff: git diff ${request.runBaseCommit}...HEAD; commits: git log ${request.runBaseCommit}..HEAD --oneline.\n` +
+    `The final review brief is ${JSON.stringify(request.prompt)}. Do not mistake an agent declaration for observed process evidence.\n` +
+    `For Standards distinguish documented breaches from heuristic smells; repository standards override the baseline. For Spec quote missing, wrong or extra requirements, including interactions between tasks of the lot.\n`;
 }
 
 /** Brief d'un sous-agent reviewer local délégué (standards ou spec). */
