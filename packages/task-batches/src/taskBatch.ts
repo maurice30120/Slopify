@@ -500,6 +500,7 @@ export class TaskBatchService {
       await this.git.clonePinned(integrationPath, workspacePath, taskBaseCommit);
       const result = await executor.execute({ runId: snapshot.runId, taskId: task.id, attemptId, agent: task.agent,
         ...(task.model ? { model: task.model } : {}), ...(task.effort ? { effort: task.effort } : {}),
+        ...(task.source === 'final-review' ? { finalReview: true } : {}),
         workspacePath, specFile: snapshot.context.specFile, prompt: task.prompt, taskBaseCommit,
         runBaseCommit: snapshot.runBaseCommit, resultDirectory, signal,
         onResource: async (resource: TaskExecutionResource) => {
