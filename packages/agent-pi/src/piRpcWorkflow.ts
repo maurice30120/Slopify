@@ -341,6 +341,7 @@ export async function runPiCombinedFinalReview(options: PiFinalReviewOptions): P
     reviewer = new PiRpcSession({ role: 'reviewer', openChannel: options.openChannel });
     const sessionId = reviewer.sessionId;
     await evidence.session({ timestamp: now(), role: 'reviewer', sessionId, event: 'started', cycle: 1, description: redactSecrets(reviewer.describe()) });
+    await evidence.event('session_started', { role: 'reviewer', sessionId, cycle: 1, detail: redactSecrets(reviewer.describe()) });
     await evidence.event('review_started', { role: 'reviewer', sessionId, cycle: 1, detail: 'Combined final review of the integrated lot diff in a fresh read-only session.' });
     await evidence.session({ timestamp: now(), role: 'reviewer', sessionId, event: 'prompt', cycle: 1, promptChars: options.reviewMessage.length });
     let turn: PiRpcTurn;
