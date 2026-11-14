@@ -15,31 +15,37 @@ import { createPiTaskAdapter } from '@slopify/agent-pi';
 
 
 /** Contrat fonctionnel de DockerTaskExecutorOptions dans le cycle de vie du pipeline ; il définit les données et invariants observables. */
-export interface DockerTaskExecutorOptions { executor?: SubprocessExecutor; adapters?: TaskAgentAdapter[]; pool?: TaskWorkerPoolConfig; onWorkers?: (workers: TaskWorkerState[]) => void | Promise<void> }
+export interface DockerTaskExecutorOptions { executor?: SubprocessExecutor; adapters?: TaskAgentAdapter[]; pool?: TaskWorkerPoolConfig; onWorkers?: (workers: TaskWorkerState[]) => void | Promise<void>; /** Racine du bundle de workflows de la distribution (inventory.json, skills/**) : requise par l'adaptateur Pi, sans repli vers le store global des skills. */ workflowResourcesRoot?: string }
 
 /** Possède uniquement le cycle de vie de la sandbox ; les adaptateurs possèdent les capacités, arguments et rapports de l'agent. */
 export class DockerTaskExecutor implements TaskExecutor {
   private readonly executor: SubprocessExecutor;
   private readonly pool?: TaskWorkerPool;
+  private readonly workflowResourcesRoot?: string;
   private preparation?: { runId: string; promise: Promise<void> };
   private skillsInventory?: {store:string;skills:string[]};
   private readonly adapters: Map<string, TaskAgentAdapter>;
 /** Initialise ce composant pour le cycle de vie du pipeline concerné. */
   constructor(options: DockerTaskExecutorOptions = {}) {
     this.executor = options.executor ?? createNodeSubprocessExecutor();
+    this.workflowResourcesRoot = options.workflowResourcesRoot;
     if (options.pool) this.pool = new TaskWorkerPool(this.executor,options.pool,options.onWorkers);
     this.adapters = new Map([...(options.adapters ?? []), codexAdapter, createPiTaskAdapter()].map(a => [a.agent,a]));
   }
 /** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
-  async prepareRun(request: {runId:string;workspacePath:string;signal?:AbortSignal}):Promise<void> {
+  async prepareRun(request: {runId:string;workspacePath:string;signal?:AbortSignal;agents?:string[]}):Promise<void> {
     if(this.preparation){if(this.preparation.runId!==request.runId)throw new Error('A task executor belongs to one batch.');return this.preparation.promise;}
     const promise=(async()=>{
       await new SbxPreflight(this.executor).preflightWorkspace({cwd:request.workspacePath,signal:request.signal});
       const command=async(args:string[])=>{const r=await this.executor({command:'sbx',args,cwd:request.workspacePath,stdin:'ignore',signal:request.signal});if(r.exitCode!==0)throw new Error('sbx '+args[0]+' failed: '+(r.stderr||r.stdout));return r;};
-      const inventory=JSON.parse((await command(['skills','ls','--json'])).stdout) as {store?:string;skills?:string[]};
-      if(!inventory.store||!Array.isArray(inventory.skills)||!['implement','tdd','code-review'].every(skill=>inventory.skills!.includes(skill)))throw new Error('Official skills are missing. Install them explicitly with sbx skills add mattpocock/skills.');
+      // Le store global des skills officiel est une exigence Codex : un lot exclusivement Pi
+      // consomme les ressources de la distribution et n'exige pas ce store.
+      if(!request.agents?.every(agent=>agent==='pi')){
+        const inventory=JSON.parse((await command(['skills','ls','--json'])).stdout) as {store?:string;skills?:string[]};
+        if(!inventory.store||!Array.isArray(inventory.skills)||!['implement','tdd','code-review'].every(skill=>inventory.skills!.includes(skill)))throw new Error('Official skills are missing. Install them explicitly with sbx skills add mattpocock/skills.');
+        this.skillsInventory={store:inventory.store,skills:inventory.skills};
+      }
       const help=await command(['create','--help']);if(!help.stdout.includes('--skills'))throw new Error('sbx create must support --skills readonly. Upgrade Docker Sandboxes.');
-      this.skillsInventory={store:inventory.store,skills:inventory.skills};
     })();
     this.preparation={runId:request.runId,promise};
     try{await promise;}catch(error){this.preparation=undefined;throw error;}
@@ -80,8 +86,6 @@ export class DockerTaskExecutor implements TaskExecutor {
       const sandboxName='slopify-'+createHash('sha256').update(`${request.runId}/${request.taskId}/${request.attemptId}`).digest('hex').slice(0,24);
       await this.prepareRun(request);
       lease=await this.pool?.acquire(request);
-      const inventory=this.skillsInventory!;
-      if(lease)lease.skillsStore=inventory.store;
       const containerContextPath=path.join(request.resultDirectory,'context');
       await mkdir(containerContextPath,{recursive:true});
       await copyFile(request.specFile,path.join(containerContextPath,'spec.md'));
@@ -100,7 +104,8 @@ export class DockerTaskExecutor implements TaskExecutor {
         'Report failed if final required validations fail or work is incomplete. Expected intermediate TDD red tests are not final failures. A process exit code of zero does not establish task success. Missing or invalid verdicts fail the task. Never put this marker in reviewer reports or intermediate messages.',
       ].join('\n');
       await writeFile(path.join(containerContextPath,'harness.txt'),harness,{mode:0o600});
-      const context:TaskAgentContext={...request,sandboxName,containerWorkspacePath:request.workspacePath,containerContextPath,skillsStore:inventory.store,command,
+      const context:TaskAgentContext={...request,sandboxName,containerWorkspacePath:request.workspacePath,containerContextPath,
+        skillsStore:this.skillsInventory?.store??'',...(this.workflowResourcesRoot?{workflowResourcesRoot:this.workflowResourcesRoot}:{}),command,
         spawnRpc:rpc=>this.spawnRpc(rpc,{workspacePath:request.workspacePath,stdoutPath,stderrPath,eventsPath,lease})};
       const preparation=await adapter.prepare(context);
       await requireSuccess(['create','--clone','--name',sandboxName,'--skills','readonly',preparation.createTarget,request.workspacePath,`${request.resultDirectory}:ro`,...(preparation.createMounts??[])]);

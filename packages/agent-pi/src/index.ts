@@ -1,7 +1,8 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
-import type { TaskAgentAdapter, TaskAgentContext, AgentRpcProcess } from '@slopify/execution';
+import type { TaskAgentAdapter, TaskAgentContext, AgentRpcProcess, WorkflowResources } from '@slopify/execution';
 import type { TaskDiagnostic } from '@slopify/execution';
+import { resolveWorkflowResources } from '@slopify/execution';
 import { loadPiModelSelection, PI_NATIVE_PROVIDERS, type PiModelSelection } from './piNativeCatalog.js';
 import { runPiRpcWorkflow, MAX_REVIEW_CYCLES, type PiReviewOutcome, type PiRpcWorkflowResult } from './piRpcWorkflow.js';
 import type { PiRpcChannel, PiRpcChannelFactory } from './piRpcSession.js';
@@ -12,6 +13,38 @@ export type { PiReviewOutcome, PiRpcWorkflowOptions, PiRpcWorkflowResult } from 
 export type { PiRpcChannel, PiRpcChannelFactory, PiRpcSession, PiRpcTurn } from './piRpcSession.js';
 export { redactSecrets, type PiWorkflowEvent } from './piRpcEvidence.js';
 
+/**
+ * Ressources de workflow de la distribution : résolues depuis l'inventaire du bundle
+ * embarqué, sans lecture du store global des skills ni copie du texte des workflows.
+ * Toute absence ou invalidité produit une erreur explicite, sans repli silencieux.
+ */
+async function requireWorkflowResources(context: TaskAgentContext): Promise<WorkflowResources> {
+  if (!context.workflowResourcesRoot) {
+    throw Object.assign(
+      new Error('The Pi task agent requires the workflow resources root of the distribution (the directory containing inventory.json and skills/); no global skills store is read as a fallback.'),
+      { code: 'pi_workflow_resources_missing' },
+    );
+  }
+  try {
+    return await resolveWorkflowResources(context.workflowResourcesRoot);
+  } catch (error: unknown) {
+    throw Object.assign(
+      new Error(`The distributed workflow resources are unusable: ${error instanceof Error ? error.message : String(error)}`),
+      { code: 'pi_workflow_resources_invalid' },
+    );
+  }
+}
+
+/** Ressources de workflow pour run(), en dégradation explicite observable plutôt qu'en exception. */
+async function workflowResourcesOrFail(context: TaskAgentContext): Promise<{ resources?: WorkflowResources; diagnostics?: TaskDiagnostic[] }> {
+  try {
+    return { resources: await requireWorkflowResources(context) };
+  } catch (error: unknown) {
+    const failure = error as Error & { code?: string };
+    return { diagnostics: [{ code: failure.code ?? 'pi_workflow_resources_invalid', message: failure.message }] };
+  }
+}
+
 /** L'image Pi exige la configuration explicite du provider sélectionné et l'exemple officiel de délégation. */
 export function createPiTaskAdapter(): TaskAgentAdapter {
   return {
@@ -19,6 +52,7 @@ export function createPiTaskAdapter(): TaskAgentAdapter {
 /** Coordonne cette étape du cycle de vie du pipeline, en préservant l'état durable et les erreurs observables. */
     async prepare(context) {
       const selection = await loadPiModelSelection(context.workspacePath);
+      const resources = await requireWorkflowResources(context);
       const kitPath = path.join(context.resultDirectory, 'pi-kit');
       await mkdir(kitPath, { recursive: true });
       await writeFile(path.join(kitPath, 'spec.yaml'), JSON.stringify({
@@ -36,7 +70,7 @@ export function createPiTaskAdapter(): TaskAgentAdapter {
       }, null, 2));
       const validation = await context.command(['kit', 'validate', kitPath, '--json']);
       if (validation.exitCode !== 0) throw new Error(`Pi kit validation failed: ${validation.stderr || validation.stdout}`);
-      return { createTarget: kitPath, createMounts: [`${context.skillsStore}:ro`] };
+      return { createTarget: kitPath, createMounts: [`${resources.skillsDirectory}:ro`] };
     },
 /**
  * Exécute le workflow Pi en RPC natif : session implémenteur persistante pour la
@@ -46,16 +80,24 @@ export function createPiTaskAdapter(): TaskAgentAdapter {
  */
     async run(context) {
       const selection = await loadPiModelSelection(context.workspacePath);
-      const skillsPath = shellQuote(context.skillsStore);
+      const { resources, diagnostics: resourceDiagnostics } = await workflowResourcesOrFail(context);
+      if (!resources) {
+        return { exitCode: 1, report: '', diagnostics: resourceDiagnostics! };
+      }
+      const quotedResources = Object.values(resources.roles)
+        .flatMap(role => [role.entry, ...role.dependencies])
+        .map(resource => shellQuote(resource))
+        .join(' ');
+      const skillsPath = shellQuote(resources.skillsDirectory);
       const readiness = await context.command(['exec', context.sandboxName, 'sh', '-c',
-        `set -eu; for skill in implement tdd code-review; do test -r ${skillsPath}/"$skill"/SKILL.md; done; ` +
-        `options=$(findmnt -n -o OPTIONS -T ${skillsPath}); case ",$options," in *,ro,*) ;; *) echo "Official skills are writable" >&2; exit 1;; esac; pi --version`]);
+        `set -eu; for resource in ${quotedResources}; do test -r "$resource"; done; ` +
+        `options=$(findmnt -n -o OPTIONS -T ${skillsPath}); case \",$options,\" in *,ro,*) ;; *) echo \"Workflow resources are writable\" >&2; exit 1;; esac; pi --version`]);
       if (readiness.exitCode !== 0) {
         return { exitCode: readiness.exitCode, report: readiness.stderr, diagnostics: [{ code: 'pi_capability',
-          message: readiness.stderr || 'Pi and the readonly official skill resources must be available.' }] };
+          message: readiness.stderr || 'Pi and the readonly workflow resources of the distribution must be available.' }] };
       }
       const extension = await context.command(['exec', context.sandboxName, 'sh', '-lc',
-        'root=$(npm root -g) && file="$root/@earendil-works/pi-coding-agent/examples/extensions/subagent/index.ts" && test -r "$file" && test -r "${file%/*}/agents.ts" && printf "%s\\n" "$file"']);
+        'root=$(npm root -g) && file=\"$root/@earendil-works/pi-coding-agent/examples/extensions/subagent/index.ts\" && test -r \"$file\" && test -r \"${file%/*}/agents.ts\" && printf \"%s\\n\" \"$file\"']);
       const extensionPath = extension.stdout.trim().split('\n').at(-1);
       if (extension.exitCode !== 0 || !extensionPath?.startsWith('/') || !extensionPath.endsWith('/subagent/index.ts')) {
         return { exitCode: 1, report: '', diagnostics: [{ code: 'pi_subagent_unavailable',
@@ -74,9 +116,8 @@ export function createPiTaskAdapter(): TaskAgentAdapter {
           models: [selection.model],
         },
       } }, null, 2));
-      const officialReview = await readFile(path.join(context.skillsStore, 'code-review', 'SKILL.md'), 'utf8');
       for (const axis of ['standards', 'spec'] as const) {
-        await writeFile(path.join(configPath, 'agents', `${axis}.md`), reviewerRole(axis, context, officialReview));
+        await writeFile(path.join(configPath, 'agents', `${axis}.md`), reviewerRole(axis, context, resources));
       }
       await writeFile(path.join(configPath, 'reviewer.md'), reviewerHarness(context));
       const harnessPath = path.join(configPath, 'harness.md');
@@ -86,7 +127,7 @@ export function createPiTaskAdapter(): TaskAgentAdapter {
         `Harness context for task ${context.taskId}. Preserve the supplied user prompt verbatim.`,
         `Read the complete frozen specification at ${context.containerContextPath}/spec.md.`,
         `Task baseline: ${context.taskBaseCommit}. Run baseline: ${context.runBaseCommit}.`,
-        `Official skills and all their resources are mounted readonly at ${context.skillsStore}.`,
+        `The workflow skills of the distribution are mounted readonly at ${resources.skillsDirectory}: the implementer entry is ${resources.implementer} and the reviewer entry is ${resources.reviewer}, with every transitive dependency resolved from the distributed inventory.`,
         `Effective model selection for this task and every delegated subagent: provider ${selection.provider.id}, model ${selection.model.id} (source: ${selection.source === 'configured' ? 'configured in .slopify/runtime.yaml' : 'Slopify default'}).`,
         `Follow implement with TDD at the approved public seams; validate, then commit when green. Do not trigger the independent review yourself: this harness runs it in a separate read-only session and sends its findings back into this same conversation as new messages; correct every finding, revalidate and commit before the next review.`,
         `Subagent delegation always carries the complete task parameter: single mode is {agent, task}, parallel mode is {tasks: [{agent, task}]}, chain mode is {chain: [{agent, task}]}. A call missing task is invalid and answers "Invalid parameters. Provide exactly one mode"; fix the call shape instead of repeating it.`,
@@ -103,7 +144,7 @@ export function createPiTaskAdapter(): TaskAgentAdapter {
       // Transport RPC : une seule fabrique, une session par rôle ; la sélection provider/modèle est identique pour l'implémenteur et le reviewer.
       const openChannel: PiRpcChannelFactory = session => {
         const process: AgentRpcProcess = context.spawnRpc!({
-          args: rpcInvocation(context, selection, extensionPath, containerConfig, session.role),
+          args: rpcInvocation(context, selection, extensionPath, containerConfig, session.role, resources),
           onRecord: session.onRecord,
           onStderr: session.onStderr,
           onExit: session.onExit,
@@ -141,12 +182,12 @@ function providerHost(selection: PiModelSelection): string {
 }
 
 /** Invocation sbx de la session RPC Pi : même sélection provider/modèle et même configuration pour l'implémenteur et le reviewer ; le rôle ne change que le brief système (harness.md ou reviewer.md), jamais le transport ni le mode. */
-function rpcInvocation(context: TaskAgentContext, selection: PiModelSelection, extensionPath: string, containerConfig: string, role: 'implementer' | 'reviewer'): string[] {
+function rpcInvocation(context: TaskAgentContext, selection: PiModelSelection, extensionPath: string, containerConfig: string, role: 'implementer' | 'reviewer', resources: WorkflowResources): string[] {
   return ['exec', '-i', '-w', context.containerWorkspacePath,
     '-e', `PI_CODING_AGENT_DIR=${containerConfig}`, context.sandboxName,
     'pi', '--extension', extensionPath, '--offline', '--approve',
     '--provider', selection.provider.id, '--model', selection.model.id,
-    '--skill', context.skillsStore,
+    '--skill', resources.skillsDirectory,
     '--append-system-prompt', `${containerConfig}/${role === 'implementer' ? 'harness.md' : 'reviewer.md'}`,
     '--mode', 'rpc'];
 }
@@ -180,17 +221,17 @@ function shellQuote(value: string): string {
   return `'${value.replaceAll("'", "'\\''")}'`;
 }
 
-/** Brief d'un sous-agent reviewer délégué (standards ou spec) dans le conteneur. */
-function reviewerRole(axis: 'standards' | 'spec', context: TaskAgentContext, officialReview: string): string {
+/** Brief d'un sous-agent reviewer délégué (standards ou spec) dans le conteneur, sourcé depuis la distribution. */
+function reviewerRole(axis: 'standards' | 'spec', context: TaskAgentContext, resources: WorkflowResources): string {
   return `---\nname: ${axis}\ndescription: Independent ${axis} review\ntools: read, grep, find, ls, bash\n---\n` +
     `Perform only the delegated ${axis} review. Read-only inspection; do not edit or commit.\n` +
     `Read the complete frozen spec at ${context.containerContextPath}/spec.md.\n` +
     `Read AGENTS.md and every applicable repository instruction and standards source, including inherited references.\n` +
-    `Shared official skill source: ${context.skillsStore}/code-review/SKILL.md; all its referenced resources are available in that readonly store.\n` +
+    `Shared reviewer skill source of the distribution: ${resources.reviewer}; all its referenced resources are available in the readonly mounted distribution.\n` +
     `Default diff: git diff ${context.taskBaseCommit}...HEAD; commits: git log ${context.taskBaseCommit}..HEAD --oneline.\n` +
     `Read the actual streamed execution traces at ${path.dirname(context.containerContextPath)}/stdout.log and ${path.dirname(context.containerContextPath)}/stderr.log, and observed commands at ${path.dirname(context.containerContextPath)}/commands.jsonl.\n` +
     `The task prompt is ${JSON.stringify(context.prompt)}. Do not mistake an agent declaration for observed process evidence.\n` +
     `Report missing evidence as unverified, rather than inferring TDD or successful commands from commits or a final diff.\n` +
     `For Standards distinguish documented breaches from heuristic smells; repository standards override the baseline. For Spec quote missing, wrong or extra requirements.\n` +
-    `The following installed official skill is reference material, including its full fixed smell baseline. Perform only your delegated axis; do not repeat its parent delegation workflow.\n\n${officialReview}\n`;
+    `Read the shared reviewer skill as reference material, including its full fixed smell baseline. Perform only your delegated axis; do not repeat its parent delegation workflow.\n`;
 }

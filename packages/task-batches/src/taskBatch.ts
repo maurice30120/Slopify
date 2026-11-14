@@ -53,6 +53,8 @@ export interface TaskBatchServiceOptions {
   subprocessExecutor?: SubprocessExecutor;
   /** Agent local injecté : requis pour exécuter Pi en mode local ; Codex par défaut. */
   localAgentRunner?: LocalAgentRunner;
+  /** Racine du bundle de workflows de la distribution (inventory.json, skills/**) : requise par l'agent Pi en mode sandbox, fournie par le CLI hôte. */
+  workflowResourcesRoot?: string;
   /** Production CLI injects the concrete local/sandbox runtime adapter. */
   runtimeFactory?: TaskRunRuntimeFactory;
   /** Capacité du lot, entre une et dix tâches actives ; dix par défaut. */
@@ -364,7 +366,7 @@ export class TaskBatchService {
               if (active.size >= (snapshot.maxConcurrentTasks ?? this.maxConcurrentTasks)) break;
               if (task.status !== 'pending' || !task.dependsOn.every(id => byId.get(id)!.status === 'succeeded')) continue;
               if (!prepared) {
-                await executor.prepareRun?.({ runId: snapshot.runId, workspacePath, signal });
+                await executor.prepareRun?.({ runId: snapshot.runId, workspacePath, signal, agents: snapshot.tasks.map(task => task.agent) });
                 prepared = true;
                 if (signal?.aborted || snapshot.suspension) break;
               }
@@ -907,7 +909,7 @@ export class TaskBatchService {
 
     await this.withActivityTick(snapshot, options.signal, async () => {
       try {
-        await executor.prepareRun?.({ runId: snapshot.runId, workspacePath, signal: executionSignal });
+        await executor.prepareRun?.({ runId: snapshot.runId, workspacePath, signal: executionSignal, agents: snapshot.tasks.map(task => task.agent) });
         await this.executeTask(snapshot, task, currentIntegrationCommit, workspacePath, executor, executionSignal);
 
         // Relit la tâche depuis le snapshot pour obtenir son état après executeTask.

@@ -56,7 +56,12 @@ export interface TaskExecutionResult {
  * sandbox et local l'implémentent sans dépendance inverse.
  */
 export interface TaskExecutor {
-  prepareRun?(request: { runId: string; workspacePath: string; signal?: AbortSignal }): Promise<void>;
+  /**
+   * Préparation unique du lot avant la première tentative. `agents` transporte les agents du lot :
+   * un lot exclusivement Pi consomme la distribution de workflows et n'exige pas le store global
+   * des skills officiel ; les moteurs qui n'en dépendent pas l'ignorent.
+   */
+  prepareRun?(request: { runId: string; workspacePath: string; signal?: AbortSignal; agents?: string[] }): Promise<void>;
   execute(request: TaskExecutionRequest): Promise<TaskExecutionResult>;
   cleanup(resource: TaskExecutionResource): Promise<void>;
   close?(): Promise<void>;

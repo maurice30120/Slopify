@@ -141,6 +141,16 @@ async function fixture(t: { after(fn: () => Promise<void>): void }, scenario: Fa
   const skills = path.join(root, 'official skills'); await mkdir(path.join(skills, 'code-review'), { recursive: true });
   await writeFile(path.join(skills, 'code-review', 'SKILL.md'), 'Official fixed smell baseline: Mysterious Name, Refused Bequest.');
   await writeFile(path.join(root, 'spec.md'), '# Approved full specification');
+  // Distribution du bundle de workflows : Pi résout ses rôles ici, jamais depuis le store global.
+  const distribution = path.join(root, 'distribution');
+  for (const relative of ['skills/engineering/implement/SKILL.md', 'skills/engineering/tdd/SKILL.md', 'skills/engineering/code-review/SKILL.md']) {
+    await mkdir(path.join(distribution, path.dirname(relative)), { recursive: true });
+    await writeFile(path.join(distribution, relative), `Content of the ${path.basename(path.dirname(relative))} workflow skill.`);
+  }
+  await writeFile(path.join(distribution, 'inventory.json'), JSON.stringify({ roles: {
+    implementer: { entry: 'skills/engineering/implement/SKILL.md', dependencies: [{ path: 'skills/engineering/tdd/SKILL.md' }] },
+    reviewer: { entry: 'skills/engineering/code-review/SKILL.md', dependencies: [] },
+  } }));
   const prompt = '$implement\nOriginal approved ticket';
   const batchFile = path.join(root, 'batch.json');
   await writeFile(batchFile, JSON.stringify({ specFile: 'spec.md', tasks: [{ id: 'work / unsafe', prompt, agent: 'pi', source: '01.md', dependsOn: [] }] }));
@@ -176,6 +186,7 @@ async function fixture(t: { after(fn: () => Promise<void>): void }, scenario: Fa
       if (source.endsWith('models.json')) { const provider = JSON.parse(await readFile(source, 'utf8')).providers['mistral']; assert.equal(provider.models[0].id, 'zai-glm-5-3'); assert.equal(provider.apiKey, '${MISTRAL_API_KEY}'); }
       if (source.endsWith('harness.md')) { const harness = await readFile(source, 'utf8'); assert.match(harness, /\{agent, task\}/); assert.match(harness, /\{tasks: \[\{agent, task\}\]\}/); assert.match(harness, /Invalid parameters\. Provide exactly one mode/); assert.match(harness, /fix the call shape/); assert.match(harness, /Do not trigger the independent review yourself/); }
       if (source.endsWith('reviewer.md')) { const reviewer = await readFile(source, 'utf8'); assert.match(reviewer, /read-only session that never shares the implementer conversation/); assert.match(reviewer, /Delegated agents are named standards and spec/); assert.match(reviewer, /SLOPIFY_REVIEW/); }
+      if (source.endsWith('standards.md')) { const role = await readFile(source, 'utf8'); assert.match(role, /AGENTS\.md/); assert.match(role, /skills\/engineering\/code-review\/SKILL\.md/); assert.doesNotMatch(role, /Official fixed smell baseline/); assert.match(role, /stdout/); }
       if (source.endsWith('spec.md') && source.includes('agents')) assert.match(await readFile(source, 'utf8'), /full.*spec|complete.*spec/i);
       return ok();
     }
@@ -203,8 +214,8 @@ async function fixture(t: { after(fn: () => Promise<void>): void }, scenario: Fa
   });
   const readRpcLog = async (): Promise<RpcLogEntry[]> =>
     (await readFile(logFile, 'utf8')).split('\n').filter(Boolean).map(line => JSON.parse(line) as RpcLogEntry);
-  const service = () => new TaskBatchService({ repositoryPath: repo, storePath: path.join(root, 'runs'), subprocessExecutor: execute });
-  return { root, repo, head, batchFile, prompt, calls, execute, sandboxes, scenarioFile, readRpcLog, service, get removed() { return removed; } };
+  const service = () => new TaskBatchService({ repositoryPath: repo, storePath: path.join(root, 'runs'), subprocessExecutor: execute, workflowResourcesRoot: distribution });
+  return { root, repo, head, batchFile, prompt, calls, execute, distribution, sandboxes, scenarioFile, readRpcLog, service, get removed() { return removed; } };
 }
 
 test('a Pi RPC task corrects in one persistent implementer session, integrates durably and never touches the user workspace', { timeout: 30000 }, async t => {
@@ -252,7 +263,8 @@ test('a Pi RPC task corrects in one persistent implementer session, integrates d
   assert.equal(f.removed, true);
   const create = f.calls.find(a => a[0] === 'create' && !a.includes('--help'))!;
   assert.ok(create.includes('readonly'));
-  assert.ok(create.some(arg => arg.endsWith('official skills:ro')));
+  const distributionSkills = path.join(f.distribution, 'skills', 'engineering');
+  assert.ok(create.some(arg => arg === `${distributionSkills}:ro`), 'the distributed workflow skills directory is the only skills mount');
   const kitArg = create.find(arg => arg.endsWith('pi-kit'))!;
   const kit = JSON.parse(await readFile(path.join(kitArg, 'spec.yaml'), 'utf8'));
   assert.equal(kit.sandbox.image, 'docker.io/sbx/pi-image:latest');
@@ -347,4 +359,14 @@ test('missing official Pi delegation capability fails before any RPC session', {
   assert.equal(f.calls.some(a => a.includes('pi') && a.includes('--print')), false);
   assert.equal((await f.readRpcLog()).length, 0, 'no RPC session is ever started without the delegation extension');
   assert.equal(f.removed, false);
+});
+
+test('a Pi-only batch runs from the distribution without a global official skills store', { timeout: 30000 }, async t => {
+  const f = await fixture(t);
+  const withoutStore: SubprocessExecutor = request => request.command === 'sbx' && request.args[0] === 'skills'
+    ? Promise.resolve({ exitCode: 1, stdout: '', stderr: 'the global official skills store is not installed' })
+    : f.execute(request);
+  const service = new TaskBatchService({ repositoryPath: f.repo, storePath: path.join(f.root, 'runs'), subprocessExecutor: withoutStore, workflowResourcesRoot: f.distribution });
+  const state = await service.run(f.batchFile);
+  assert.equal(state.status, 'succeeded');
 });
