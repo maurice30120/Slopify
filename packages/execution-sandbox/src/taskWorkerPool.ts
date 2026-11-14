@@ -87,6 +87,14 @@ export class TaskWorkerPool {
   }
   /** Executes a control command inside the worker sandbox (as opposed to the task container). */
   private execInWorker(lease:WorkerLease,args:string[]){return this.control(lease.worker,lease.request,['exec',lease.worker.sandboxName,...args]);}
+  /** Rewrites the args of a task `sbx exec` so it targets the leased task container (worker reuse lifecycle); unchanged otherwise. Shared by the batched executor and the interactive RPC spawn. */
+  rewriteExecArgs(lease:WorkerLease,args:string[]):string[] {
+    if(this.config.lifecycle==='recreate')return args;
+    const nameIndex=args.findIndex((value,index)=>index>0&&value.startsWith('slopify-'));
+    if(nameIndex<0)throw new Error('Missing task sandbox identity.');
+    const options=args.slice(1,nameIndex);const command=args.slice(nameIndex+1);
+    return ['exec',lease.worker.sandboxName,'docker','exec',...(options.includes('-w')?options:['-w',lease.request.workspacePath,...options]),lease.container,...command];
+  }
   /** Rewrites harness subprocess requests so they run through the leased worker instead of the host. */
   async rewriteThroughWorker(lease:WorkerLease,request:SubprocessRequest):Promise<SubprocessResult> {
     const a=request.args;
@@ -103,10 +111,7 @@ export class TaskWorkerPool {
     if(request.command!=='sbx')return this.appendEvidence(request,lease.request.resultDirectory);
     if(a[0]==='create'&&!a.includes('--help')){await this.createTask(lease,a);return {exitCode:0,stdout:'',stderr:''};}
     if(a[0]==='exec'){
-      const nameIndex=a.findIndex((value,index)=>index>0&&value.startsWith('slopify-'));
-      if(nameIndex<0)throw new Error('Missing task sandbox identity.');
-      const options=a.slice(1,nameIndex);const command=a.slice(nameIndex+1);
-      return this.appendEvidence({...request,args:['exec',lease.worker.sandboxName,'docker','exec',...(options.includes('-w')?options:['-w',lease.request.workspacePath,...options]),lease.container,...command]},lease.request.resultDirectory);
+      return this.appendEvidence({...request,args:this.rewriteExecArgs(lease,a)},lease.request.resultDirectory);
     }
     if(a[0]==='cp'){
       const source=a[1],target=a[2];

@@ -30,6 +30,8 @@ export interface TaskExecutionRequest {
   onResource?: (resource: TaskExecutionResource) => Promise<void>;
   /** Persist local agent identity immediately when spawned, before awaiting its result. */
   onProcessSpawn?: (identity: NonNullable<TaskExecutionResult['processIdentity']>) => Promise<void>;
+  /** Persist an uncertain start before launching a local process. */
+  onProcessStarting?: () => Promise<void>;
 }
 
 /** Contrat fonctionnel de TaskExecutionResult : le verdict observable d'une tentative. */
@@ -43,6 +45,9 @@ export interface TaskExecutionResult {
   diagnostics: TaskDiagnostic[];
   /** Identité du processus agent local, quand l'exécution est locale ; distinguée d'un PID réutilisé. */
   processIdentity?: { pid: number; startedAtIso: string; command: string; startTimeTicks?: number; startTimeTag?: string; observedCommand?: string; processGroupId?: number };
+  /** Every local process group started by the attempt, retained for safe resume. */
+  processIdentities?: Array<NonNullable<TaskExecutionResult['processIdentity']>>;
+  processSpawnPending?: boolean;
 }
 
 /**

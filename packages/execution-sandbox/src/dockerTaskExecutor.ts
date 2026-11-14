@@ -1,9 +1,10 @@
 import { TaskWorkerPool, type TaskWorkerPoolConfig, type TaskWorkerState, type WorkerLease } from './taskWorkerPool.js';
 import { appendFileSync } from 'node:fs';
+import { spawn } from 'node:child_process';
 import { mkdir, writeFile, readFile, copyFile, readdir, rename } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import * as path from 'node:path';
-import { createNodeSubprocessExecutor, type SubprocessExecutor, type SubprocessRequest, type SubprocessResult, type TaskAgentAdapter, type TaskDiagnostic, type TaskExecutor, type TaskExecutionRequest, type TaskExecutionResource, type TaskExecutionResult } from '@slopify/execution';
+import { createNodeSubprocessExecutor, type SubprocessExecutor, type SubprocessRequest, type SubprocessResult, type TaskAgentAdapter, type AgentRpcProcess, type AgentRpcSpawnRequest, type TaskDiagnostic, type TaskExecutor, type TaskExecutionRequest, type TaskExecutionResource, type TaskExecutionResult } from '@slopify/execution';
 import { GitOperations } from '@slopify/git';
 import type { TaskAgentContext } from '@slopify/execution';
 import { SbxPreflight } from './sbxPreflight.js';
@@ -92,17 +93,20 @@ export class DockerTaskExecutor implements TaskExecutor {
         'Read the full frozen spec: '+path.join(containerContextPath,'spec.md'),
         'Task baseline: '+request.taskBaseCommit+'; run baseline: '+request.runBaseCommit+'.',
         'Use the official implement skill and its referenced resources. The ticket prompt is unchanged.',
-        'TDD interfaces in the ticket are approved. Follow one red/green behavior at a time, targeted validation, full suite, then commit. Independent per-ticket Standards/Spec reviews are not required; the batch performs one final combined review of the integration branch.',
+        request.agent==='pi'
+          ? 'TDD interfaces in the ticket are approved. Follow one red/green behavior at a time, targeted validation, full suite, then commit. The workflow runs an independent per-ticket Standards/Spec review after your commit.'
+          : 'TDD interfaces in the ticket are approved. Follow one red/green behavior at a time, targeted validation, full suite, then commit. Independent per-ticket Standards/Spec reviews are not required; the batch performs one final combined review of the integration branch.',
         'Read all applicable AGENTS.md and repository standards before implementation.',
         (lease?'Host-side raw execution traces (outside the task container, preserved by the harness; do not try to read them from inside): ':'Actual live raw execution traces: ')+stdoutPath+' and '+stderrPath+'. Observed harness commands: '+eventsPath+'. Keep them intact as evidence for the final combined review.',
-        'Your own native Codex rollout is preserved automatically from $HOME/.codex/sessions; parent and reviewer rollouts live outside this container and the harness collects them itself. Treat reports as declarations: state missing process/delegation evidence as a finding in your final message, not as a task failure; the verdict follows only the required validations and the completeness of the work. End with factual validations, commits and blockers.',
+        ...(request.agent==='pi'?[]:['Your own native Codex rollout is preserved automatically from $HOME/.codex/sessions; parent and reviewer rollouts live outside this container and the harness collects them itself. Treat reports as declarations: state missing process/delegation evidence as a finding in your final message, not as a task failure; the verdict follows only the required validations and the completeness of the work. End with factual validations, commits and blockers.']),
         'Uncommitted user changes are excluded from this private checkout.',
         'End your final assistant message with exactly one standalone line: SLOPIFY_RESULT={"status":"succeeded"} or SLOPIFY_RESULT={"status":"failed","reason":"concrete remaining blocker"}.',
         'Report failed if final required validations fail or work is incomplete. Expected intermediate TDD red tests are not final failures. A process exit code of zero does not establish task success. Missing or invalid verdicts fail the task. Never put this marker in reviewer reports or intermediate messages.',
       ].join('\n');
       await writeFile(path.join(containerContextPath,'harness.txt'),harness,{mode:0o600});
       const context:TaskAgentContext={...request,sandboxName,containerWorkspacePath:request.workspacePath,containerContextPath,
-        skillsStore:this.skillsInventory?.store??'',...(this.workflowResourcesRoot?{workflowResourcesRoot:this.workflowResourcesRoot}:{}),command};
+        skillsStore:this.skillsInventory?.store??'',...(this.workflowResourcesRoot?{workflowResourcesRoot:this.workflowResourcesRoot}:{}),command,
+        spawnRpc:rpc=>this.spawnRpc(rpc,{workspacePath:request.workspacePath,stdoutPath,stderrPath,eventsPath,lease})};
       const preparation=await adapter.prepare(context);
       await requireSuccess(['create','--clone','--name',sandboxName,'--skills','readonly',preparation.createTarget,request.workspacePath,`${request.resultDirectory}:ro`,...(preparation.createMounts??[])]);
       resource={sandboxName,inspectCommand:['sbx','exec',sandboxName,'sh'],diagnosticsDirectory:request.resultDirectory};
@@ -148,6 +152,70 @@ export class DockerTaskExecutor implements TaskExecutor {
   }
 /** Termine cette étape du cycle de vie et libère les ressources qui lui appartiennent. */
   async close():Promise<void> {await this.pool?.close();}
+  /**
+   * Session RPC interactive : processus `sbx exec -i` au stdin piloté par l'adaptateur,
+   * chaque ligne stdout remise dans l'ordre d'émission, flux bruts journalisés vers les
+   * preuves de la tentative. L'arrêt ordonné ferme le stdin (EOF propagé au processus
+   * RPC et à ses descendants), puis escalade SIGTERM/SIGKILL si la sortie tarde.
+   */
+  private spawnRpc(spawnRequest:AgentRpcSpawnRequest,context:{workspacePath:string;stdoutPath:string;stderrPath:string;eventsPath:string;lease?:WorkerLease}):AgentRpcProcess {
+    const args=context.lease?this.pool!.rewriteExecArgs(context.lease,spawnRequest.args):spawnRequest.args;
+    appendFileSync(context.eventsPath,JSON.stringify({type:'start',command:'sbx',args,rpc:true,time:new Date().toISOString()})+'\n');
+    const child=spawn('sbx',args,{cwd:context.workspacePath,stdio:['pipe','pipe','pipe']});
+    let pending='';
+    let stderrTail='';
+    let exitCode:number|undefined;
+    const exitWaiters:Array<(exit:{exitCode:number;stderrTail:string})=>void>=[];
+    const observeExit=(code:number)=>{
+      if(exitCode!==undefined)return;
+      exitCode=code;
+      if(pending)appendFileSync(context.stdoutPath,pending);
+      appendFileSync(context.eventsPath,JSON.stringify({type:'end',exitCode:code,time:new Date().toISOString()})+'\n');
+      const exit={exitCode:code,stderrTail};
+      spawnRequest.onExit(exit);
+      for(const waiter of exitWaiters.splice(0))waiter(exit);
+    };
+    child.stdout.setEncoding('utf8');
+    child.stdout.on('data',chunk=>{
+      appendFileSync(context.stdoutPath,chunk);
+      pending+=chunk;
+      const lines=pending.split('\n');
+      pending=lines.pop()??'';
+      for(const line of lines)if(line.trim())spawnRequest.onRecord(line);
+    });
+    child.stderr.setEncoding('utf8');
+    child.stderr.on('data',chunk=>{
+      appendFileSync(context.stderrPath,chunk);
+      spawnRequest.onStderr(chunk);
+      stderrTail=(stderrTail+chunk).slice(-4000);
+    });
+    child.once('error',error=>{stderrTail=(stderrTail+String(error instanceof Error?error.message:error)).slice(-4000);observeExit(1);});
+    child.once('close',code=>observeExit(code??1));
+    const waitForExit=()=>new Promise<{exitCode:number;stderrTail:string}>(resolve=>{
+      if(exitCode!==undefined)resolve({exitCode,stderrTail});else exitWaiters.push(resolve);
+    });
+    let closing:Promise<{exitCode:number;stderrTail:string}>|undefined;
+    const close=()=>{
+      closing??=(async()=>{
+        if(exitCode!==undefined)return{exitCode,stderrTail};
+        try{child.stdin.end();}catch{/* déjà fermé : la sortie du processus reste attendue */}
+        const deadline=async(ms:number)=>(await Promise.race([waitForExit(),new Promise<'timeout'>(done=>{const timer=setTimeout(()=>done('timeout'),ms);timer.unref();})]));
+        if(await deadline(30_000)==='timeout'){try{child.kill('SIGTERM');}catch{/* déjà mort */}
+          if(await deadline(10_000)==='timeout'){try{child.kill('SIGKILL');}catch{/* déjà mort */}}}
+        return waitForExit();
+      })();
+      return closing;
+    };
+    const onAbort=()=>{void close();};
+    if(spawnRequest.signal?.aborted)onAbort();
+    else spawnRequest.signal?.addEventListener('abort',onAbort,{once:true});
+    return {
+      writeLine:line=>{try{if(!child.stdin.writableEnded)child.stdin.write(line+'\n');}catch{/* stdin fermé : la mort du processus est observée par onExit */}},
+      close,
+      get alive(){return exitCode===undefined;},
+      describe:()=>`sbx ${args.map(value=>/^[\w:./=-]+$/.test(value)?value:JSON.stringify(value)).join(' ')} (pid ${child.pid ?? 'unknown'})`,
+    };
+  }
   async cleanup(resource:TaskExecutionResource):Promise<void> {
     if(resource.workerId && await this.pool?.cleanup(resource)) return;
     const result=await this.executor({command:'sbx',args:['rm','--force',resource.sandboxName],cwd:resource.diagnosticsDirectory??process.cwd(),stdin:'ignore'});
