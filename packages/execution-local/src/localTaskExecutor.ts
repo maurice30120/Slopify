@@ -1,11 +1,14 @@
 import { appendFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
+import { homedir } from 'node:os';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { mkdir, readFile, writeFile, rename, readdir } from 'node:fs/promises';
+import { mkdir, readFile, writeFile, rename, readdir, access } from 'node:fs/promises';
 import * as path from 'node:path';
 import { createNodeSubprocessExecutor, type SubprocessExecutor, type TaskDiagnostic, type TaskExecutor, type TaskExecutionRequest, type TaskExecutionResult, type TaskExecutionResource, type TaskAgent } from '@slopify/execution';
 import type { LocalAgentRunRequest, LocalAgentRunResult, LocalAgentRunner } from '@slopify/execution';
 export type { LocalAgentRunRequest, LocalAgentRunResult, LocalAgentRunner } from '@slopify/execution';
+import { runPiRpcWorkflow, runPiCombinedFinalReview, type PiFinalReviewResult, type PiReviewOutcome, type PiRpcWorkflowResult } from '@slopify/agent-pi';
+import type { PiRpcChannel, PiRpcChannelFactory } from '@slopify/agent-pi';
 import { readLocalProcessIdentity, inspectLocalProcessGroup, type LocalProcessIdentity } from './localProcessIdentity.js';
 export { readLocalProcessIdentity, inspectLocalProcess, inspectLocalProcessGroup, isLocalProcessAlive } from './localProcessIdentity.js';
 export type { LocalProcessIdentity, LocalProcessLiveness } from './localProcessIdentity.js';
@@ -94,7 +97,9 @@ export class LocalTaskExecutor implements TaskExecutor {
         'Task baseline: ' + request.taskBaseCommit + '; run baseline: ' + request.runBaseCommit + '.',
         'Execution is local on the host machine; no Docker sandbox is used for this attempt.',
         'Use the official implement skill and its referenced resources. The ticket prompt is unchanged.',
-        'TDD interfaces in the ticket are approved. Follow one red/green behavior at a time, targeted validation, full suite, then commit. Independent per-ticket Standards/Spec reviews are not required; the batch performs one final combined review of the integration branch.',
+        request.agent === 'pi'
+          ? 'TDD interfaces in the ticket are approved. Follow one red/green behavior at a time, targeted validation, full suite, then commit. The workflow runs an independent per-ticket Standards/Spec review after your commit.'
+          : 'TDD interfaces in the ticket are approved. Follow one red/green behavior at a time, targeted validation, full suite, then commit. Independent per-ticket Standards/Spec reviews are not required; the batch performs one final combined review of the integration branch.',
         'Read all applicable AGENTS.md and repository standards before implementation.',
         'Actual live raw execution traces: ' + stdoutPath + ' and ' + stderrPath + '. Observed harness commands: ' + eventsPath + '. Keep them intact as evidence for the final combined review.',
         'Uncommitted user changes are excluded from this private checkout.',
@@ -109,8 +114,8 @@ export class LocalTaskExecutor implements TaskExecutor {
         appendFileSync(target === 'stdout' ? stdoutPath : stderrPath, chunk);
       };
       const onProcessSpawn = async (identity: LocalProcessIdentity) => {
-        attemptIdentity = identity;
         await request.onProcessSpawn?.(identity);
+        attemptIdentity ??= identity;
       };
       const run = await this.runner({ ...request, workspacePath: clonePath, logged, contextPath, onProcessSpawn, stream });
       diagnostics.push(...run.diagnostics);
@@ -162,18 +167,6 @@ export class LocalTaskExecutor implements TaskExecutor {
   }
 }
 
-function record(value: unknown): Record<string, unknown> | undefined {
-  return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
-}
-
-function assistantText(value: unknown): string {
-  const message = record(value);
-  if (message?.role !== 'assistant' || !Array.isArray(message.content)) return '';
-  return message.content.map(value => {
-    const item = record(value);
-    return item?.type === 'text' && typeof item.text === 'string' ? item.text : '';
-  }).filter(Boolean).join('\n');
-}
 
 function object(value: unknown): Record<string, unknown> | undefined {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
@@ -310,53 +303,275 @@ async function spawnLocalAgent(request: LocalAgentRunRequest, command: string, a
   }
 }
 
-/** Pi local : configuration personnelle native conservée (fournisseur, modèle, identifiants) ;
- * Slopify n'impose pas Mistral et ne réécrit jamais la configuration de l'utilisateur.
- * Les événements Pi sont traités comme en sandbox : erreurs fournisseur et de sous-agent
- * visibles, verdict explicite requis. */
+/**
+ * Pi local : même workflow RPC natif qu'en sandbox — session implémenteur persistante,
+ * reviewer indépendant neuf à chaque passage — avec la configuration personnelle
+ * native de l'utilisateur (fournisseur, modèle, identifiants) : Slopify n'impose
+ * pas Mistral et ne réécrit jamais la configuration de l'utilisateur. L'extension
+ * officielle subagent est requise explicitement ; son absence échoue avec un
+ * diagnostic, sans repli silencieux en revue inline ni en mode print.
+ */
 async function runPiLocal(request: LocalAgentRunRequest): Promise<LocalAgentRunResult> {
-  const piArgs = ['--print'];
-  piArgs.push('--append-system-prompt', path.join(request.contextPath, 'harness.txt'));
-  piArgs.push('--mode', 'json', request.prompt);
-  const run = await spawnLocalAgent(request, 'pi', piArgs);
-  const diagnostics: TaskDiagnostic[] = [];
-  const reports: string[] = [];
-  let finalParentMessage = '';
-  for (const line of run.stdout.split(/\r?\n/)) {
-    let event: Record<string, unknown> | undefined;
-    try { event = record(JSON.parse(line)); } catch { continue; }
-    if (!event) continue;
-    const completedMessages = event.type === 'message_end' ? [event.message]
-      : event.type === 'agent_end' && Array.isArray(event.messages) ? event.messages : [];
-    for (const value of completedMessages) {
-      const text = assistantText(value);
-      if (text) { reports.push(text); finalParentMessage = text; }
-      const message = record(value);
-      if (message?.stopReason === 'error' || message?.stopReason === 'aborted' || message?.errorMessage) {
-        diagnostics.push({ code: 'pi_provider_error', message: String(message.errorMessage || message.stopReason) });
-        reports.push(`Observed Pi provider error: ${String(message.errorMessage || message.stopReason)}`);
-      }
-    }
-    if (event.type !== 'tool_execution_end' || event.toolName !== 'subagent') continue;
-    if (event.isError === true) diagnostics.push({ code: 'pi_subagent_error', message: 'Pi subagent tool failed.' });
-    const toolResult = record(event.result);
-    const details = record(toolResult?.details);
-    const children = Array.isArray(details?.results) ? details.results : [];
-    for (const value of children) {
-      const child = record(value);
-      if (!child) continue;
-      const name = typeof child.agent === 'string' ? child.agent : 'unknown';
-      const error = child.errorMessage || child.stderr || child.stopReason || 'unknown child failure';
-      if (child.exitCode !== 0 || child.stopReason === 'error' || child.stopReason === 'aborted' || child.errorMessage) {
-        diagnostics.push({ code: 'pi_subagent_error', message: `${name}: ${String(error)} (observed exit ${String(child.exitCode)})` });
-      }
-      const messages = Array.isArray(child.messages) ? child.messages : [];
-      const text = messages.map(assistantText).filter(Boolean).join('\n\n');
-      reports.push(`## Observed Pi subagent: ${name}\nExit code: ${String(child.exitCode)}\n${text || String(error)}`);
-    }
+  const extension = await discoverLocalSubagentExtension(request);
+  if (!extension) {
+    return { exitCode: 1, report: '', diagnostics: [{ code: 'pi_subagent_unavailable',
+      message: 'The local Pi workflow requires the official subagent extension (examples/extensions/subagent with its agents.ts) installed at ~/.pi/agent/extensions/subagent/, .pi/extensions/subagent/ in the task clone, or in the npm global @earendil-works/pi-coding-agent package. Independent Standards/Spec reviews cannot run inline.' }] };
   }
-  diagnostics.push(...agentOutcomeDiagnostics(finalParentMessage));
-  return { exitCode: run.exitCode, report: reports.join('\n\n') || run.stdout || run.stderr, diagnostics };
+  const configDirectory = path.join(request.contextPath, 'pi-config');
+  await mkdir(path.join(configDirectory, 'agents'), { recursive: true, mode: 0o700 });
+  // Le reviewer local reçoit une copie de la configuration de l'utilisateur (lecture seule) : ses sous-agents standards/spec restent disponibles sans jamais réécrire l'original.
+  const userModels = path.join(homedir(), '.pi', 'agent', 'models.json');
+  if (await readable(userModels)) {
+    await writeFile(path.join(configDirectory, 'models.json'), await readFile(userModels, 'utf8'), { mode: 0o600 });
+  }
+  // Revue finale combinée du lot : une seule session reviewer neuve en lecture seule, sans implémenteur ni correction.
+  if (request.finalReview) {
+    await writeFile(path.join(configDirectory, 'reviewer.txt'), localFinalReviewerHarness(request));
+    for (const axis of ['standards', 'spec'] as const) {
+      await writeFile(path.join(configDirectory, 'agents', `${axis}.md`), localFinalReviewerRole(axis, request));
+    }
+    const extensionArgs2 = extension.explicit ? ['--extension', extension.path] : [];
+    const finalChannel: PiRpcChannelFactory = session => spawnLocalRpcChannel(request,
+      ['--mode', 'rpc', '--no-session', '--append-system-prompt', path.join(configDirectory, 'reviewer.txt'), ...extensionArgs2],
+      { PI_CODING_AGENT_DIR: configDirectory }, session);
+    const finalReview = await runPiCombinedFinalReview({
+      runId: request.runId, taskId: request.taskId, attemptId: request.attemptId,
+      resultDirectory: request.resultDirectory, signal: request.signal,
+      openChannel: finalChannel,
+      reviewMessage: localFinalReviewMessage(request),
+    });
+    return {
+      exitCode: finalReview.exitCode,
+      report: [
+        `Combined final review verdict: ${finalReview.verdict ?? 'unresolved'}${finalReview.reason ? `: ${finalReview.reason}` : ''} (reviewer session ${finalReview.sessionId}).`,
+        ...(finalReview.standards !== undefined ? [`## Standards report\n${finalReview.standards}`] : []),
+        ...(finalReview.spec !== undefined ? [`## Spec report\n${finalReview.spec}`] : []),
+        `Durable workflow evidence: sessions ${finalReview.evidence.sessionsPath}; reviews ${finalReview.evidence.reviewsPath}; events ${finalReview.evidence.eventsPath}.`,
+        finalReview.report,
+      ].filter(Boolean).join('\n\n'),
+      diagnostics: finalReview.diagnostics,
+    };
+  }
+  await writeFile(path.join(configDirectory, 'reviewer.txt'), localReviewerHarness(request));
+  for (const axis of ['standards', 'spec'] as const) {
+    await writeFile(path.join(configDirectory, 'agents', `${axis}.md`), localReviewerRole(axis, request));
+  }
+  const extensionArgs = extension.explicit ? ['--extension', extension.path] : [];
+  const openChannel: PiRpcChannelFactory = session => spawnLocalRpcChannel(request,
+    ['--mode', 'rpc', '--no-session', '--append-system-prompt',
+      path.join(session.role === 'implementer' ? request.contextPath : configDirectory, session.role === 'implementer' ? 'harness.txt' : 'reviewer.txt'),
+      ...extensionArgs],
+    session.role === 'reviewer' ? { PI_CODING_AGENT_DIR: configDirectory } : undefined, session);
+  const workflow = await runPiRpcWorkflow({
+    runId: request.runId, taskId: request.taskId, attemptId: request.attemptId,
+    resultDirectory: request.resultDirectory, signal: request.signal,
+    openChannel,
+    initialMessage: request.prompt,
+    reviewMessage: (cycle, previous) => localReviewMessage(request, cycle, previous),
+    correctionMessage: localCorrectionMessage,
+    verifyReadyForReview: async () => {
+      const status = await request.logged({ command: 'git', args: ['status', '--porcelain', '--untracked-files=all'], cwd: request.workspacePath, stdin: 'ignore', signal: request.signal });
+      if (status.exitCode !== 0 || status.stdout.trim()) throw new Error('Cannot review: the task workspace must be clean and committed before review.');
+    },
+  });
+  return { exitCode: workflow.exitCode, report: localSelectionTrace(workflow), diagnostics: workflow.diagnostics };
+}
+
+/** Trace de sélection locale : la configuration native de l'utilisateur est conservée, aucun couple n'est imposé. */
+function localSelectionTrace(workflow: PiRpcWorkflowResult): string {
+  const sessions = `Pi RPC sessions: implementer ${workflow.implementerSessionId} (persistent across ${workflow.reviews.length} review cycle${workflow.reviews.length === 1 ? '' : 's'}); `
+    + `reviewer sessions ${workflow.reviews.map(review => `${review.sessionId} (cycle ${review.cycle}: ${review.verdict})`).join(', ') || 'none'}.`;
+  return [sessions, `Durable workflow evidence: sessions ${workflow.evidence.sessionsPath}; reviews ${workflow.evidence.reviewsPath}; events ${workflow.evidence.eventsPath}.`, workflow.report]
+    .filter(Boolean).join('\n\n');
+}
+
+/** Découverte de l'extension officielle subagent pour Pi local : emplacements d'auto-découverte de Pi puis package npm global. */
+async function discoverLocalSubagentExtension(request: LocalAgentRunRequest): Promise<{ path: string; explicit: boolean } | undefined> {
+  const candidates: Array<{ path: string; explicit: boolean }> = [
+    { path: path.join(homedir(), '.pi', 'agent', 'extensions', 'subagent', 'index.ts'), explicit: false },
+    { path: path.join(request.workspacePath, '.pi', 'extensions', 'subagent', 'index.ts'), explicit: false },
+  ];
+  for (const candidate of candidates) {
+    if (await readable(candidate.path) && await readable(path.join(path.dirname(candidate.path), 'agents.ts'))) return candidate;
+  }
+  const npmRoot = await request.logged({ command: 'npm', args: ['root', '-g'], cwd: request.workspacePath, stdin: 'ignore', signal: request.signal });
+  if (npmRoot.exitCode === 0) {
+    const directory = path.join(npmRoot.stdout.trim(), '@earendil-works', 'pi-coding-agent', 'examples', 'extensions', 'subagent');
+    if (await readable(path.join(directory, 'index.ts')) && await readable(path.join(directory, 'agents.ts'))) return { path: path.join(directory, 'index.ts'), explicit: true };
+  }
+  return undefined;
+}
+
+async function readable(file: string): Promise<boolean> {
+  try { await access(file); return true; } catch { return false; }
+}
+
+/** Canal RPC local : processus pi leader de son propre groupe POSIX, stdin piloté, arrêt ordonné avec escalade du groupe entier. */
+function spawnLocalRpcChannel(request: LocalAgentRunRequest, args: string[], agentEnv: Record<string, string> | undefined, session: Parameters<PiRpcChannelFactory>[0]): PiRpcChannel {
+  const startedAtIso = new Date().toISOString();
+  const isolated = process.platform !== 'win32';
+  const command = 'pi';
+  const child = spawn(command, args, {
+    cwd: request.workspacePath,
+    env: agentEnv ? { ...process.env, ...agentEnv } : process.env,
+    stdio: ['pipe', 'pipe', 'pipe'],
+    detached: isolated,
+  });
+  const pid = child.pid;
+  // EPIPE est un événement asynchrone du stream : sans handler, écrire sur le stdin d'un fils déjà mort devient une uncaughtException.
+  child.stdin.on('error', () => { /* la mort du processus est observée par onExit/close */ });
+  let pending = '';
+  let stderrTail = '';
+  let exitCode: number | undefined;
+  const exitWaiters: Array<(exit: { exitCode: number; stderrTail: string }) => void> = [];
+  const observeExit = (code: number) => {
+    if (exitCode !== undefined) return;
+    exitCode = code;
+    const exit = { exitCode: code, stderrTail };
+    session.onExit(exit);
+    for (const waiter of exitWaiters.splice(0)) waiter(exit);
+  };
+  child.stdout.setEncoding('utf8');
+  child.stdout.on('data', chunk => {
+    request.stream('stdout', chunk);
+    pending += chunk;
+    const lines = pending.split('\n');
+    pending = lines.pop() ?? '';
+    for (const line of lines) if (line.trim()) session.onRecord(line);
+  });
+  child.stderr.setEncoding('utf8');
+  child.stderr.on('data', chunk => {
+    request.stream('stderr', chunk);
+    session.onStderr(chunk);
+    stderrTail = (stderrTail + chunk).slice(-4000);
+  });
+  child.once('error', error => { stderrTail = (stderrTail + String(error instanceof Error ? error.message : error)).slice(-4000); observeExit(1); });
+  child.once('close', code => observeExit(code ?? 1));
+  // Identités durables de la tentative : début incertain persisté avant le lancement, puis identité observée ; un échec laisse le début incertain durable pour la reprise.
+  void (async () => {
+    try {
+      await request.onProcessStarting?.();
+      if (!pid) return;
+      const identity = await readLocalProcessIdentity(pid, [command, ...args].join(' '), startedAtIso);
+      if (isolated) identity.processGroupId = pid;
+      await request.onProcessSpawn?.(identity);
+    } catch {
+      // L'échec de persistance ne doit pas laisser un groupe d'agent non maîtrisé.
+      if (pid) { signalAttemptGroup(pid, 'SIGTERM'); finishAttemptGroup(pid); }
+    }
+  })();
+  const waitForExit = () => new Promise<{ exitCode: number; stderrTail: string }>(resolve => {
+    if (exitCode !== undefined) resolve({ exitCode, stderrTail }); else exitWaiters.push(resolve);
+  });
+  let closing: Promise<{ exitCode: number; stderrTail: string }> | undefined;
+  let escalation: ReturnType<typeof setTimeout> | undefined;
+  let onAbort: () => void = () => {};
+  if (request.signal) {
+    onAbort = () => {
+      if (!pid) return;
+      if (!isolated) { child.kill('SIGTERM'); return; }
+      signalAttemptGroup(pid, 'SIGTERM');
+      escalation = setTimeout(() => {
+        void inspectLocalProcessGroup(pid).then(status => {
+          if (status === 'alive') signalAttemptGroup(pid, 'SIGKILL');
+        }).catch(() => { /* Une appartenance incertaine ne déclenche jamais un kill aveugle. */ });
+      }, 1200);
+      escalation.unref();
+    };
+    request.signal.addEventListener('abort', onAbort, { once: true });
+    if (request.signal.aborted) onAbort();
+  }
+  const close = () => {
+    closing ??= (async () => {
+      if (exitCode === undefined) {
+        try { child.stdin.end(); } catch { /* déjà fermé : la sortie du processus reste attendue */ }
+        const deadline = async (ms: number) => (await Promise.race([waitForExit(), new Promise<'timeout'>(done => { const timer = setTimeout(() => done('timeout'), ms); timer.unref(); })]));
+        if (await deadline(30_000) === 'timeout') {
+          if (pid && isolated) signalAttemptGroup(pid, 'SIGTERM'); else child.kill('SIGTERM');
+          if (await deadline(10_000) === 'timeout') {
+            if (pid && isolated) signalAttemptGroup(pid, 'SIGKILL'); else child.kill('SIGKILL');
+          }
+        }
+      }
+      request.signal?.removeEventListener('abort', onAbort);
+      if (escalation) clearTimeout(escalation);
+      if (pid && isolated) await finishAttemptGroup(pid);
+      return waitForExit();
+    })();
+    return closing;
+  };
+  return {
+    writeLine: line => { try { if (child.stdin.writable && !child.stdin.writableEnded) child.stdin.write(line + '\n'); } catch { /* stdin fermé : la mort du processus est observée par onExit */ } },
+    close,
+    get alive() { return exitCode === undefined; },
+    describe: () => `pi ${args.map(value => /^[\w:./=-]+$/.test(value) ? value : JSON.stringify(value)).join(' ')} (pid ${pid ?? 'unknown'})`,
+  };
+}
+
+/** Brief de la session reviewer locale pour ce passage : revue du diff complet du clone, délégation parallèle des deux axes, verdict explicite unique. */
+function localReviewMessage(request: LocalAgentRunRequest, cycle: number, previous: PiReviewOutcome[]): string {
+  const earlier = previous.map(review => `- Cycle ${review.cycle} returned ${review.verdict}${review.reason ? `: ${review.reason}` : ''}. Findings so far: ${review.findings}`).join('\n');
+  return `Independent review, cycle ${cycle}, of the complete ticket diff in ${request.workspacePath} (${request.taskBaseCommit}...HEAD).\n` +
+    `Delegate the Standards and Spec reviews now in one parallel subagent call ({tasks: [{agent, task}, {agent, task}]}); this is a read-only review, never edit or commit.\n` +
+    (earlier ? `Control the findings already reported before writing anything new:\n${earlier}\n` : '') +
+    `End with exactly one standalone verdict line SLOPIFY_REVIEW={"verdict":"approved"} or SLOPIFY_REVIEW={"verdict":"rejected","reason":"concrete reason"}.`;
+}
+
+/** Message de correction locale : les constats du reviewer partent comme NOUVEAU message à la même session implémenteur. */
+function localCorrectionMessage(review: PiReviewOutcome): string {
+  return `The independent review rejected the work (cycle ${review.cycle}${review.reason ? `: ${review.reason}` : ''}).\n` +
+    `Correct every finding, revalidate, then commit before the next review.\n\n${review.findings}`;
+}
+
+/** Brief système de la session reviewer locale : revue en lecture seule, délégation parallèle Standards/Spec, verdict unique obligatoire. */
+function localReviewerHarness(request: LocalAgentRunRequest): string {
+  return `Independent local review harness for task ${request.taskId}. This is a read-only session that never shares the implementer conversation: judge only from the durable repository evidence, never from implementer declarations.\n` +
+    `Delegated agents are named standards and spec; delegate both axes in one parallel subagent call ({tasks: [{agent, task}, {agent, task}]}), then verify their findings yourself.\n` +
+    `End your final assistant message with exactly one standalone verdict line: SLOPIFY_REVIEW={"verdict":"approved"} or SLOPIFY_REVIEW={"verdict":"rejected","reason":"concrete remaining blocker"}. Never put this verdict line in intermediate messages or reviewer reports.`;
+}
+
+/**
+ * Brief unique envoyé à la session reviewer neuve de la revue finale combinée locale :
+ * prompt du lot puis règles de délégation parallèle, lecture seule, verdict unique,
+ * sans correction ni nouveau passage.
+ */
+function localFinalReviewMessage(request: LocalAgentRunRequest): string {
+  return `${request.prompt}\n\n` +
+    `This is the final combined review of the integrated lot: delegate the Standards and Spec reviews now in one parallel subagent call ({tasks: [{agent, task}, {agent, task}]}); this is a read-only review, never edit or commit.\n` +
+    `The reports of both axes stay distinct; report every finding as a finding: no correction follows this review and your verdict decides the lot.\n` +
+    `End with exactly one standalone verdict line SLOPIFY_REVIEW={"verdict":"approved"} or SLOPIFY_REVIEW={"verdict":"rejected","reason":"concrete reason"}.`;
+}
+
+/** Brief système de la session reviewer locale de la revue finale combinée : lecture seule sur le diff complet du lot, rapports distincts, verdict unique. */
+function localFinalReviewerHarness(request: LocalAgentRunRequest): string {
+  return `Combined local final review harness for the integrated lot (task ${request.taskId}). This is a read-only session that reviews the complete lot diff ${request.runBaseCommit}...HEAD and never shares any implementer conversation: judge only from the durable repository evidence.\n` +
+    `Delegated agents are named standards and spec; delegate both axes in one parallel subagent call ({tasks: [{agent, task}, {agent, task}]}), then verify their findings yourself; their reports stay distinct.\n` +
+    `Report every finding without editing or committing anything: no automatic correction follows this review and a rejected verdict fails the lot without a new review.\n` +
+    `End your final assistant message with exactly one standalone verdict line: SLOPIFY_REVIEW={"verdict":"approved"} or SLOPIFY_REVIEW={"verdict":"rejected","reason":"concrete remaining blocker"}. Never put this verdict line in intermediate messages or reviewer reports.`;
+}
+
+/** Brief d'un sous-agent local Standards/Spec délégué de la revue finale combinée : même workflow de revue, sur le diff complet du lot. */
+function localFinalReviewerRole(axis: 'standards' | 'spec', request: LocalAgentRunRequest): string {
+  return `---\nname: ${axis}\ndescription: Independent ${axis} review of the integrated lot\ntools: read, grep, find, ls, bash\n---\n` +
+    `Perform only the delegated ${axis} review of the integrated lot. Read-only inspection; do not edit or commit.\n` +
+    `Read the complete frozen spec at ${path.join(request.contextPath, 'spec.md')}.\n` +
+    `Read AGENTS.md and every applicable repository instruction and standards source, including inherited references.\n` +
+    `Default diff: git diff ${request.runBaseCommit}...HEAD; commits: git log ${request.runBaseCommit}..HEAD --oneline.\n` +
+    `The final review brief is ${JSON.stringify(request.prompt)}. Do not mistake an agent declaration for observed process evidence.\n` +
+    `For Standards distinguish documented breaches from heuristic smells; repository standards override the baseline. For Spec quote missing, wrong or extra requirements, including interactions between tasks of the lot.\n`;
+}
+
+/** Brief d'un sous-agent reviewer local délégué (standards ou spec). */
+function localReviewerRole(axis: 'standards' | 'spec', request: LocalAgentRunRequest): string {
+  return `---\nname: ${axis}\ndescription: Independent ${axis} review\ntools: read, grep, find, ls, bash\n---\n` +
+    `Perform only the delegated ${axis} review of the local workspace. Read-only inspection; do not edit or commit.\n` +
+    `Read the complete frozen spec at ${path.join(request.contextPath, 'spec.md')}.\n` +
+    `Read AGENTS.md and every applicable repository instruction and standards source, including inherited references.\n` +
+    `Default diff: git diff ${request.taskBaseCommit}...HEAD; commits: git log ${request.taskBaseCommit}..HEAD --oneline.\n` +
+    `Read the actual streamed execution traces at ${request.resultDirectory}/stdout.log and ${request.resultDirectory}/stderr.log, and observed commands at ${request.resultDirectory}/commands.jsonl.\n` +
+    `The task prompt is ${JSON.stringify(request.prompt)}. Do not mistake an agent declaration for observed process evidence.\n` +
+    `Report missing evidence as unverified, rather than inferring TDD or successful commands from commits or a final diff.\n` +
+    `For Standards distinguish documented breaches from heuristic smells; repository standards override the baseline. For Spec quote missing, wrong or extra requirements.\n`;
 }
 
 function createLocalAgentRunner(): LocalAgentRunner {

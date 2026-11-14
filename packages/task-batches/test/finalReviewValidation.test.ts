@@ -70,6 +70,36 @@ for (const invalid of [[], '', [''], [' \t '], ['echo first\necho second'], ['ec
   });
 }
 
+test('the generated final review is read-only: findings reported, no automatic correction, no commit', async t => {
+  const f = await fixture(t);
+  await writeFile(f.batchFile, JSON.stringify({ ...f.batch, validationCommands: ['python3 -m unittest discover'] }));
+
+  const run = await f.service.run(f.batchFile, { execute: false });
+
+  const review = run.tasks.find(task => task.source === 'final-review')!;
+  assert.match(review.prompt, /code-review au diff complet/, 'the combined review still applies the official skill to the whole lot diff');
+  assert.match(review.prompt, /lecture seule/);
+  assert.doesNotMatch(review.prompt, /Corrige|corrige/, 'no automatic correction is ever part of the final review');
+  assert.doesNotMatch(review.prompt, /Puis commite/, 'the final review never commits');
+  assert.match(review.prompt, /rapports.*distincts|distincts et visibles/, 'the Standards and Spec reports stay distinct and visible');
+  assert.match(review.prompt, /refus.*n'est jamais une approbation/, 'a rejection is never confused with approval or success');
+});
+
+test('initialization never adds a redundant final review when the manifest already declares one', async t => {
+  const f = await fixture(t);
+  const declared = { id: 'custom-review', agent: 'codex', prompt: 'Custom combined review of the integrated lot.', source: 'final-review', dependsOn: ['work'] };
+  await writeFile(f.batchFile, JSON.stringify({ ...f.batch, tasks: [...f.batch.tasks, declared] }));
+
+  const run = await f.service.run(f.batchFile, { execute: false });
+
+  const reviews = run.tasks.filter(task => task.source === 'final-review');
+  assert.equal(reviews.length, 1, 'exactly one final review process exists');
+  assert.equal(reviews[0].id, 'custom-review', 'the manifest-declared review is the single review process');
+  assert.equal(reviews[0].prompt, 'Custom combined review of the integrated lot.');
+  assert.deepEqual(reviews[0].dependsOn, ['work']);
+  assert.equal(run.tasks.some(task => task.id === 'final-review'), false, 'no generated review task is appended on top of the declared one');
+});
+
 test('an applicable validation failure blocks the run and resume keeps the original review checks', async t => {
   const prompts: string[] = [];
   let validationsPass = false;

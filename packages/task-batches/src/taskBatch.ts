@@ -53,6 +53,8 @@ export interface TaskBatchServiceOptions {
   subprocessExecutor?: SubprocessExecutor;
   /** Agent local injecté : requis pour exécuter Pi en mode local ; Codex par défaut. */
   localAgentRunner?: LocalAgentRunner;
+  /** Racine du bundle de workflows de la distribution (inventory.json, skills/**) : requise par l'agent Pi en mode sandbox, fournie par le CLI hôte. */
+  workflowResourcesRoot?: string;
   /** Production CLI injects the concrete local/sandbox runtime adapter. */
   runtimeFactory?: TaskRunRuntimeFactory;
   /** Capacité du lot, entre une et dix tâches actives ; dix par défaut. */
@@ -256,7 +258,7 @@ export class TaskBatchService {
       version: 1, mode, maxConcurrentTasks: Math.min(this.maxConcurrentTasks, workerPoolConfig.size), workerPoolConfig, workers: [], runId, repositoryPath: this.repositoryPath, status: 'ready', runBaseCommit,
       integrationBranch: `feature/slopify-${runId}`, createdAt: now, updatedAt: now,
       context: { specFile: frozenSpecFile, specText, batchFile: frozenBatchFile },
-      tasks: [...batch.tasks.map((task) => ({ ...task, status: 'pending' as const, attempts: [] as BatchTaskAttempt[] })), finalReviewTask(batch, runBaseCommit)], diagnostics: [],
+      tasks: [...batch.tasks.map((task) => ({ ...task, status: 'pending' as const, attempts: [] as BatchTaskAttempt[] })), ...(batch.tasks.some((task) => task.source === 'final-review') ? [] : [finalReviewTask(batch, runBaseCommit)])], diagnostics: [],
     };
     await this.save(snapshot);
     if (options.execute !== false) await this.executeSchedule(snapshot, options.signal);
@@ -364,7 +366,7 @@ export class TaskBatchService {
               if (active.size >= (snapshot.maxConcurrentTasks ?? this.maxConcurrentTasks)) break;
               if (task.status !== 'pending' || !task.dependsOn.every(id => byId.get(id)!.status === 'succeeded')) continue;
               if (!prepared) {
-                await executor.prepareRun?.({ runId: snapshot.runId, workspacePath, signal });
+                await executor.prepareRun?.({ runId: snapshot.runId, workspacePath, signal, agents: snapshot.tasks.map(task => task.agent) });
                 prepared = true;
                 if (signal?.aborted || snapshot.suspension) break;
               }
@@ -498,13 +500,20 @@ export class TaskBatchService {
       await this.git.clonePinned(integrationPath, workspacePath, taskBaseCommit);
       const result = await executor.execute({ runId: snapshot.runId, taskId: task.id, attemptId, agent: task.agent,
         ...(task.model ? { model: task.model } : {}), ...(task.effort ? { effort: task.effort } : {}),
+        ...(task.source === 'final-review' ? { finalReview: true } : {}),
         workspacePath, specFile: snapshot.context.specFile, prompt: task.prompt, taskBaseCommit,
         runBaseCommit: snapshot.runBaseCommit, resultDirectory, signal,
         onResource: async (resource: TaskExecutionResource) => {
           attempt.resource = resource; attempt.resourceState = 'active'; await this.save(snapshot);
         },
+        onProcessStarting: async () => {
+          attempt.processSpawnPending = true;
+          await this.save(snapshot);
+        },
         onProcessSpawn: async identity => {
-          attempt.processIdentity = identity;
+          attempt.processIdentity ??= identity;
+          (attempt.processIdentities ??= []).push(identity);
+          attempt.processSpawnPending = false;
           await this.save(snapshot);
         } });
       Object.assign(attempt, result);
@@ -644,17 +653,23 @@ export class TaskBatchService {
 
   /** No optimistic retries when an old local agent, or any descendant, may survive. */
   private async assertLocalAttemptStopped(task: BatchTaskState): Promise<void> {
-    if (task.status !== 'running' && task.status !== 'interrupted') return;
+    if (!['running', 'interrupted', 'failed'].includes(task.status)) return;
     const attempt = task.attempts.at(-1);
-    if (!attempt || (attempt.status !== 'running' && attempt.status !== 'interrupted')) return;
-    const identity = attempt.processIdentity;
-    const own = await inspectLocalProcess(identity);
-    const group = identity?.processGroupId
-      ? await inspectLocalProcessGroup(identity.processGroupId) : 'unknown';
-    if (own !== 'dead' || group !== 'dead') {
-      throw new Error('Task "' + task.id + '" has a live local agent process or uncertain descendants (pid ' +
-        (identity?.pid ?? 'unknown') + ', process=' + own + ', group=' + group +
-        '). Stop and inspect the retained attempt before retrying.');
+    if (!attempt || !['running', 'interrupted', 'failed'].includes(attempt.status)) return;
+    if (attempt.status === 'failed' && !attempt.processSpawnPending && !attempt.processIdentity && !attempt.processIdentities?.length) return;
+    if (attempt.processSpawnPending) {
+      throw new Error('Task "' + task.id + '" has an uncertain local process start; inspect the retained attempt before retrying.');
+    }
+    const identities = attempt.processIdentities?.length ? attempt.processIdentities : [attempt.processIdentity];
+    for (const identity of identities) {
+      const own = await inspectLocalProcess(identity);
+      const group = identity?.processGroupId
+        ? await inspectLocalProcessGroup(identity.processGroupId) : 'unknown';
+      if (own !== 'dead' || group !== 'dead') {
+        throw new Error('Task "' + task.id + '" has a live local agent process or uncertain descendants (pid ' +
+          (identity?.pid ?? 'unknown') + ', process=' + own + ', group=' + group +
+          '). Stop and inspect the retained attempt before retrying.');
+      }
     }
   }
 
@@ -895,7 +910,7 @@ export class TaskBatchService {
 
     await this.withActivityTick(snapshot, options.signal, async () => {
       try {
-        await executor.prepareRun?.({ runId: snapshot.runId, workspacePath, signal: executionSignal });
+        await executor.prepareRun?.({ runId: snapshot.runId, workspacePath, signal: executionSignal, agents: snapshot.tasks.map(task => task.agent) });
         await this.executeTask(snapshot, task, currentIntegrationCommit, workspacePath, executor, executionSignal);
 
         // Relit la tâche depuis le snapshot pour obtenir son état après executeTask.
@@ -1221,9 +1236,12 @@ export interface TaskBatch {
 }
 
 /**
- * Étape finale du lot, alignée sur implement-spec (étape 7) : une seule revue combinée
- * de la branche d'intégration une fois tous les tickets intégrés, chaque finding
- * corrigé dans cette même tâche, puis validations du projet et commit.
+ * Étape finale du lot, alignée sur implement-spec : une seule revue combinée
+ * de la branche d'intégration une fois tous les tickets intégrés, via le skill
+ * officiel code-review et ses deux axes délégués. La revue est en lecture seule :
+ * les constats remontent sans auto-correction (l'étape 7 d'implement-spec
+ * upstream est volontairement exclue du workflow Slopify), puis les validations
+ * du produit vérifient le résultat intégré courant.
  */
 function finalReviewTask(batch: TaskBatch, runBaseCommit: string): BatchTaskState {
   const used = new Set(batch.tasks.map((task) => task.id));
@@ -1236,10 +1254,10 @@ function finalReviewTask(batch: TaskBatch, runBaseCommit: string): BatchTaskStat
   const effort = agent === 'codex' ? batch.defaults?.effort : undefined;
   const validation = batch.validationCommands
     ? `Commandes de validation du lot, à exécuter exactement à la racine du dépôt :\n${batch.validationCommands.map(command => `- ${command}`).join('\n')}\n` +
-      `Chaque commande est obligatoire et doit réussir avec un code de sortie zéro. Une commande en échec ou un prérequis manquant impose un verdict failed ; ne remplace pas une commande pour obtenir un succès. Puis commite.`
+      `Chaque commande est obligatoire et doit réussir avec un code de sortie zéro. Une commande en échec ou un prérequis manquant impose un verdict failed ; ne remplace pas une commande pour obtenir un succès. Termine par ton verdict explicite.`
     : `Utilise les commandes de validation documentées dans le dépôt au commit ${runBaseCommit} (instructions, guides et manifests du projet), puis vérifie les critères d'acceptation de la spec figée. ` +
       `Les commandes de build et de test applicables sont obligatoires : un échec ou un prérequis manquant impose un verdict failed. ` +
-      `Si le dépôt ne définit aucune infrastructure de build ou de test, rapporte cette absence et les vérifications réellement effectuées, sans inventer de commande ni ajouter d'infrastructure pour contourner un échec. Puis commite.`;
+      `Si le dépôt ne définit aucune infrastructure de build ou de test, rapporte cette absence et les vérifications réellement effectuées, sans inventer de commande ni ajouter d'infrastructure pour contourner un échec. Termine par ton verdict explicite.`;
   return {
     id,
     agent,
@@ -1250,7 +1268,8 @@ function finalReviewTask(batch: TaskBatch, runBaseCommit: string): BatchTaskStat
     prompt:
       `Tous les tickets du lot sont implémentés et intégrés sur cette branche. ` +
       `Étape finale du lot : applique le skill officiel code-review au diff complet ${runBaseCommit}...HEAD (les deux axes, Standards et Spec), avec le contexte du run (spec figée et tickets d'origine). ` +
-      `Corrige chaque finding dans cette même tâche, sans annuler les décisions figées de la spec. ` +
+      `Cette revue est en lecture seule : rapporte chaque constat sans modifier le code ni commiter, aucune correction automatique ne suit son verdict. ` +
+      `Les rapports des deux axes restent distincts et visibles, et un refus n'est jamais une approbation ni un succès du lot. ` +
       validation,
     status: 'pending',
     attempts: [],

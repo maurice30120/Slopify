@@ -20,6 +20,8 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
+    # Run sain ~1-2 min (ubuntu) ; borne tout runner "fantôme" au lieu d'attendre 6 h.
+    timeout-minutes: ${{ matrix.os == 'macos-latest' && 45 || 20 }}
 
     steps:
       - name: Check out repository

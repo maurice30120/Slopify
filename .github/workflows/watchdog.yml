@@ -1,0 +1,44 @@
+name: CI watchdog
+
+# Répare les runs CI bloqués "in_progress" sur un runner fantôme :
+# cancel + rerun via l'API (le timeout-minutes du job ne suffit pas si
+# l'agent runner lui-même est mort). L'âge est calculé sur started_at du
+# job (pas sur la création du run) pour ignorer les longues attentes en file.
+# Max 2 retries par run (run_attempt < 3).
+on:
+  schedule:
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+
+permissions:
+  actions: write
+
+concurrency:
+  group: ci-watchdog
+  cancel-in-progress: false
+
+jobs:
+  reap-stuck-runs:
+    name: Cancel and rerun CI runs stuck in progress
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Reap CI pull_request runs whose jobs are in_progress for more than 15 min
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eu
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs?per_page=50&event=pull_request" \
+            --jq '.workflow_runs[] | select(.name == "CI" and .status == "in_progress") | .id' |
+          while read -r run; do
+            attempt=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run" --jq '.run_attempt')
+            [ "$attempt" -lt 3 ] || continue
+            stuck=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run/jobs?per_page=100" \
+              --jq '.jobs[] | select(.status == "in_progress") | select((now - (.started_at | fromdateiso8601)) > 900) | .id' | head -1)
+            if [ -n "$stuck" ]; then
+              echo "::warning::CI run $run: job $stuck in_progress depuis > 15 min (attempt $attempt) - cancel + rerun"
+              gh run cancel "$run" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 || true
+              sleep 5
+              gh run rerun "$run" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 || true
+            fi
+          done

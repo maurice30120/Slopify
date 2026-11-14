@@ -1,0 +1,13 @@
+diff --git a/skills/engineering/code-review/SKILL.md b/skills/engineering/code-review/SKILL.md
+index 83183e0..dccc36a 100644
+--- a/skills/engineering/code-review/SKILL.md
++++ b/skills/engineering/code-review/SKILL.md
+@@ -12,6 +12,8 @@ Both axes run as **parallel sub-agents** so they don't pollute each other's cont
+ 
+ The issue tracker should have been provided to you. If not, tell the user to run `/setup-matt-pocock-skills`.
+ 
++This review produces findings only: do not modify code and do not create commits. The implementer applies the corrections; the Controller organizes the next review.
++
+ ## Process
+ 
+ ### 1. Pin the fixed point

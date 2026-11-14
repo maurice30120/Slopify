@@ -8,6 +8,7 @@ import { runTaskBatchCli } from '@slopify/task-batches';
 import { activityJournalPath, readAllActivitySignals } from '@slopify/activity';
 import { ACTIVITY_SIGNAL_EVENT_TYPE, parseActivitySignal, type ActivitySignal } from '@slopify/activity';
 import { fakeSbxExecutor, gate, git, ManualActivityClock, prepareSlopifyFixture, task } from './activityTickHarness.js';
+import { installFakeSbxRpc } from './piRpcSandboxBridge.js';
 
 /** T85 : démonstration observable de bout en bout des Signaux d'activité (ADR 0013).
  * La preuve finale du lot : chaque commande longue est pilotée depuis la CLI avec un
@@ -41,6 +42,11 @@ async function demoFixture(
   hooks: { onUpdate?: (snapshot: TaskBatchSnapshot) => void } = {},
 ): Promise<DemoFixture> {
   const { root, repo, skills, batchFile } = await prepareSlopifyFixture('slopify-t85-demo-', t, tasks);
+  // Transport RPC Pi natif : le spawnRpc de l'exécuteur sandbox fait un vrai spawn('sbx').
+  // Le pont place un faux binaire sbx sur le PATH portant un serveur RPC simulé et
+  // proxifie le travail de chaque tâche Pi vers la fermeture agent ci-dessus, phrases
+  // d'activité comprises ; les commandes de contrôle restent servies par le faux exécuteur.
+  await installFakeSbxRpc(t, { root, agent });
   const sandboxes = new Map<string, string>();
   const execute = fakeSbxExecutor({ root, skills, agent, sandboxes });
   const clock = new ManualActivityClock();

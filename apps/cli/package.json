@@ -32,7 +32,8 @@
   "files": [
     "dist/src",
     "init",
-    "plugin"
+    "plugin",
+    "prompts"
   ],
   "devDependencies": {
     "@types/node": "^24.13.6",

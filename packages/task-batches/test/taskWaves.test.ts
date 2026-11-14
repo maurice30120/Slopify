@@ -9,6 +9,7 @@ import type { SubprocessExecutor } from '@slopify/execution';
 import { type BatchTask, type TaskBatchSnapshot, type TaskBatchServiceOptions } from '@slopify/task-batches';
 import { TaskBatchService } from './taskBatchTestService.js';
 import { taskBatchReport, formatTaskBatchReport } from '@slopify/task-batches';
+import { installFakeSbxRpc } from './piRpcSandboxBridge.js';
 
 function git(repo: string, ...args: string[]) {
   return execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8' }).trim();
@@ -104,6 +105,14 @@ async function fixture(t: { after(fn: () => Promise<void>): void }, tasks: Batch
     }
     throw new Error(`Unhandled sbx ${a.join(' ')}`);
   };
+  // Transport RPC Pi natif : le pont place un faux sbx RPC sur le PATH et proxifie le
+  // travail des tâches Pi vers la fermeture agent de ce test, qui alimente aussi la
+  // liste des tâches lancées, comme le faisait l'ancien exécuteur one-shot.
+  const bridgedAgent = (id: string, sandbox: string) => {
+    launched.push(id);
+    return agent(id, sandbox);
+  };
+  await installFakeSbxRpc(t, { root, agent: bridgedAgent });
   const updates: TaskBatchSnapshot[] = [];
   const service = new TaskBatchService({ repositoryPath: repo, storePath: path.join(root, 'runs'), subprocessExecutor: execute, ...options, onUpdate: snapshot => { updates.push(snapshot); } });
   return { root, repo, head, dirty, batchFile, service, execute, launched, removed, sandboxes, updates };
@@ -441,7 +450,10 @@ test('checkpoints ready together integrate serially in JSON order without rerunn
   f.launched.length = 0;
   const resumed = await f.service.resume(produced.runId);
   assert.equal(resumed.status, 'succeeded');
-  assert.deepEqual(f.launched, ['final-review']);
+  assert.deepEqual(f.launched, [], 'the resumed final review reruns no implementer work: it is an independent reviewer session');
+  const resumedReview = resumed.tasks.find(item => item.source === 'final-review')!;
+  assert.equal(resumedReview.status, 'succeeded');
+  assert.match(await readFile(resumedReview.attempts[0].reportPath!, 'utf8'), /Combined final review verdict: approved/);
   const [first, second] = resumed.tasks;
   assert.equal(first.attempts[0].integratedCommit, first.attempts[0].checkpoint!.commit);
   assert.equal(git(f.repo, 'rev-parse', `${second.attempts[0].integratedCommit}^1`), first.attempts[0].integratedCommit);

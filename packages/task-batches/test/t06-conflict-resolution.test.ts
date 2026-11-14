@@ -8,6 +8,7 @@ import test from 'node:test';
 import type { SubprocessExecutor } from '@slopify/execution';
 import { type BatchTask, type TaskBatchConflict } from '@slopify/task-batches';
 import { TaskBatchService } from './taskBatchTestService.js';
+import { installFakeSbxRpc } from './piRpcSandboxBridge.js';
 
 /** T06: Suspend and resolve conflicts on explicit action */
 
@@ -105,6 +106,10 @@ async function fixture(t: { after(fn: () => Promise<void>): void }, tasks: Batch
   };
   const storePath = path.join(root, 'runs');
   const service = new TaskBatchService({ repositoryPath: repo, storePath, subprocessExecutor: execute });
+  // Transport RPC Pi natif : le spawnRpc de l'exécuteur sandbox fait un vrai spawn('sbx').
+  // Le pont place un faux binaire sbx sur le PATH portant un serveur RPC simulé et
+  // proxifie le travail de chaque tâche Pi vers la fermeture agent ci-dessus.
+  await installFakeSbxRpc(t, { root, agent: (id, sandbox) => agent(id, sandbox) });
   return { root, repo, head, dirty, batchFile, service, launched, removed, sandboxes, storePath };
 }
 

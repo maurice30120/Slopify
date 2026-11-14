@@ -11,7 +11,7 @@ export { assertWorkerPoolSize, assertSharedWorkerMounts } from '@slopify/executi
 export type { TaskWorkerPoolConfig, TaskWorkerState, TaskWorkerStatus } from '@slopify/execution';
 
 interface Worker extends TaskWorkerState { created: boolean; assetsVolume: string; image: string; sharedMounts: string[]; outOfServiceByFailure?: boolean; replaced?: boolean; }
-export interface WorkerLease { worker: Worker; container: string; contextVolume: string; seed: string; stage: string; request: TaskExecutionRequest; skillsStore?:string; }
+export interface WorkerLease { worker: Worker; container: string; contextVolume: string; seed: string; stage: string; request: TaskExecutionRequest; }
 const quote=(value:string)=>"'"+value.replaceAll("'", "'\\''")+"'";
 /** Refuses an exposed Docker TCP daemon (ports 2375 and 2376) from inside the worker sandbox.
  * Probes ss first, then /proc/net/tcp and /proc/net/tcp6; fails closed when no listener source is readable. */
@@ -28,6 +28,11 @@ for file in "$@"
 do test -r "$file" || exit 1
 done
 awk '$4 == "0A" { split($2, address, ":"); port = toupper(address[2]); if (port == "0947" || port == "0948") exposed = 1 } END { exit exposed ? 1 : 0 }' "$@"`;
+
+/** Variables d'environnement transférées du worker au conteneur de tâche : les clés API des
+ * providers natifs Pi configurables en sandbox (MISTRAL_API_KEY, ZAI_API_KEY) doivent y figurer,
+ * car le models.json propagé les référence par variable d'environnement (#196 ; précédent #107). */
+export const TASK_CONTAINER_ENV: readonly string[] = ['HTTP_PROXY','HTTPS_PROXY','NO_PROXY','http_proxy','https_proxy','no_proxy','NODE_USE_ENV_PROXY','MCP_GATEWAY_URL','MCP_SENTINEL_TOKEN_NAME','SBX_CRED_OPENAI_MODE','MISTRAL_API_KEY','ZAI_API_KEY','OPENAI_API_KEY'];
 
 /** A worker retains only immutable images/assets. Every task runs in a fresh Docker container.
  * A replacement is a worker driven out of service by a failure (a retained attempt or a failed
@@ -82,6 +87,14 @@ export class TaskWorkerPool {
   }
   /** Executes a control command inside the worker sandbox (as opposed to the task container). */
   private execInWorker(lease:WorkerLease,args:string[]){return this.control(lease.worker,lease.request,['exec',lease.worker.sandboxName,...args]);}
+  /** Rewrites the args of a task `sbx exec` so it targets the leased task container (worker reuse lifecycle); unchanged otherwise. Shared by the batched executor and the interactive RPC spawn. */
+  rewriteExecArgs(lease:WorkerLease,args:string[]):string[] {
+    if(this.config.lifecycle==='recreate')return args;
+    const nameIndex=args.findIndex((value,index)=>index>0&&value.startsWith('slopify-'));
+    if(nameIndex<0)throw new Error('Missing task sandbox identity.');
+    const options=args.slice(1,nameIndex);const command=args.slice(nameIndex+1);
+    return ['exec',lease.worker.sandboxName,'docker','exec',...(options.includes('-w')?options:['-w',lease.request.workspacePath,...options]),lease.container,...command];
+  }
   /** Rewrites harness subprocess requests so they run through the leased worker instead of the host. */
   async rewriteThroughWorker(lease:WorkerLease,request:SubprocessRequest):Promise<SubprocessResult> {
     const a=request.args;
@@ -98,10 +111,7 @@ export class TaskWorkerPool {
     if(request.command!=='sbx')return this.appendEvidence(request,lease.request.resultDirectory);
     if(a[0]==='create'&&!a.includes('--help')){await this.createTask(lease,a);return {exitCode:0,stdout:'',stderr:''};}
     if(a[0]==='exec'){
-      const nameIndex=a.findIndex((value,index)=>index>0&&value.startsWith('slopify-'));
-      if(nameIndex<0)throw new Error('Missing task sandbox identity.');
-      const options=a.slice(1,nameIndex);const command=a.slice(nameIndex+1);
-      return this.appendEvidence({...request,args:['exec',lease.worker.sandboxName,'docker','exec',...(options.includes('-w')?options:['-w',lease.request.workspacePath,...options]),lease.container,...command]},lease.request.resultDirectory);
+      return this.appendEvidence({...request,args:this.rewriteExecArgs(lease,a)},lease.request.resultDirectory);
     }
     if(a[0]==='cp'){
       const source=a[1],target=a[2];
@@ -125,7 +135,9 @@ export class TaskWorkerPool {
       await this.execInWorker(lease,['docker','pull',worker.image]);
       await this.execInWorker(lease,['docker','volume','create',worker.assetsVolume]);
       await this.execInWorker(lease,['docker','create','--name',lease.seed,'--mount','type=volume,source='+worker.assetsVolume+',target=/assets','--entrypoint','sleep',worker.image,'infinity']);
-      await this.execInWorker(lease,['sh','-ec','mkdir -p '+quote(lease.stage+'/assets/skills')+' '+quote(lease.stage+'/assets/codex')+'; cp -aL '+(request.agent==='pi'&&lease.skillsStore?quote(lease.skillsStore+'/.'):'"$HOME/.agents/skills/."')+' '+quote(lease.stage+'/assets/skills/')+'; cp /etc/ssl/certs/ca-certificates.crt '+quote(lease.stage+'/assets/ca.crt')+'; for f in config.toml auth.json; do if test -f "$HOME/.codex/$f"; then cp "$HOME/.codex/$f" '+quote(lease.stage+'/assets/codex/')+'; fi; done']);
+      // Une tâche Pi lit ses skills dans la distribution montée readonly par l'adaptateur : ses
+      // assets n'embarquent jamais de copie du store global des skills officiel.
+      await this.execInWorker(lease,['sh','-ec','mkdir -p '+quote(lease.stage+'/assets/skills')+' '+quote(lease.stage+'/assets/codex')+'; '+(request.agent==='pi'?'':'cp -aL "$HOME/.agents/skills/." '+quote(lease.stage+'/assets/skills/')+'; ')+'cp /etc/ssl/certs/ca-certificates.crt '+quote(lease.stage+'/assets/ca.crt')+'; for f in config.toml auth.json; do if test -f "$HOME/.codex/$f"; then cp "$HOME/.codex/$f" '+quote(lease.stage+'/assets/codex/')+'; fi; done']);
       for(const [index,mount] of worker.sharedMounts.entries()){
         await this.execInWorker(lease,['sh','-ec','mkdir -p '+quote(lease.stage+'/assets/shared'+index)+'; cp -aL '+quote(mount.slice(0,-3))+'/. '+quote(lease.stage+'/assets/shared'+index+'/')]);
       }
@@ -139,7 +151,7 @@ export class TaskWorkerPool {
     await this.execInWorker(lease,['docker','volume','create',lease.contextVolume]);
     await this.execInWorker(lease,['docker','create','--name',lease.seed,'--mount','type=volume,source='+lease.contextVolume+',target=/context','--entrypoint','sleep',worker.image,'infinity']);
     await this.execInWorker(lease,['docker','cp',lease.stage+'/context/.',lease.seed+':/context']);await this.execInWorker(lease,['docker','rm','-v',lease.seed]);
-    const env=['HTTP_PROXY','HTTPS_PROXY','NO_PROXY','http_proxy','https_proxy','no_proxy','NODE_USE_ENV_PROXY','MCP_GATEWAY_URL','MCP_SENTINEL_TOKEN_NAME','SBX_CRED_OPENAI_MODE','MISTRAL_API_KEY','OPENAI_API_KEY'].flatMap(name=>['-e',name]);
+    const env=TASK_CONTAINER_ENV.flatMap(name=>['-e',name]);
     await this.execInWorker(lease,['docker','run','-d','--name',lease.container,'--network','host','--cap-drop','ALL','--security-opt','no-new-privileges','--mount','type=volume,source='+worker.assetsVolume+',target=/slopify-assets,readonly','--mount','type=volume,source='+lease.contextVolume+',target='+path.join(request.resultDirectory,'context')+',readonly',...worker.sharedMounts.flatMap((mount,index)=>['--mount','type=volume,source='+worker.assetsVolume+',target='+mount.slice(0,-3)+',volume-subpath=shared'+index+',readonly']),...env,'-e','NODE_EXTRA_CA_CERTS=/slopify-assets/ca.crt','-e','SSL_CERT_FILE=/slopify-assets/ca.crt','-e','REQUESTS_CA_BUNDLE=/slopify-assets/ca.crt','--entrypoint','sleep',worker.image,'infinity']);
     await this.execInWorker(lease,['docker','cp',lease.stage+'/input.bundle',lease.container+':/tmp/input.bundle']);
     await this.execInWorker(lease,['docker','exec','-u','root',lease.container,'sh','-ec','mkdir -p '+quote(path.dirname(request.workspacePath))+'; chmod 0777 '+quote(path.dirname(request.workspacePath))]);
