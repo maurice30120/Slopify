@@ -15,6 +15,8 @@ interface FakeFactoryOptions {
   reviewerReply?: (cycle: number, message: string) => { final: string; standards?: string; spec?: string };
   /** Le processus implémenteur meurt avant le premier règlement. */
   implementerCrash?: boolean;
+  /** Le processus implémenteur est déjà mort à l'ouverture du canal (course avec une annulation déjà levée). */
+  implementerDiesImmediately?: boolean;
   /** Le reviewer meurt avant son règlement. */
   reviewerCrash?: boolean;
   /** Le reviewer ne répond jamais (pour l'annulation). */
@@ -46,6 +48,9 @@ async function fixture(t: { after(fn: () => Promise<void>): void }, options: Fak
   const factory: PiRpcChannelFactory = session => {
     const log: FakeChannelLog = { role: session.role, prompts: [], closed: false, exited: false };
     channels.push(log);
+    if (options.implementerDiesImmediately && session.role === 'implementer') {
+      queueMicrotask(() => session.onExit({ exitCode: 137, stderrTail: 'killed' }));
+    }
     const implementerReply = options.implementerReply ?? (() => 'Implemented.\nSLOPIFY_RESULT={"status":"succeeded"}');
     const reviewerReply = options.reviewerReply ?? (() => ({ final: 'SLOPIFY_REVIEW={"verdict":"approved"}', standards: 'Standards report', spec: 'Spec report' }));
     const emitSubagents = (standards?: string, spec?: string) => {
@@ -323,6 +328,15 @@ test('cancellation aborts the pending turn and stops the live sessions in order'
   assert.equal(reviewer.closed, true, 'the hanging reviewer session receives an ordered stop');
   const events = await f.evidence.events();
   assert.equal(events.at(-1)!.phase, 'workflow_cancelled');
+});
+
+test('a pre-aborted signal racing an already dead implementer session stays handled (no unhandled rejection)', async t => {
+  const f = await fixture(t, { implementerDiesImmediately: true });
+  const controller = new AbortController();
+  controller.abort();
+  const result = await f.run(controller.signal);
+  assert.equal(result.exitCode, 1);
+  assert.equal(result.diagnostics.some(diagnostic => diagnostic.code === 'pi_workflow_cancelled'), true);
 });
 
 test('an invalid reviewer verdict is a reviewer failure, never an approval nor a burned cycle', async t => {

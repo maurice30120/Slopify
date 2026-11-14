@@ -108,10 +108,12 @@ export async function runPiRpcWorkflow(options: PiRpcWorkflowOptions): Promise<P
     if (!signal) return pending;
     return new Promise<T>((resolve, reject) => {
       const onAbort = () => reject(new WorkflowCancelled());
-      if (signal.aborted) { onAbort(); return; }
-      signal.addEventListener('abort', onAbort, { once: true });
+      // Toujours attacher des handlers à `pending` : si le signal est déjà levé,
+      // un rejet de pending (session déjà morte) ne doit pas devenir un unhandledRejection.
       pending.then(value => { signal.removeEventListener('abort', onAbort); resolve(value); },
         error => { signal.removeEventListener('abort', onAbort); reject(error); });
+      if (signal.aborted) onAbort();
+      else signal.addEventListener('abort', onAbort, { once: true });
     });
   };
 
@@ -327,10 +329,12 @@ export async function runPiCombinedFinalReview(options: PiFinalReviewOptions): P
     if (!signal) return pending;
     return new Promise<T>((resolve, reject) => {
       const onAbort = () => reject(new WorkflowCancelled());
-      if (signal.aborted) { onAbort(); return; }
-      signal.addEventListener('abort', onAbort, { once: true });
+      // Toujours attacher des handlers à `pending` : si le signal est déjà levé,
+      // un rejet de pending (session déjà morte) ne doit pas devenir un unhandledRejection.
       pending.then(value => { signal.removeEventListener('abort', onAbort); resolve(value); },
         error => { signal.removeEventListener('abort', onAbort); reject(error); });
+      if (signal.aborted) onAbort();
+      else signal.addEventListener('abort', onAbort, { once: true });
     });
   };
 
